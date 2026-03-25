@@ -5,6 +5,10 @@ export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 
+// Export Merchant Network SDK
+export { MerchantNetworkSDK } from './merchantNetwork';
+export { MerchantApp } from './merchantApp';
+
 // Export all types
 export * from './types';
 
