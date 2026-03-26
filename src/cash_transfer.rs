@@ -1,8 +1,9 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, String, Symbol, U256, Vec};
 
 #[contract]
 pub struct CashTransfer;
 
+#[contracttype]
 #[derive(Clone)]
 pub struct ConditionalTransfer {
     pub id: String,
@@ -19,14 +20,16 @@ pub struct ConditionalTransfer {
     pub purpose: String,
 }
 
+#[contracttype]
 #[derive(Clone)]
 pub struct SpendingRule {
-    pub rule_type: String, // "category_limit", "merchant_whitelist", "time_window", "location_based"
+    pub rule_type: String,
     pub parameters: Map<String, String>,
     pub limit: U256,
     pub current_usage: U256,
 }
 
+#[contracttype]
 #[derive(Clone)]
 pub struct Transaction {
     pub id: String,
@@ -42,7 +45,6 @@ pub struct Transaction {
 
 #[contractimpl]
 impl CashTransfer {
-    /// Create a conditional cash transfer
     pub fn create_transfer(
         env: Env,
         creator: Address,
@@ -55,43 +57,46 @@ impl CashTransfer {
         purpose: String,
     ) {
         creator.require_auth();
-        
-        // Check for duplicate transfer
+
         let transfers_key = Symbol::new(&env, "transfers");
-        let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let mut transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
+
         if transfers.contains_key(transfer_id.clone()) {
-            panic_with_error!(&env, "Transfer already exists");
+            panic!("transfer exists");
         }
-        
-        // Create conditional transfer
+
         let transfer = ConditionalTransfer {
             id: transfer_id.clone(),
             beneficiary_id,
-            amount,
+            amount: amount.clone(),
             token,
             created_at: env.ledger().timestamp(),
             expires_at,
             spending_rules,
             is_active: true,
-            spent_amount: U256::from_u64(0),
-            remaining_amount: amount,
+            spent_amount: U256::from_u32(&env, 0),
+            remaining_amount: amount.clone(),
             creator,
             purpose,
         };
-        
+
         transfers.set(transfer_id.clone(), transfer);
         env.storage().instance().set(&transfers_key, &transfers);
-        
-        // Initialize transaction history
-        let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
-        let transactions: Map<String, Transaction> = Map::new(&env);
-        env.storage().instance().set(&transactions_key, &transactions);
+
+        let tx_key = Symbol::new(&env, "transfer_transactions");
+        let mut txs_by_transfer: Map<String, Vec<Transaction>> = env
+            .storage()
+            .instance()
+            .get(&tx_key)
+            .unwrap_or(Map::new(&env));
+        txs_by_transfer.set(transfer_id, Vec::new(&env));
+        env.storage().instance().set(&tx_key, &txs_by_transfer);
     }
 
-    /// Attempt to spend from conditional transfer
     pub fn spend(
         env: Env,
         beneficiary: Address,
@@ -102,187 +107,146 @@ impl CashTransfer {
         location: String,
     ) -> bool {
         beneficiary.require_auth();
-        
+
         let transfers_key = Symbol::new(&env, "transfers");
-        let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let mut transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut transfer = match transfers.get(transfer_id.clone()) {
             Some(t) => t,
             None => return false,
         };
-        
-        // Check if transfer is active and not expired
+
         if !transfer.is_active || env.ledger().timestamp() > transfer.expires_at {
             return false;
         }
-        
-        // Check sufficient remaining balance
         if amount > transfer.remaining_amount {
             return false;
         }
-        
-        // Validate spending rules
-        let (is_approved, rejection_reason) = Self::validate_spending_rules(&env, &transfer, amount, &category, &location);
-        
-        // Create transaction record
-        let transaction_id = format!("txn_{}_{}", transfer_id, env.ledger().timestamp());
-        let transaction = Transaction {
-            id: transaction_id.clone(),
+
+        let (is_approved, rejection_reason) =
+            Self::validate_spending_rules(&env, &transfer, &amount, &category, &location);
+
+        let tx = Transaction {
+            id: String::from_str(&env, "txn"),
             transfer_id: transfer_id.clone(),
             merchant_id,
-            amount,
+            amount: amount.clone(),
             category,
             timestamp: env.ledger().timestamp(),
             location,
             is_approved,
             rejection_reason,
         };
-        
-        // Store transaction
-        let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
-        let mut transactions: Map<String, Transaction> = env.storage().instance()
-            .get(&transactions_key)
+
+        let tx_key = Symbol::new(&env, "transfer_transactions");
+        let mut txs_by_transfer: Map<String, Vec<Transaction>> = env
+            .storage()
+            .instance()
+            .get(&tx_key)
             .unwrap_or(Map::new(&env));
-        
-        transactions.set(transaction_id, transaction);
-        env.storage().instance().set(&transactions_key, &transactions);
-        
+        let mut txs = txs_by_transfer
+            .get(transfer_id.clone())
+            .unwrap_or(Vec::new(&env));
+        txs.push_back(tx);
+        txs_by_transfer.set(transfer_id.clone(), txs);
+        env.storage().instance().set(&tx_key, &txs_by_transfer);
+
         if is_approved {
-            // Update transfer state
-            transfer.spent_amount += amount;
-            transfer.remaining_amount -= amount;
-            
-            // Update spending rule usage
-            for mut rule in transfer.spending_rules.iter() {
-                if rule.rule_type == "category_limit" {
-                    if let Some(rule_category) = rule.parameters.get(&String::from_str(&env, "category")) {
-                        if rule_category == &category {
-                            rule.current_usage += amount;
-                        }
-                    }
-                }
-            }
-            
+            transfer.spent_amount = transfer.spent_amount.add(&amount);
+            transfer.remaining_amount = transfer.remaining_amount.sub(&amount);
             transfers.set(transfer_id, transfer);
             env.storage().instance().set(&transfers_key, &transfers);
-            
             true
         } else {
             false
         }
     }
 
-    /// Validate spending against rules
     fn validate_spending_rules(
         env: &Env,
         transfer: &ConditionalTransfer,
-        amount: U256,
+        amount: &U256,
         category: &String,
         location: &String,
     ) -> (bool, String) {
         for rule in transfer.spending_rules.iter() {
-            match rule.rule_type.to_string().as_str() {
-                "category_limit" => {
-                    if let Some(rule_category) = rule.parameters.get(&String::from_str(env, "category")) {
-                        if rule_category == category {
-                            if rule.current_usage + amount > rule.limit {
-                                return (false, String::from_str(env, "Category limit exceeded"));
-                            }
-                        }
+            if rule.rule_type == String::from_str(env, "category_limit") {
+                if let Some(rule_category) = rule.parameters.get(String::from_str(env, "category")) {
+                    if rule_category == *category && rule.current_usage.add(amount) > rule.limit {
+                        return (false, String::from_str(env, "Category limit exceeded"));
                     }
                 }
-                "merchant_whitelist" => {
-                    // In production, check if merchant is in whitelist
-                    // For now, assume all merchants are allowed
-                }
-                "time_window" => {
-                    if let Some(start_time) = rule.parameters.get(&String::from_str(env, "start_time")) {
-                        if let Some(end_time) = rule.parameters.get(&String::from_str(env, "end_time")) {
-                            let current_time = env.ledger().timestamp();
-                            let start = start_time.clone().to_string().parse::<u64>().unwrap_or(0);
-                            let end = end_time.clone().to_string().parse::<u64>().unwrap_or(u64::MAX);
-                            if current_time < start || current_time > end {
-                                return (false, String::from_str(env, "Outside allowed time window"));
-                            }
-                        }
+            }
+            if rule.rule_type == String::from_str(env, "location_based") {
+                if let Some(allowed_location) = rule.parameters.get(String::from_str(env, "location")) {
+                    if allowed_location != *location {
+                        return (false, String::from_str(env, "Location not allowed"));
                     }
                 }
-                "location_based" => {
-                    if let Some(allowed_location) = rule.parameters.get(&String::from_str(env, "location")) {
-                        if allowed_location != location {
-                            return (false, String::from_str(env, "Location not allowed"));
-                        }
-                    }
-                }
-                _ => {}
             }
         }
-        
         (true, String::from_str(env, ""))
     }
 
-    /// Get transfer details
     pub fn get_transfer(env: Env, transfer_id: String) -> Option<ConditionalTransfer> {
         let transfers_key = Symbol::new(&env, "transfers");
-        let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
         transfers.get(transfer_id)
     }
 
-    /// Get transaction history for a transfer
     pub fn get_transactions(env: Env, transfer_id: String) -> Vec<Transaction> {
-        let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
-        let transactions: Map<String, Transaction> = env.storage().instance()
-            .get(&transactions_key)
+        let tx_key = Symbol::new(&env, "transfer_transactions");
+        let txs_by_transfer: Map<String, Vec<Transaction>> = env
+            .storage()
+            .instance()
+            .get(&tx_key)
             .unwrap_or(Map::new(&env));
-        
-        let mut result = Vec::new(&env);
-        for (_, transaction) in transactions.iter() {
-            result.push_back(transaction);
-        }
-        result
+        txs_by_transfer.get(transfer_id).unwrap_or(Vec::new(&env))
     }
 
-    /// Recall unspent funds after expiry
     pub fn recall_funds(env: Env, creator: Address, transfer_id: String) -> U256 {
         creator.require_auth();
-        
+
         let transfers_key = Symbol::new(&env, "transfers");
-        let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let mut transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut transfer = match transfers.get(transfer_id.clone()) {
             Some(t) => t,
-            None => return U256::from_u64(0),
+            None => return U256::from_u32(&env, 0),
         };
-        
-        // Check if transfer is expired
+
         if env.ledger().timestamp() <= transfer.expires_at {
-            return U256::from_u64(0);
+            return U256::from_u32(&env, 0);
         }
-        
-        let recall_amount = transfer.remaining_amount;
-        
-        // Deactivate transfer
+
+        let recall_amount = transfer.remaining_amount.clone();
         transfer.is_active = false;
         transfers.set(transfer_id, transfer);
         env.storage().instance().set(&transfers_key, &transfers);
-        
+
         recall_amount
     }
 
-    /// List active transfers for a beneficiary
     pub fn list_beneficiary_transfers(env: Env, beneficiary_id: String) -> Vec<ConditionalTransfer> {
         let transfers_key = Symbol::new(&env, "transfers");
-        let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut result = Vec::new(&env);
         for (_, transfer) in transfers.iter() {
             if transfer.beneficiary_id == beneficiary_id && transfer.is_active {
@@ -292,20 +256,16 @@ impl CashTransfer {
         result
     }
 
-    /// Extend transfer expiry (for ongoing relief operations)
-    pub fn extend_expiry(
-        env: Env,
-        creator: Address,
-        transfer_id: String,
-        new_expiry: u64,
-    ) {
+    pub fn extend_expiry(env: Env, creator: Address, transfer_id: String, new_expiry: u64) {
         creator.require_auth();
-        
+
         let transfers_key = Symbol::new(&env, "transfers");
-        let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let mut transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut transfer) = transfers.get(transfer_id.clone()) {
             if transfer.creator == creator {
                 transfer.expires_at = new_expiry;
@@ -315,22 +275,22 @@ impl CashTransfer {
         }
     }
 
-    /// Cleanup expired transfers
     pub fn cleanup_expired_transfers(env: Env) {
         let transfers_key = Symbol::new(&env, "transfers");
-        let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
+        let mut transfers: Map<String, ConditionalTransfer> = env
+            .storage()
+            .instance()
             .get(&transfers_key)
             .unwrap_or(Map::new(&env));
-        
-        let current_time = env.ledger().timestamp();
-        
+
+        let now = env.ledger().timestamp();
         for (transfer_id, mut transfer) in transfers.iter() {
-            if current_time > transfer.expires_at && transfer.is_active {
+            if now > transfer.expires_at && transfer.is_active {
                 transfer.is_active = false;
                 transfers.set(transfer_id, transfer);
             }
         }
-        
+
         env.storage().instance().set(&transfers_key, &transfers);
     }
 }

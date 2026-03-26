@@ -1,0 +1,20 @@
+/target/
+
+# Rust
+**/*.rs.bk
+
+# Node/TypeScript
+node_modules/
+dist/
+coverage/
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# IDE/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

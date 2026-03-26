@@ -1,3 +1,9 @@
+import { AidClient } from './aidClient';
+import { BeneficiaryClient } from './beneficiaryClient';
+import { MerchantClient } from './merchantClient';
+import { TransferClient } from './transferClient';
+import { TrackerClient } from './trackerClient';
+
 // Export all clients
 export { AidClient } from './aidClient';
 export { BeneficiaryClient } from './beneficiaryClient';
@@ -6,6 +12,8 @@ export { OfflineAuthClient } from './offlineAuth';
 export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
+export { SupplyChainClient } from './supplyChain';
+export { DonorPortal } from './donorPortal';
 
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
