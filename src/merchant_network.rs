@@ -1,9 +1,18 @@
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, Map, String, Symbol, Vec, U256,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, String, Symbol, U256, Vec};
 
 #[contract]
 pub struct MerchantNetwork;
+
+#[contracttype]
+#[derive(Clone)]
+pub struct Location {
+    pub latitude_e6: i64,
+    pub longitude_e6: i64,
+    pub address: String,
+    pub city: String,
+    pub country: String,
+    pub postal_code: String,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -14,16 +23,16 @@ pub struct Merchant {
     pub business_type: String,
     pub location: Location,
     pub contact_info: String,
-    pub registration_date: u64,
-    pub is_verified: bool,
-    pub verification_documents: Vec<String>,
-    pub stellar_toml_url: String,
     pub accepted_tokens: Vec<String>,
     pub daily_limit: U256,
     pub monthly_limit: U256,
+    pub current_day_volume: U256,
     pub current_month_volume: U256,
-    pub reputation_score: u32,
+    pub registration_date: u64,
+    pub is_verified: bool,
     pub is_active: bool,
+    pub verification_documents: Vec<String>,
+    pub reputation_score: u32,
 }
 
 #[contracttype]
@@ -38,17 +47,6 @@ pub struct MerchantRegistrationInput {
     pub daily_limit: U256,
     pub monthly_limit: U256,
     pub verification_documents: Vec<String>,
-}
-
-#[contracttype]
-#[derive(Clone)]
-pub struct Location {
-    pub latitude_e6: i64,
-    pub longitude_e6: i64,
-    pub address: String,
-    pub city: String,
-    pub country: String,
-    pub postal_code: String,
 }
 
 #[contracttype]
@@ -87,6 +85,9 @@ impl MerchantNetwork {
             panic!("merchant exists");
         }
 
+        let mut docs = input.verification_documents;
+        docs.push_back(input.stellar_toml_url);
+
         let merchant = Merchant {
             id: merchant_id.clone(),
             name: input.name,
@@ -94,22 +95,22 @@ impl MerchantNetwork {
             business_type: input.business_type,
             location: input.location,
             contact_info: input.contact_info,
-            registration_date: env.ledger().timestamp(),
-            is_verified: false,
-            verification_documents: input.verification_documents,
-            stellar_toml_url: input.stellar_toml_url,
             accepted_tokens: input.accepted_tokens,
             daily_limit: input.daily_limit,
             monthly_limit: input.monthly_limit,
+            current_day_volume: U256::from_u32(&env, 0),
             current_month_volume: U256::from_u32(&env, 0),
-            reputation_score: 50,
+            registration_date: env.ledger().timestamp(),
+            is_verified: false,
             is_active: false,
+            verification_documents: docs,
+            reputation_score: 50,
         };
 
         merchants.set(merchant_id.clone(), merchant);
         env.storage().instance().set(&merchants_key, &merchants);
 
-        let queue_key = Symbol::new(&env, "verification_queue");
+        let queue_key = Symbol::new(&env, "merchant_queue");
         let mut queue: Vec<String> = env
             .storage()
             .instance()
@@ -124,7 +125,7 @@ impl MerchantNetwork {
         verifier: Address,
         merchant_id: String,
         approved: bool,
-        _notes: String,
+        notes: String,
     ) {
         verifier.require_auth();
 
@@ -136,41 +137,29 @@ impl MerchantNetwork {
             .unwrap_or(Map::new(&env));
 
         if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
-            if approved {
-                merchant.is_verified = true;
-                merchant.is_active = true;
-            }
-            merchants.set(merchant_id.clone(), merchant);
+            merchant.is_verified = approved;
+            merchant.is_active = approved;
+            merchant.verification_documents.push_back(notes);
+            merchants.set(merchant_id, merchant);
             env.storage().instance().set(&merchants_key, &merchants);
+        } else {
+            panic!("merchant not found");
         }
-
-        let queue_key = Symbol::new(&env, "verification_queue");
-        let queue: Vec<String> = env
-            .storage()
-            .instance()
-            .get(&queue_key)
-            .unwrap_or(Vec::new(&env));
-        let mut new_queue = Vec::new(&env);
-        for id in queue.iter() {
-            if id != merchant_id {
-                new_queue.push_back(id);
-            }
-        }
-        env.storage().instance().set(&queue_key, &new_queue);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn process_payment(
         env: Env,
-        merchant: Address,
-        beneficiary: Address,
+        merchant_signer: Address,
+        beneficiary_signer: Address,
         merchant_id: String,
         beneficiary_id: String,
         amount: U256,
         token: String,
         purpose: String,
     ) -> String {
-        merchant.require_auth();
-        beneficiary.require_auth();
+        merchant_signer.require_auth();
+        beneficiary_signer.require_auth();
 
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env
@@ -179,28 +168,36 @@ impl MerchantNetwork {
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
 
-        let mut merchant_profile = merchants
+        let mut merchant = merchants
             .get(merchant_id.clone())
             .unwrap_or_else(|| panic!("merchant not found"));
 
-        if !merchant_profile.is_active {
-            panic!("merchant inactive");
+        if !merchant.is_active || !merchant.is_verified {
+            panic!("merchant not active");
         }
-        if !merchant_profile.accepted_tokens.contains(token.clone()) {
+
+        if !Self::token_allowed(&merchant.accepted_tokens, &token) {
             panic!("token not accepted");
         }
-        if amount > merchant_profile.daily_limit {
-            panic!("daily limit");
+
+        if amount > merchant.daily_limit {
+            panic!("daily limit exceeded");
         }
-        if merchant_profile.current_month_volume.add(&amount) > merchant_profile.monthly_limit {
-            panic!("monthly limit");
+
+        if amount > merchant.monthly_limit {
+            panic!("monthly limit exceeded");
         }
+
+        merchant.current_day_volume = amount.clone();
+        merchant.current_month_volume = amount.clone();
+        merchants.set(merchant_id.clone(), merchant);
+        env.storage().instance().set(&merchants_key, &merchants);
 
         let tx = Transaction {
             id: String::from_str(&env, "tx"),
             merchant_id: merchant_id.clone(),
             beneficiary_id,
-            amount: amount.clone(),
+            amount,
             token,
             timestamp: env.ledger().timestamp(),
             purpose,
@@ -209,25 +206,19 @@ impl MerchantNetwork {
             is_settled: false,
         };
 
-        let tx_key = Symbol::new(&env, "merchant_transactions");
-        let mut tx_by_merchant: Map<String, Vec<Transaction>> = env
+        let tx_key = Symbol::new(&env, "merchant_txs");
+        let mut tx_map: Map<String, Vec<Transaction>> = env
             .storage()
             .instance()
             .get(&tx_key)
             .unwrap_or(Map::new(&env));
 
-        let mut txs = tx_by_merchant
-            .get(merchant_id.clone())
-            .unwrap_or(Vec::new(&env));
+        let mut txs = tx_map.get(merchant_id.clone()).unwrap_or(Vec::new(&env));
         txs.push_back(tx);
-        tx_by_merchant.set(merchant_id.clone(), txs);
-        env.storage().instance().set(&tx_key, &tx_by_merchant);
+        tx_map.set(merchant_id, txs);
+        env.storage().instance().set(&tx_key, &tx_map);
 
-        merchant_profile.current_month_volume = merchant_profile.current_month_volume.add(&amount);
-        merchants.set(merchant_id, merchant_profile);
-        env.storage().instance().set(&merchants_key, &merchants);
-
-        String::from_str(&env, "tx")
+        String::from_str(&env, "payment_processed")
     }
 
     pub fn get_merchant(env: Env, merchant_id: String) -> Option<Merchant> {
@@ -253,48 +244,39 @@ impl MerchantNetwork {
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
 
-        let mut nearby = Vec::new(&env);
+        let mut out = Vec::new(&env);
         for (_, merchant) in merchants.iter() {
-            if merchant.is_active {
-                let distance = Self::calculate_distance(
-                    latitude_e6,
-                    longitude_e6,
-                    merchant.location.latitude_e6,
-                    merchant.location.longitude_e6,
-                );
-                if distance <= radius_e6 {
-                    nearby.push_back(merchant);
-                }
+            let distance = Self::calculate_distance_e6(
+                latitude_e6,
+                longitude_e6,
+                merchant.location.latitude_e6,
+                merchant.location.longitude_e6,
+            );
+
+            if distance <= radius_e6 && merchant.is_active {
+                out.push_back(merchant);
             }
         }
-        nearby
-    }
 
-    fn calculate_distance(lat1_e6: i64, lon1_e6: i64, lat2_e6: i64, lon2_e6: i64) -> i64 {
-        let dlat = if lat2_e6 >= lat1_e6 {
-            lat2_e6 - lat1_e6
-        } else {
-            lat1_e6 - lat2_e6
-        };
-        let dlon = if lon2_e6 >= lon1_e6 {
-            lon2_e6 - lon1_e6
-        } else {
-            lon1_e6 - lon2_e6
-        };
-        dlat + dlon
+        out
     }
 
     pub fn get_merchant_transactions(env: Env, merchant_id: String) -> Vec<Transaction> {
-        let tx_key = Symbol::new(&env, "merchant_transactions");
-        let tx_by_merchant: Map<String, Vec<Transaction>> = env
+        let tx_key = Symbol::new(&env, "merchant_txs");
+        let tx_map: Map<String, Vec<Transaction>> = env
             .storage()
             .instance()
             .get(&tx_key)
             .unwrap_or(Map::new(&env));
-        tx_by_merchant.get(merchant_id).unwrap_or(Vec::new(&env))
+        tx_map.get(merchant_id).unwrap_or(Vec::new(&env))
     }
 
-    pub fn update_reputation(env: Env, admin: Address, merchant_id: String, feedback_score: i32) {
+    pub fn update_reputation(
+        env: Env,
+        admin: Address,
+        merchant_id: String,
+        feedback_score: i32,
+    ) {
         admin.require_auth();
 
         let merchants_key = Symbol::new(&env, "merchants");
@@ -305,35 +287,40 @@ impl MerchantNetwork {
             .unwrap_or(Map::new(&env));
 
         if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
-            let new_score = (merchant.reputation_score as i32 + feedback_score)
-                .max(0)
-                .min(100);
-            merchant.reputation_score = new_score as u32;
+            if feedback_score >= 0 {
+                merchant.reputation_score =
+                    (merchant.reputation_score + feedback_score as u32).min(100);
+            } else {
+                merchant.reputation_score = merchant
+                    .reputation_score
+                    .saturating_sub((-feedback_score) as u32);
+            }
+
             merchants.set(merchant_id, merchant);
             env.storage().instance().set(&merchants_key, &merchants);
         }
     }
 
-    pub fn reset_monthly_volumes(env: Env) {
-        let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env
-            .storage()
-            .instance()
-            .get(&merchants_key)
-            .unwrap_or(Map::new(&env));
-
-        for (merchant_id, mut merchant) in merchants.iter() {
-            merchant.current_month_volume = U256::from_u32(&env, 0);
-            merchants.set(merchant_id, merchant);
-        }
-        env.storage().instance().set(&merchants_key, &merchants);
-    }
-
     pub fn get_verification_queue(env: Env) -> Vec<String> {
-        let queue_key = Symbol::new(&env, "verification_queue");
+        let queue_key = Symbol::new(&env, "merchant_queue");
         env.storage()
             .instance()
             .get(&queue_key)
             .unwrap_or(Vec::new(&env))
+    }
+
+    fn token_allowed(tokens: &Vec<String>, token: &String) -> bool {
+        for allowed in tokens.iter() {
+            if allowed == token.clone() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn calculate_distance_e6(lat1: i64, lon1: i64, lat2: i64, lon2: i64) -> i64 {
+        let dlat = if lat2 >= lat1 { lat2 - lat1 } else { lat1 - lat2 };
+        let dlon = if lon2 >= lon1 { lon2 - lon1 } else { lon1 - lon2 };
+        dlat + dlon
     }
 }

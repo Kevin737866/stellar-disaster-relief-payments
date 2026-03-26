@@ -304,3 +304,79 @@ export interface SupplyChainRequest {
   temperatureRequirements?: TemperatureRequirements;
   specialHandling: string[];
 }
+
+// Biometric-Free Identity System Types
+
+export interface BeneficiaryIdentity {
+  idHash: string; // Pseudonymous identifier (never real name)
+  creationFactors: IdentityFactor[];
+  recoveryContacts: string[]; // Stellar addresses
+  trustScore: number; // 0-100 based on behavioral patterns
+  campLocation: string;
+  createdAt: number;
+  lastVerified: number;
+  walletAddress: string;
+  isActive: boolean;
+  duressPinHash?: string; // Fake PIN for safety
+  geofenceZones: GeofenceZone[];
+  temporaryCredentials: TemporaryCredential[];
+}
+
+export interface IdentityFactor {
+  factorType: 'knowledge' | 'possession' | 'social' | 'behavioral' | 'institutional';
+  value: string; // Actual value (hashed before storage)
+  factorHash: string; // Hashed value for privacy
+  weight: number; // Importance weight (0-100)
+  verifiedAt: number;
+  verifier: string | null; // NGO worker or community member address
+}
+
+export interface TemporaryCredential {
+  credentialHash: string;
+  createdAt: number;
+  expiresAt: number;
+  deviceFingerprint: string; // For shared device tracking
+  isActive: boolean;
+}
+
+export interface GeofenceZone {
+  zoneName: string;
+  latitude: number; // Scaled by 1e6 for precision
+  longitude: number;
+  radiusMeters: number;
+  isSafe: boolean;
+}
+
+export interface SocialRecoveryRequest {
+  beneficiaryIdHash: string;
+  newWallet: string;
+  approvals: string[]; // Addresses of approving contacts
+  requiredApprovals: number; // Threshold (e.g., 3 of 5)
+  createdAt: number;
+  expiresAt: number;
+  isCompleted: boolean;
+}
+
+export interface OfflineAuthCode {
+  type: 'qr' | 'paper' | 'sms';
+  code: string;
+  idHash: string;
+  expiresAt: number;
+  signature: string;
+  checksum?: string; // For paper codes
+}
+
+export interface BluetoothMeshNode {
+  nodeId: string;
+  publicKey: string;
+  lastSeen: number;
+  trustScore: number;
+  location: string;
+}
+
+export interface PaperBackupCode {
+  code: string;
+  checksum: string;
+  createdAt: number;
+  instructions: string;
+}
