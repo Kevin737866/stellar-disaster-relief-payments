@@ -6,6 +6,8 @@ export { OfflineAuthClient } from './offlineAuth';
 export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
+export { ConditionalTransfersClient } from './conditionalTransfers';
+export { BeneficiaryApp } from './beneficiaryApp';
 
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
