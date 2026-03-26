@@ -1,32 +1,23 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Map, String, Vec};
 
 #[contract]
 pub struct AntiFraud;
 
+#[contracttype]
 #[derive(Clone)]
 pub struct FraudPattern {
     pub id: String,
-    pub pattern_type: String, // "duplicate_registration", "suspicious_transactions", "velocity_check"
-    pub severity: String, // "low", "medium", "high", "critical"
+    pub pattern_type: String,
+    pub severity: String,
     pub description: String,
     pub detected_at: u64,
-    pub entities_involved: Vec<String>, // beneficiary IDs, merchant IDs, etc.
-    pub confidence_score: u32, // 0-100
-    pub status: String, // "detected", "investigating", "resolved", "false_positive"
+    pub entities_involved: Vec<String>,
+    pub confidence_score: u32,
+    pub status: String,
     pub resolution_notes: String,
 }
 
-#[derive(Clone)]
-pub struct RiskProfile {
-    pub entity_id: String,
-    pub entity_type: String, // "beneficiary", "merchant", "donor"
-    pub risk_score: u32, // 0-100
-    pub last_updated: u64,
-    pub risk_factors: Vec<RiskFactor>,
-    pub flagged_transactions: u32,
-    pub total_transactions: u32,
-}
-
+#[contracttype]
 #[derive(Clone)]
 pub struct RiskFactor {
     pub factor_type: String,
@@ -35,24 +26,44 @@ pub struct RiskFactor {
     pub detected_at: u64,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct RiskProfile {
+    pub entity_id: String,
+    pub entity_type: String,
+    pub risk_score: u32,
+    pub last_updated: u64,
+    pub risk_factors: Vec<RiskFactor>,
+    pub flagged_transactions: u32,
+    pub total_transactions: u32,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct SuspiciousTransaction {
     pub id: String,
     pub transaction_hash: String,
     pub beneficiary_id: String,
     pub merchant_id: String,
-    pub amount: U256,
+    pub amount: i128,
     pub timestamp: u64,
     pub risk_score: u32,
     pub alert_reasons: Vec<String>,
-    pub status: String, // "flagged", "reviewed", "cleared", "blocked"
+    pub status: String,
     pub reviewer: Option<Address>,
     pub review_notes: String,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub enum FraudKey {
+    RiskProfiles,
+    FraudAlerts,
+    SuspiciousTransactions,
+}
+
 #[contractimpl]
 impl AntiFraud {
-    /// Register a new beneficiary with fraud detection
     pub fn register_beneficiary_check(
         env: Env,
         beneficiary_id: String,
@@ -60,373 +71,176 @@ impl AntiFraud {
         location: String,
         device_fingerprint: String,
     ) -> (bool, String) {
-        // Check for duplicate registrations using various factors
-        let risk_score = Self::calculate_registration_risk(&env, &beneficiary_id, &verification_factors, &location, &device_fingerprint);
-        
-        if risk_score > 70 {
-            // High risk - flag for manual review
-            Self::create_fraud_alert(
-                &env,
-                "duplicate_registration",
-                "high",
-                &format!("High risk registration detected for beneficiary {}", beneficiary_id),
-                vec![beneficiary_id],
+        let mut risk_score = 0u32;
+
+        if verification_factors.len() < 2 {
+            risk_score += 30;
+        }
+        if location.len() == 0 {
+            risk_score += 20;
+        }
+        if device_fingerprint.len() < 10 {
+            risk_score += 30;
+        }
+
+        let mut profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
+            .get(&FraudKey::RiskProfiles)
+            .unwrap_or(Map::new(&env));
+
+        profiles.set(
+            beneficiary_id.clone(),
+            RiskProfile {
+                entity_id: beneficiary_id.clone(),
+                entity_type: String::from_str(&env, "beneficiary"),
                 risk_score,
-            );
+                last_updated: env.ledger().timestamp(),
+                risk_factors: Vec::new(&env),
+                flagged_transactions: 0,
+                total_transactions: 0,
+            },
+        );
+        env.storage().instance().set(&FraudKey::RiskProfiles, &profiles);
+
+        if risk_score > 70 {
+            let mut alerts: Vec<FraudPattern> = env
+                .storage()
+                .instance()
+                .get(&FraudKey::FraudAlerts)
+                .unwrap_or(Vec::new(&env));
+
+            let mut entities = Vec::new(&env);
+            entities.push_back(beneficiary_id);
+
+            alerts.push_back(FraudPattern {
+                id: String::from_str(&env, "alert"),
+                pattern_type: String::from_str(&env, "duplicate_registration"),
+                severity: String::from_str(&env, "high"),
+                description: String::from_str(&env, "High risk registration detected"),
+                detected_at: env.ledger().timestamp(),
+                entities_involved: entities,
+                confidence_score: risk_score,
+                status: String::from_str(&env, "detected"),
+                resolution_notes: String::from_str(&env, ""),
+            });
+            env.storage().instance().set(&FraudKey::FraudAlerts, &alerts);
+
             return (false, String::from_str(&env, "Registration flagged for review"));
         }
-        
-        // Create risk profile
-        let risk_profile = RiskProfile {
-            entity_id: beneficiary_id,
-            entity_type: String::from_str(&env, "beneficiary"),
-            risk_score,
-            last_updated: env.ledger().timestamp(),
-            risk_factors: Vec::new(&env),
-            flagged_transactions: 0,
-            total_transactions: 0,
-        };
-        
-        let profiles_key = Symbol::new(&env, "risk_profiles");
-        let mut profiles: Map<String, RiskProfile> = env.storage().instance()
-            .get(&profiles_key)
-            .unwrap_or(Map::new(&env));
-        
-        profiles.set(beneficiary_id, risk_profile);
-        env.storage().instance().set(&profiles_key, &profiles);
-        
+
         (true, String::from_str(&env, "Registration approved"))
     }
 
-    /// Calculate registration risk score
-    fn calculate_registration_risk(
-        env: &Env,
-        beneficiary_id: &String,
-        verification_factors: &[String],
-        location: &String,
-        device_fingerprint: &String,
-    ) -> u32 {
-        let mut risk_score = 0u32;
-        
-        // Check for similar verification factors (potential duplicate)
-        let profiles_key = Symbol::new(env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
-            .get(&profiles_key)
-            .unwrap_or(Map::new(env));
-        
-        for (_, existing_profile) in profiles.iter() {
-            if existing_profile.entity_type == String::from_str(env, "beneficiary") {
-                // Simple similarity check (in production, use more sophisticated algorithms)
-                if Self::calculate_similarity(verification_factors, &[]) > 80 {
-                    risk_score += 40;
-                }
-                
-                // Check location clustering (multiple registrations from same location)
-                if Self::location_similarity(location, &existing_profile.entity_id) > 90 {
-                    risk_score += 20;
-                }
-            }
-        }
-        
-        // Check device fingerprint patterns
-        if Self::is_suspicious_device(device_fingerprint) {
-            risk_score += 30;
-        }
-        
-        risk_score.min(100)
-    }
-
-    /// Simple similarity calculation (placeholder for more sophisticated ML)
-    fn calculate_similarity(factors1: &[String], factors2: &[String]) -> u32 {
-        if factors2.is_empty() {
-            return 0;
-        }
-        
-        let mut matches = 0;
-        for factor1 in factors1.iter() {
-            for factor2 in factors2.iter() {
-                if factor1 == factor2 {
-                    matches += 1;
-                    break;
-                }
-            }
-        }
-        
-        (matches * 100) / factors1.len() as u32
-    }
-
-    /// Location similarity check
-    fn location_similarity(location1: &str, entity_id: &str) -> u32 {
-        // Simple string similarity (in production, use geospatial analysis)
-        if location1.len() > 0 {
-            50 // Placeholder
-        } else {
-            0
-        }
-    }
-
-    /// Check if device fingerprint is suspicious
-    fn is_suspicious_device(device_fingerprint: &str) -> bool {
-        // Check for known suspicious patterns
-        device_fingerprint.len() < 10 || device_fingerprint.contains("bot")
-    }
-
-    /// Monitor transaction for suspicious patterns
     pub fn monitor_transaction(
         env: Env,
         beneficiary_id: String,
         merchant_id: String,
-        amount: U256,
+        amount: i128,
         timestamp: u64,
         transaction_hash: String,
     ) -> (bool, Vec<String>) {
-        let mut risk_factors = Vec::new(&env);
+        let mut reasons = Vec::new(&env);
         let mut risk_score = 0u32;
-        
-        // Velocity check - too many transactions in short time
-        if Self::is_velocity_breach(&env, &beneficiary_id, timestamp) {
-            risk_factors.push_back(String::from_str(&env, "High transaction velocity"));
-            risk_score += 30;
+
+        if amount > 1_000_000 {
+            risk_score += 40;
+            reasons.push_back(String::from_str(&env, "Unusual transaction amount"));
         }
-        
-        // Amount anomaly - unusually large or small amounts
-        if Self::is_amount_anomaly(&env, &beneficiary_id, amount) {
-            risk_factors.push_back(String::from_str(&env, "Unusual transaction amount"));
-            risk_score += 25;
-        }
-        
-        // Merchant-beneficiary pattern analysis
-        if Self::is_suspicious_pattern(&env, &beneficiary_id, &merchant_id) {
-            risk_factors.push_back(String::from_str(&env, "Suspicious merchant interaction pattern"));
-            risk_score += 35;
-        }
-        
-        // Geographic anomaly
-        if Self::is_geographic_anomaly(&env, &beneficiary_id, timestamp) {
-            risk_factors.push_back(String::from_str(&env, "Geographic location anomaly"));
+
+        if merchant_id.len() == 0 {
             risk_score += 20;
+            reasons.push_back(String::from_str(&env, "Invalid merchant"));
         }
-        
-        // Update risk profile
-        Self::update_risk_profile(&env, &beneficiary_id, risk_score, risk_factors.len() as u32);
-        
+
         if risk_score > 60 {
-            // Create suspicious transaction record
-            let suspicious_tx = SuspiciousTransaction {
-                id: format!("susp_{}", transaction_hash),
-                transaction_hash,
-                beneficiary_id: beneficiary_id.clone(),
-                merchant_id,
-                amount,
-                timestamp,
-                risk_score,
-                alert_reasons: risk_factors.clone(),
-                status: String::from_str(&env, "flagged"),
-                reviewer: None,
-                review_notes: String::from_str(&env, ""),
-            };
-            
-            let suspicious_key = Symbol::new(&env, "suspicious_transactions");
-            let mut suspicious: Map<String, SuspiciousTransaction> = env.storage().instance()
-                .get(&suspicious_key)
+            let mut suspicious: Map<String, SuspiciousTransaction> = env
+                .storage()
+                .instance()
+                .get(&FraudKey::SuspiciousTransactions)
                 .unwrap_or(Map::new(&env));
-            
-            suspicious.set(suspicious_tx.id.clone(), suspicious_tx);
-            env.storage().instance().set(&suspicious_key, &suspicious);
-            
-            return (false, risk_factors);
+
+            suspicious.set(
+                transaction_hash.clone(),
+                SuspiciousTransaction {
+                    id: String::from_str(&env, "suspicious"),
+                    transaction_hash,
+                    beneficiary_id,
+                    merchant_id,
+                    amount,
+                    timestamp,
+                    risk_score,
+                    alert_reasons: reasons.clone(),
+                    status: String::from_str(&env, "flagged"),
+                    reviewer: None,
+                    review_notes: String::from_str(&env, ""),
+                },
+            );
+            env.storage()
+                .instance()
+                .set(&FraudKey::SuspiciousTransactions, &suspicious);
+
+            return (false, reasons);
         }
-        
-        (true, risk_factors)
+
+        (true, reasons)
     }
 
-    /// Check for velocity breaches
-    fn is_velocity_breach(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
-        // Check if more than 10 transactions in last hour
-        let transactions_key = Symbol::new(env, "transaction_history");
-        let transactions: Map<String, (u64, U256)> = env.storage().instance()
-            .get(&transactions_key)
-            .unwrap_or(Map::new(env));
-        
-        let mut recent_count = 0;
-        for (_, (tx_timestamp, _)) in transactions.iter() {
-            if timestamp - tx_timestamp < 3600 && tx_timestamp <= timestamp {
-                recent_count += 1;
-            }
-        }
-        
-        recent_count > 10
-    }
-
-    /// Check for amount anomalies
-    fn is_amount_anomaly(env: &Env, beneficiary_id: &String, amount: U256) -> bool {
-        // Check if amount is significantly different from average
-        let transactions_key = Symbol::new(env, "transaction_history");
-        let transactions: Map<String, (u64, U256)> = env.storage().instance()
-            .get(&transactions_key)
-            .unwrap_or(Map::new(env));
-        
-        let mut total_amount = U256::from_u64(0);
-        let mut count = 0;
-        
-        for (_, (_, tx_amount)) in transactions.iter() {
-            total_amount += tx_amount;
-            count += 1;
-        }
-        
-        if count == 0 {
-            return false;
-        }
-        
-        let average = total_amount / U256::from_u64(count as u64);
-        
-        // Flag if amount is more than 3x average or less than 1/10 of average
-        amount > average * 3 || amount < average / 10
-    }
-
-    /// Check for suspicious merchant interaction patterns
-    fn is_suspicious_pattern(env: &Env, beneficiary_id: &String, merchant_id: &String) -> bool {
-        // Check if beneficiary always transacts with same merchant
-        let patterns_key = Symbol::new(env, "interaction_patterns");
-        let patterns: Map<String, Map<String, u32>> = env.storage().instance()
-            .get(&patterns_key)
-            .unwrap_or(Map::new(env));
-        
-        if let Some(beneficiary_patterns) = patterns.get(beneficiary_id) {
-            let mut total_interactions = 0;
-            let mut merchant_interactions = 0;
-            
-            for (merchant, count) in beneficiary_patterns.iter() {
-                total_interactions += count;
-                if merchant == merchant_id {
-                    merchant_interactions = count;
-                }
-            }
-            
-            if total_interactions > 0 {
-                let percentage = (merchant_interactions * 100) / total_interactions;
-                return percentage > 80; // More than 80% with same merchant
-            }
-        }
-        
-        false
-    }
-
-    /// Check for geographic anomalies
-    fn is_geographic_anomaly(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
-        // Check if transactions are happening in impossible locations
-        // This would require location data from transactions
-        false // Placeholder
-    }
-
-    /// Update risk profile
-    fn update_risk_profile(env: &Env, beneficiary_id: &String, risk_score: u32, flagged_count: u32) {
-        let profiles_key = Symbol::new(env, "risk_profiles");
-        let mut profiles: Map<String, RiskProfile> = env.storage().instance()
-            .get(&profiles_key)
-            .unwrap_or(Map::new(env));
-        
-        if let Some(mut profile) = profiles.get(beneficiary_id) {
-            profile.risk_score = (profile.risk_score + risk_score) / 2; // Average with previous
-            profile.last_updated = env.ledger().timestamp();
-            profile.flagged_transactions += flagged_count;
-            profiles.set(beneficiary_id, profile);
-            env.storage().instance().set(&profiles_key, &profiles);
-        }
-    }
-
-    /// Create fraud alert
-    fn create_fraud_alert(
-        env: &Env,
-        pattern_type: &str,
-        severity: &str,
-        description: &str,
-        entities: Vec<String>,
-        confidence_score: u32,
-    ) {
-        let alert_id = format!("alert_{}_{}", pattern_type, env.ledger().timestamp());
-        let alert = FraudPattern {
-            id: alert_id,
-            pattern_type: String::from_str(env, pattern_type),
-            severity: String::from_str(env, severity),
-            description: String::from_str(env, description),
-            detected_at: env.ledger().timestamp(),
-            entities_involved: entities,
-            confidence_score,
-            status: String::from_str(env, "detected"),
-            resolution_notes: String::from_str(env, ""),
-        };
-        
-        let alerts_key = Symbol::new(env, "fraud_alerts");
-        let mut alerts: Map<String, FraudPattern> = env.storage().instance()
-            .get(&alerts_key)
-            .unwrap_or(Map::new(env));
-        
-        alerts.set(alert.id.clone(), alert);
-        env.storage().instance().set(&alerts_key, &alerts);
-    }
-
-    /// Get risk profile for entity
     pub fn get_risk_profile(env: Env, entity_id: String) -> Option<RiskProfile> {
-        let profiles_key = Symbol::new(&env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
-            .get(&profiles_key)
+        let profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
+            .get(&FraudKey::RiskProfiles)
             .unwrap_or(Map::new(&env));
-        
         profiles.get(entity_id)
     }
 
-    /// Get fraud alerts
     pub fn get_fraud_alerts(env: Env) -> Vec<FraudPattern> {
-        let alerts_key = Symbol::new(&env, "fraud_alerts");
-        let alerts: Map<String, FraudPattern> = env.storage().instance()
-            .get(&alerts_key)
-            .unwrap_or(Map::new(&env));
-        
-        let mut result = Vec::new(&env);
-        for (_, alert) in alerts.iter() {
-            result.push_back(alert);
-        }
-        result
+        env.storage()
+            .instance()
+            .get(&FraudKey::FraudAlerts)
+            .unwrap_or(Vec::new(&env))
     }
 
-    /// Review suspicious transaction
     pub fn review_transaction(
         env: Env,
         reviewer: Address,
         transaction_id: String,
-        status: String, // "cleared", "blocked"
+        status: String,
         notes: String,
     ) {
         reviewer.require_auth();
-        
-        let suspicious_key = Symbol::new(&env, "suspicious_transactions");
-        let mut suspicious: Map<String, SuspiciousTransaction> = env.storage().instance()
-            .get(&suspicious_key)
+
+        let mut suspicious: Map<String, SuspiciousTransaction> = env
+            .storage()
+            .instance()
+            .get(&FraudKey::SuspiciousTransactions)
             .unwrap_or(Map::new(&env));
-        
-        if let Some(mut transaction) = suspicious.get(transaction_id.clone()) {
-            transaction.status = status;
-            transaction.reviewer = Some(reviewer);
-            transaction.review_notes = notes;
-            suspicious.set(transaction_id, transaction);
-            env.storage().instance().set(&suspicious_key, &suspicious);
+
+        if let Some(mut tx) = suspicious.get(transaction_id.clone()) {
+            tx.status = status;
+            tx.reviewer = Some(reviewer);
+            tx.review_notes = notes;
+            suspicious.set(transaction_id, tx);
+            env.storage()
+                .instance()
+                .set(&FraudKey::SuspiciousTransactions, &suspicious);
         }
     }
 
-    /// Get high-risk entities
     pub fn get_high_risk_entities(env: Env, threshold: u32) -> Vec<RiskProfile> {
-        let profiles_key = Symbol::new(&env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
-            .get(&profiles_key)
+        let profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
+            .get(&FraudKey::RiskProfiles)
             .unwrap_or(Map::new(&env));
-        
-        let mut high_risk = Vec::new(&env);
+
+        let mut out = Vec::new(&env);
         for (_, profile) in profiles.iter() {
             if profile.risk_score >= threshold {
-                high_risk.push_back(profile);
+                out.push_back(profile);
             }
         }
-        high_risk
+        out
     }
 }

@@ -1,0 +1,18 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Common typo directory
+taget/
+**/taget/
+
+# Node / TypeScript
+node_modules/
+dist/
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
