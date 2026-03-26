@@ -7,6 +7,10 @@ export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 
+// Export Emergency Funds SDK
+export { EmergencyFundsClient } from './emergencyFunds';
+export { DonorTransparencyClient } from './donorTransparency';
+
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
