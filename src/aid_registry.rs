@@ -696,5 +696,68 @@ impl AidRegistry {
         triggers.set(trigger_id, trigger);
         env.storage().instance().set(&triggers_key, &triggers);
     }
+
+    /// Transfer unused funds from one disaster fund to another
+    pub fn transfer_funds_between_disasters(
+        env: Env,
+        admin: Address,
+        source_fund_id: String,
+        destination_fund_id: String,
+        amount: U256,
+        reason: String,
+    ) {
+        admin.require_auth();
+        
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+        
+        // Get source fund
+        let mut source_fund = funds.get(source_fund_id.clone()).unwrap_or_panic_with(&env);
+        
+        // Get destination fund
+        let mut dest_fund = funds.get(destination_fund_id.clone()).unwrap_or_panic_with(&env);
+        
+        // Verify source fund is active
+        if !source_fund.is_active {
+            panic_with_error!(&env, "Source fund is not active");
+        }
+        
+        // Verify destination fund is active
+        if !dest_fund.is_active {
+            panic_with_error!(&env, "Destination fund is not active");
+        }
+        
+        // Verify sufficient available funds in source
+        let available = source_fund.total_amount - source_fund.released_amount - source_fund.reserved_for_recall;
+        if amount > available {
+            panic_with_error!(&env, "Insufficient available funds to transfer");
+        }
+        
+        // Perform transfer
+        source_fund.total_amount -= amount;
+        dest_fund.total_amount += amount;
+        
+        // Record transfer
+        let transfer_id = format!("transfer_{}_{}", source_fund_id, dest_fund_id);
+        let transfers_key = Symbol::new(&env, "fund_transfers");
+        let mut transfers: Map<String, (String, String, U256, u64, String)> = env.storage().instance()
+            .get(&transfers_key)
+            .unwrap_or(Map::new(&env));
+        
+        transfers.set(
+            transfer_id,
+            (source_fund_id.clone(), destination_fund_id.clone(), amount, env.ledger().timestamp(), reason),
+        );
+        env.storage().instance().set(&transfers_key, &transfers);
+        
+        // Update funds
+        funds.set(source_fund_id, source_fund);
+        funds.set(destination_fund_id, dest_fund);
+        env.storage().instance().set(&fund_key, &funds);
+        
+        log!(&env, "Transferred {} funds from {} to {}", amount, source_fund_id, destination_fund_id);
+    }
 }
 

@@ -642,4 +642,49 @@ export class EmergencyFundsClient {
       throw new Error(`Impact report generation failed: ${error.message}`);
     }
   }
+
+  /**
+   * Transfers unused funds from one disaster fund to another
+   * Enables reallocation of resources to more pressing needs
+   */
+  async transferFundsBetweenDisasters(
+    adminAddress: string,
+    sourceFundId: string,
+    destinationFundId: string,
+    amount: string,
+    reason: string
+  ): Promise<{ success: boolean; transactionHash: string; transferAmount: string }> {
+    try {
+      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'transfer_funds_between_disasters',
+            new Address(adminAddress),
+            sourceFundId,
+            destinationFundId,
+            amount,
+            reason
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      transaction.sign(this.signingKey);
+      const response = await this.server.submitTransaction(transaction);
+
+      return {
+        success: true,
+        transactionHash: response.hash,
+        transferAmount: amount,
+      };
+    } catch (error: any) {
+      throw new Error(`Fund transfer between disasters failed: ${error.message}`);
+    }
+  }
 }
