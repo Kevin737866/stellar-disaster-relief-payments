@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { TransferClient, ConditionalTransfer, SpendingRule, NetworkConfig, TransferTransaction } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 import { ExportButton, conditionalTransferFields, transferTransactionFields } from '../export';
 
 interface TransferCardProps {
   transferClient: TransferClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   creatorKey: string;
 }
 

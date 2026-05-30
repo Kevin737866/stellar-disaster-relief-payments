@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
+import { ExportButton, emergencyFundFields, disbursementFields } from '../export';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
@@ -372,7 +374,10 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
 
         {/* Active Funds List */}
         <div className="space-y-4">
-          <h2 className="text-xl font-semibold">Active Emergency Funds</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-xl font-semibold">Active Emergency Funds</h2>
+            <ExportButton rows={funds} fields={emergencyFundFields} filenamePrefix="emergency_funds" label="Export" />
+          </div>
           
           {loading ? (
             <div className="text-center py-4">Loading...</div>

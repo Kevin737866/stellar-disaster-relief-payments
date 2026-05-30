@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   registrarKey: string;
 }
 

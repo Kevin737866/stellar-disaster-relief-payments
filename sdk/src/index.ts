@@ -18,11 +18,35 @@ export { MerchantApp } from './merchantApp';
 // Export all types
 export * from './types';
 
-// Export network configurations
+// Export network configuration system
+export {
+  StellarNetworkConfig,
+  CustomNetworkInput,
+  ContractIds,
+  ValidationResult,
+  LoadNetworkConfigOptions,
+  ENV_VARS,
+  TESTNET_DEFAULTS,
+  MAINNET_DEFAULTS,
+  STANDALONE_DEFAULTS,
+  registerNetwork,
+  getNetwork,
+  listNetworks,
+  validateNetworkConfig,
+  assertValidNetworkConfig,
+  applyEnvOverrides,
+  loadNetworkConfig,
+  fromLegacyConfig,
+} from './networkConfig';
+
+// Legacy network config objects (backward-compatible)
+// For new code, prefer loadNetworkConfig() or TESTNET_DEFAULTS / MAINNET_DEFAULTS
 export const TESTNET_CONFIG = {
   network: 'testnet' as const,
   rpcUrl: 'https://soroban-testnet.stellar.org',
   horizonUrl: 'https://horizon-testnet.stellar.org',
+  networkPassphrase: 'Test SDF Network ; September 2015',
+  explorerUrl: 'https://stellar.expert/explorer/testnet',
   contractIds: {
     platform: 'CONTRACT_ID_HERE',
     aidRegistry: 'CONTRACT_ID_HERE',
@@ -38,6 +62,8 @@ export const MAINNET_CONFIG = {
   network: 'mainnet' as const,
   rpcUrl: 'https://soroban.stellar.org',
   horizonUrl: 'https://horizon.stellar.org',
+  networkPassphrase: 'Public Global Stellar Network ; September 2015',
+  explorerUrl: 'https://stellar.expert/explorer/public',
   contractIds: {
     platform: 'CONTRACT_ID_HERE',
     aidRegistry: 'CONTRACT_ID_HERE',

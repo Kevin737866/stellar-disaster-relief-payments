@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { MerchantClient, Merchant, Location, NetworkConfig, Transaction } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 import { ExportButton, merchantFields, merchantTransactionFields } from '../export';
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
