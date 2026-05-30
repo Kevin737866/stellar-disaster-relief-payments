@@ -11,6 +11,7 @@ const FUND_STATUS_TRIGGERED: &str = "triggered";
 const FUND_STATUS_RELEASED: &str = "released";
 const FUND_STATUS_RECALLED: &str = "recalled";
 const FUND_STATUS_EXPIRED: &str = "expired";
+const FUND_STATUS_PAUSED: &str = "paused";
 
 const SECONDS_PER_MONTH: u64 = 2_592_000; // 30 days
 
@@ -29,14 +30,17 @@ pub struct EmergencyFund {
     pub disaster_type: String,
     pub geographic_scope: String,
     pub is_active: bool,
+    pub is_paused: bool,
     pub release_triggers: Vec<Address>, // Multi-sig signers
     pub required_signatures: u32,
     pub auto_release_enabled: bool,
     pub recall_enabled: bool,
     pub recall_after_months: u32,
-    pub current_status: String, // "active", "triggered", "released", "recalled", "expired"
+    pub current_status: String, // "active", "triggered", "released", "recalled", "expired", "paused"
     pub fund_allocation: Vec<FundAllocation>,
     pub reserved_for_recall: U256,
+    pub paused_at: u64,
+    pub paused_by: Option<Address>,
 }
 
 #[derive(Clone)]
@@ -130,6 +134,7 @@ impl AidRegistry {
             disaster_type,
             geographic_scope,
             is_active: true,
+            is_paused: false,
             release_triggers: release_triggers.clone(),
             required_signatures,
             auto_release_enabled: false,
@@ -138,6 +143,8 @@ impl AidRegistry {
             current_status: String::from_str(&env, FUND_STATUS_ACTIVE),
             fund_allocation: Vec::new(&env),
             reserved_for_recall: U256::from_u64(0),
+            paused_at: 0,
+            paused_by: None,
         };
         
         // Store fund
@@ -203,6 +210,11 @@ impl AidRegistry {
         
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
+        }
+        
+        // Check if fund is paused
+        if fund.is_paused {
+            panic_with_error!(&env, "Fund disbursements are paused");
         }
         
         // Check if sufficient funds remain
@@ -411,6 +423,10 @@ impl AidRegistry {
         if !fund.is_active || fund.current_status != String::from_str(&env, FUND_STATUS_ACTIVE) {
             panic_with_error!(&env, "Fund is not active");
         }
+
+        if fund.is_paused {
+            panic_with_error!(&env, "Fund disbursements are paused");
+        }
         
         // Get trigger
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
@@ -489,6 +505,11 @@ impl AidRegistry {
         
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
+        }
+        
+        // Check if fund is paused
+        if fund.is_paused {
+            panic_with_error!(&env, "Fund disbursements are paused");
         }
         
         // Verify signatures (require each approver to authorize)
@@ -695,6 +716,82 @@ impl AidRegistry {
         
         triggers.set(trigger_id, trigger);
         env.storage().instance().set(&triggers_key, &triggers);
+    }
+
+    /// Pause disbursements for an emergency fund (admin only)
+    /// Blocks all new disbursements while preserving fund state
+    pub fn pause_fund(
+        env: Env,
+        admin: Address,
+        fund_id: String,
+    ) {
+        admin.require_auth();
+
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+
+        if !fund.is_active {
+            panic_with_error!(&env, "Fund is not active");
+        }
+
+        if fund.is_paused {
+            panic_with_error!(&env, "Fund is already paused");
+        }
+
+        fund.is_paused = true;
+        fund.paused_at = env.ledger().timestamp();
+        fund.paused_by = Some(admin);
+        fund.current_status = String::from_str(&env, FUND_STATUS_PAUSED);
+
+        funds.set(fund_id, fund);
+        env.storage().instance().set(&fund_key, &funds);
+    }
+
+    /// Resume disbursements for a paused emergency fund (admin only)
+    pub fn resume_fund(
+        env: Env,
+        admin: Address,
+        fund_id: String,
+    ) {
+        admin.require_auth();
+
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+
+        if !fund.is_active {
+            panic_with_error!(&env, "Fund is not active");
+        }
+
+        if !fund.is_paused {
+            panic_with_error!(&env, "Fund is not paused");
+        }
+
+        fund.is_paused = false;
+        fund.paused_at = 0;
+        fund.paused_by = None;
+        fund.current_status = String::from_str(&env, FUND_STATUS_ACTIVE);
+
+        funds.set(fund_id, fund);
+        env.storage().instance().set(&fund_key, &funds);
+    }
+
+    /// Check if a fund's disbursements are currently paused
+    pub fn is_fund_paused(env: Env, fund_id: String) -> bool {
+        let fund_key = Symbol::new(&env, "fund");
+        let funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+
+        let fund = funds.get(fund_id).unwrap_or_panic_with(&env);
+        fund.is_paused
     }
 }
 
