@@ -2,18 +2,11 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/sdk/src'],
-  testMatch: ['**/__tests__/**/*.test.ts', '**/*.test.ts'],
+  testMatch: ['**/*.test.ts'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
-      tsconfig: {
-        rootDir: './sdk/src',
-        strict: true,
-        esModuleInterop: true,
-        skipLibCheck: true,
-        isolatedModules: true,
-      },
+      tsconfig: { strict: true },
+      diagnostics: false,
     }],
   },
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
 };

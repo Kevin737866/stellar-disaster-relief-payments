@@ -118,9 +118,9 @@ impl AidRegistry {
         // Verify admin authorization
         admin.require_auth();
 
-        // Validate fund_id is not empty
+        // Validate fund_id is non-empty
         if fund_id.len() == 0 {
-            panic_with_error!(&env, "fund_id must not be empty");
+            panic_with_error!(&env, "fund_id cannot be empty");
         }
 
         // Validate total_amount is greater than zero

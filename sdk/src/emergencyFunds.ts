@@ -138,15 +138,15 @@ export class EmergencyFundsClient {
     requiredSignatures: number
   ): Promise<{ success: boolean; transactionHash: string; fundId: string }> {
     if (!fundId || fundId.trim().length === 0) {
-      throw new Error('fund_id must not be empty');
+      throw new Error('fund_id cannot be empty');
     }
-    const amount = BigInt(totalAmount);
-    if (amount <= 0n) {
+    if (!totalAmount || BigInt(totalAmount) <= 0n) {
       throw new Error('total_amount must be greater than zero');
     }
     if (expiresAt <= Date.now()) {
       throw new Error('expires_at must be a future timestamp');
     }
+
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
       const contract = new Contract(this.contractId);
