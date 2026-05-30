@@ -11,6 +11,7 @@ module.exports = {
         strict: true,
         esModuleInterop: true,
         skipLibCheck: true,
+        isolatedModules: true,
       },
     }],
   },
