@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
@@ -12,8 +15,10 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
   config,
   registrarKey
 }) => {
+  const { notify } = useNotifications();
   const [beneficiaries, setBeneficiaries] = useState<BeneficiaryProfile[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showRegistrationForm, setShowRegistrationForm] = useState(false);
   const [showVerificationForm, setShowVerificationForm] = useState(false);
   const [selectedBeneficiary, setSelectedBeneficiary] = useState<BeneficiaryProfile | null>(null);
@@ -55,11 +60,12 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
   const loadBeneficiaries = async () => {
     try {
       setLoading(true);
+      setError(null);
       // Load beneficiaries for a sample disaster
       const beneficiaries = await beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001');
       setBeneficiaries(beneficiaries);
     } catch (error) {
-      console.error('Failed to load beneficiaries:', error);
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -107,10 +113,10 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
         socialFactors: ''
       });
       loadBeneficiaries();
-      alert('Beneficiary registered successfully! Save your recovery codes.');
+      notify({ type: 'success', title: 'Beneficiary registered', message: 'Save the recovery codes shown below.' });
     } catch (error) {
       console.error('Failed to register beneficiary:', error);
-      alert('Failed to register beneficiary');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -137,9 +143,9 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       );
 
       if (verified) {
-        alert('Beneficiary verified successfully!');
+        notify({ type: 'success', title: 'Identity verified', message: `Beneficiary ${verificationForm.beneficiaryId} has been verified.` });
       } else {
-        alert('Verification failed. Please check the provided factors.');
+        setError('Verification failed. The provided factors did not match. Please check and try again.');
       }
 
       setShowVerificationForm(false);
@@ -151,7 +157,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       loadBeneficiaries();
     } catch (error) {
       console.error('Failed to verify beneficiary:', error);
-      alert('Failed to verify beneficiary');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -165,14 +171,14 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       const restored = await beneficiaryClient.restoreAccess(beneficiaryId, recoveryCode, newWalletAddress);
       
       if (restored) {
-        alert('Access restored successfully!');
+        notify({ type: 'success', title: 'Access restored', message: 'The wallet address has been updated.' });
         loadBeneficiaries();
       } else {
-        alert('Failed to restore access. Check recovery code.');
+        setError('Failed to restore access. Check the recovery code and try again.');
       }
     } catch (error) {
       console.error('Failed to restore access:', error);
-      alert('Failed to restore access');
+      setError(friendlyError(error));
     }
   };
 
@@ -248,6 +254,8 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
             USSD Demo
           </button>
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
 
         {/* Registration Form */}
         {showRegistrationForm && (

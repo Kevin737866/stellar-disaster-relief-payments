@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { MerchantClient, Merchant, Location, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
@@ -12,13 +15,17 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   config,
   adminKey
 }) => {
+  const { notify } = useNotifications();
   const [merchants, setMerchants] = useState<Merchant[]>([]);
   const [verificationQueue, setVerificationQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showOnboardingForm, setShowOnboardingForm] = useState(false);
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 40.7128, lng: -74.0060 }); // NYC default
   const [searchRadius, setSearchRadius] = useState(10); // km
+  const [confirmReject, setConfirmReject] = useState<string | null>(null); // merchantId
+  const [confirmBatchApprove, setConfirmBatchApprove] = useState(false);
 
   // Onboarding form state
   const [onboardingForm, setOnboardingForm] = useState({
@@ -50,6 +57,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const loadMerchants = async () => {
     try {
       setLoading(true);
+      setError(null);
       const nearbyMerchants = await merchantClient.findMerchantsByLocation(
         mapCenter.lat,
         mapCenter.lng,
@@ -57,7 +65,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
       );
       setMerchants(nearbyMerchants);
     } catch (error) {
-      console.error('Failed to load merchants:', error);
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -68,7 +76,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
       const queue = await merchantClient.getVerificationQueue();
       setVerificationQueue(queue);
     } catch (error) {
-      console.error('Failed to load verification queue:', error);
+      setError(friendlyError(error));
     }
   };
 
@@ -122,10 +130,10 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
         }
       });
       loadVerificationQueue();
-      alert('Merchant registered successfully! Awaiting verification.');
+      notify({ type: 'success', title: 'Merchant registered', message: `${onboardingForm.name} is awaiting verification.` });
     } catch (error) {
       console.error('Failed to onboard merchant:', error);
-      alert('Failed to onboard merchant');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -134,13 +142,18 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const handleVerifyMerchant = async (merchantId: string, approved: boolean) => {
     try {
       setLoading(true);
+      setError(null);
       await merchantClient.verifyMerchant(adminKey, merchantId, approved, '');
       loadVerificationQueue();
       loadMerchants();
-      alert(`Merchant ${approved ? 'approved' : 'rejected'} successfully`);
+      notify({
+        type: approved ? 'success' : 'info',
+        title: approved ? 'Merchant approved' : 'Merchant rejected',
+        message: `${merchantId} has been ${approved ? 'approved' : 'rejected'}.`,
+      });
     } catch (error) {
       console.error('Failed to verify merchant:', error);
-      alert('Failed to verify merchant');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -149,6 +162,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const handleBatchVerify = async (approved: boolean) => {
     try {
       setLoading(true);
+      setError(null);
       const results = await merchantClient.batchVerifyMerchants(
         adminKey,
         verificationQueue,
@@ -157,10 +171,10 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
       );
       loadVerificationQueue();
       loadMerchants();
-      alert(`Batch verification completed: ${results.join(', ')}`);
+      notify({ type: 'success', title: 'Batch verification complete', message: `${results.length} merchants processed.` });
     } catch (error) {
       console.error('Failed to batch verify:', error);
-      alert('Failed to batch verify merchants');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -210,7 +224,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           </button>
           {verificationQueue.length > 0 && (
             <button
-              onClick={() => handleBatchVerify(true)}
+              onClick={() => setConfirmBatchApprove(true)}
               disabled={loading}
               className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700"
             >
@@ -218,6 +232,28 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
             </button>
           )}
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmBatchApprove}
+          title={`Approve all ${verificationQueue.length} merchants?`}
+          message="This will verify all merchants in the queue at once. Each approval is permanent."
+          confirmLabel="Approve all"
+          variant="warning"
+          onConfirm={() => { setConfirmBatchApprove(false); handleBatchVerify(true); }}
+          onCancel={() => setConfirmBatchApprove(false)}
+        />
+
+        <ConfirmDialog
+          isOpen={confirmReject !== null}
+          title="Reject this merchant?"
+          message={`Rejecting "${confirmReject}" is permanent. They will need to re-apply to join the network.`}
+          confirmLabel="Yes, reject"
+          variant="danger"
+          onConfirm={() => { const id = confirmReject!; setConfirmReject(null); handleVerifyMerchant(id, false); }}
+          onCancel={() => setConfirmReject(null)}
+        />
 
         {/* Onboarding Form */}
         {showOnboardingForm && (
@@ -457,7 +493,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                       Approve
                     </button>
                     <button
-                      onClick={() => handleVerifyMerchant(merchantId, false)}
+                      onClick={() => setConfirmReject(merchantId)}
                       className="bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600"
                     >
                       Reject

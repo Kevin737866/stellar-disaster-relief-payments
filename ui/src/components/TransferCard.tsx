@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { TransferClient, ConditionalTransfer, SpendingRule, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 
 interface TransferCardProps {
   transferClient: TransferClient;
@@ -12,11 +15,15 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   config,
   creatorKey
 }) => {
+  const { notify } = useNotifications();
   const [transfers, setTransfers] = useState<ConditionalTransfer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showSpendForm, setShowSpendForm] = useState(false);
   const [selectedTransfer, setSelectedTransfer] = useState<ConditionalTransfer | null>(null);
+  const [confirmRecall, setConfirmRecall] = useState<string | null>(null); // transferId
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
 
   // Create transfer form state
   const [createForm, setCreateForm] = useState({
@@ -51,11 +58,12 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   const loadTransfers = async () => {
     try {
       setLoading(true);
+      setError(null);
       // Load transfers for a sample beneficiary
       const beneficiaryTransfers = await transferClient.listBeneficiaryTransfers('sample_beneficiary_001');
       setTransfers(beneficiaryTransfers);
     } catch (error) {
-      console.error('Failed to load transfers:', error);
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -109,10 +117,10 @@ export const TransferCard: React.FC<TransferCardProps> = ({
         ]
       });
       loadTransfers();
-      alert('Conditional transfer created successfully!');
+      notify({ type: 'success', title: 'Transfer created', message: `Conditional transfer ${createForm.transferId} is ready.` });
     } catch (error) {
       console.error('Failed to create transfer:', error);
-      alert('Failed to create transfer');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -133,7 +141,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
       );
 
       if (success) {
-        alert('Payment processed successfully!');
+        notify({ type: 'success', title: 'Payment processed', message: 'The transaction was accepted.' });
         setShowSpendForm(false);
         setSpendForm({
           transferId: '',
@@ -145,11 +153,11 @@ export const TransferCard: React.FC<TransferCardProps> = ({
         });
         loadTransfers();
       } else {
-        alert('Payment rejected by spending rules');
+        setError('Payment was rejected by the spending rules. Check the category, amount, or location.');
       }
     } catch (error) {
       console.error('Failed to process payment:', error);
-      alert('Failed to process payment');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -158,12 +166,13 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   const handleRecallFunds = async (transferId: string) => {
     try {
       setLoading(true);
+      setError(null);
       const result = await transferClient.recallFunds(creatorKey, transferId);
-      alert(result);
+      notify({ type: 'success', title: 'Funds recalled', message: result });
       loadTransfers();
     } catch (error) {
       console.error('Failed to recall funds:', error);
-      alert('Failed to recall funds');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -175,12 +184,13 @@ export const TransferCard: React.FC<TransferCardProps> = ({
       if (!newExpiry) return;
 
       setLoading(true);
+      setError(null);
       await transferClient.extendExpiry(creatorKey, transferId, new Date(newExpiry).getTime());
-      alert('Transfer expiry extended successfully!');
+      notify({ type: 'success', title: 'Expiry extended', message: `Transfer ${transferId} extended to ${newExpiry}.` });
       loadTransfers();
     } catch (error) {
       console.error('Failed to extend expiry:', error);
-      alert('Failed to extend expiry');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -234,13 +244,35 @@ export const TransferCard: React.FC<TransferCardProps> = ({
             Process Payment
           </button>
           <button
-            onClick={() => transferClient.cleanupExpiredTransfers()}
+            onClick={() => setConfirmCleanup(true)}
             disabled={loading}
             className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
           >
             Cleanup Expired
           </button>
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmCleanup}
+          title="Clean up expired transfers?"
+          message="This will permanently remove all expired conditional transfers. Unspent funds will be returned."
+          confirmLabel="Yes, clean up"
+          variant="danger"
+          onConfirm={() => { setConfirmCleanup(false); transferClient.cleanupExpiredTransfers(); loadTransfers(); }}
+          onCancel={() => setConfirmCleanup(false)}
+        />
+
+        <ConfirmDialog
+          isOpen={confirmRecall !== null}
+          title="Recall funds?"
+          message={`This will return all unspent funds from transfer "${confirmRecall}" to the creator. This cannot be undone.`}
+          confirmLabel="Yes, recall"
+          variant="danger"
+          onConfirm={() => { const id = confirmRecall!; setConfirmRecall(null); handleRecallFunds(id); }}
+          onCancel={() => setConfirmRecall(null)}
+        />
 
         {/* Create Transfer Form */}
         {showCreateForm && (
@@ -559,7 +591,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                         </button>
                         {Date.now() > transfer.expiresAt && (
                           <button
-                            onClick={() => handleRecallFunds(transfer.id)}
+                            onClick={() => setConfirmRecall(transfer.id)}
                             className="bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600"
                           >
                             Recall

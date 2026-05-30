@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
@@ -12,11 +15,14 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   config,
   adminKey
 }) => {
+  const { notify } = useNotifications();
   const [funds, setFunds] = useState<EmergencyFund[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showRapidForm, setShowRapidForm] = useState(false);
   const [selectedFund, setSelectedFund] = useState<EmergencyFund | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
 
   // Form states
   const [fundForm, setFundForm] = useState({
@@ -50,10 +56,11 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   const loadActiveFunds = async () => {
     try {
       setLoading(true);
+      setError(null);
       const activeFunds = await aidClient.listActiveFunds();
       setFunds(activeFunds);
     } catch (error) {
-      console.error('Failed to load funds:', error);
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -63,6 +70,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
     e.preventDefault();
     try {
       setLoading(true);
+      setError(null);
       await aidClient.deployEmergencyFund(
         adminKey,
         fundForm.fundId,
@@ -88,9 +96,10 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         requiredSignatures: '1'
       });
       loadActiveFunds();
+      notify({ type: 'success', title: 'Emergency fund created', message: `Fund "${fundForm.name}" is now active.` });
     } catch (error) {
       console.error('Failed to create fund:', error);
-      alert('Failed to create emergency fund');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -118,10 +127,10 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         categories: rapidForm.categories
       });
       loadActiveFunds();
-      alert(`Created ${fundIds.length} emergency funds for rapid response`);
+      notify({ type: 'success', title: 'Rapid response deployed', message: `${fundIds.length} emergency funds created.` });
     } catch (error) {
       console.error('Failed to deploy rapid response:', error);
-      alert('Failed to deploy rapid response');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -134,19 +143,20 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         setSelectedFund(fund);
       }
     } catch (error) {
-      console.error('Failed to monitor fund:', error);
+      setError(friendlyError(error));
     }
   };
 
   const handleCleanupExpired = async () => {
     try {
       setLoading(true);
+      setError(null);
       await aidClient.cleanupExpiredFunds(adminKey);
       loadActiveFunds();
-      alert('Expired funds cleaned up successfully');
+      notify({ type: 'success', title: 'Cleanup complete', message: 'Expired funds have been removed.' });
     } catch (error) {
       console.error('Failed to cleanup expired funds:', error);
-      alert('Failed to cleanup expired funds');
+      setError(friendlyError(error));
     } finally {
       setLoading(false);
     }
@@ -189,13 +199,25 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
             Rapid Disaster Response
           </button>
           <button
-            onClick={handleCleanupExpired}
+            onClick={() => setConfirmCleanup(true)}
             disabled={loading}
             className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
           >
             Cleanup Expired
           </button>
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmCleanup}
+          title="Clean up expired funds?"
+          message="This will permanently remove all expired emergency funds. This action cannot be undone."
+          confirmLabel="Yes, clean up"
+          variant="danger"
+          onConfirm={() => { setConfirmCleanup(false); handleCleanupExpired(); }}
+          onCancel={() => setConfirmCleanup(false)}
+        />
 
         {/* Create Fund Form */}
         {showCreateForm && (
