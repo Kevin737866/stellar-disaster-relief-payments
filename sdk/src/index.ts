@@ -16,6 +16,10 @@ export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { MerchantNetworkSDK } from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
 
+// Export i18n (Internationalization) Support
+export { I18nManager, defaultI18n, ERROR_MESSAGES } from './i18n';
+export type { Language, ErrorMessage, LocalizedErrorMessages } from './i18n';
+
 // Export all types
 export * from './types';
 
