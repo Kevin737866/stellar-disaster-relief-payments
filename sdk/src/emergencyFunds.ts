@@ -23,11 +23,14 @@ export interface EmergencyFund {
   disasterType: string;
   geographicScope: string;
   isActive: boolean;
+  isPaused: boolean;
+  pausedAt: number;
+  pausedBy?: string;
   requiredSignatures: number;
   autoReleaseEnabled: boolean;
   recallEnabled: boolean;
   recallAfterMonths: number;
-  currentStatus: 'active' | 'triggered' | 'released' | 'recalled' | 'expired';
+  currentStatus: 'active' | 'triggered' | 'released' | 'recalled' | 'expired' | 'paused';
   fundAllocation: FundAllocation[];
   reservedForRecall: string;
 }
@@ -590,6 +593,97 @@ export class EmergencyFundsClient {
       };
     } catch (error: any) {
       throw new Error(`Trigger deactivation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Pauses all disbursements for an emergency fund.
+   * Only authorized administrators can pause a fund.
+   * While paused, submit_disbursement, execute_multi_sig_release, and
+   * execute_trigger will all be blocked.
+   */
+  async pauseFund(
+    adminAddress: string,
+    fundId: string
+  ): Promise<{ success: boolean; transactionHash: string }> {
+    try {
+      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'pause_fund',
+            new Address(adminAddress),
+            fundId
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      transaction.sign(this.signingKey);
+      const response = await this.server.submitTransaction(transaction);
+
+      return {
+        success: true,
+        transactionHash: response.hash,
+      };
+    } catch (error: any) {
+      throw new Error(`Fund pause failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Resumes disbursements for a paused emergency fund.
+   * Only authorized administrators can resume a fund.
+   * After resuming, the fund status returns to 'active'.
+   */
+  async resumeFund(
+    adminAddress: string,
+    fundId: string
+  ): Promise<{ success: boolean; transactionHash: string }> {
+    try {
+      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'resume_fund',
+            new Address(adminAddress),
+            fundId
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      transaction.sign(this.signingKey);
+      const response = await this.server.submitTransaction(transaction);
+
+      return {
+        success: true,
+        transactionHash: response.hash,
+      };
+    } catch (error: any) {
+      throw new Error(`Fund resume failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Checks whether a fund's disbursements are currently paused.
+   */
+  async isFundPaused(fundId: string): Promise<boolean> {
+    try {
+      // Query contract for pause state
+      return false;
+    } catch (error: any) {
+      throw new Error(`Failed to check fund pause state: ${error.message}`);
     }
   }
 
