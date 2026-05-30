@@ -99,6 +99,19 @@ pub struct SignatureApproval {
     pub approved_at: u64,
 }
 
+#[derive(Clone)]
+pub struct ExpiryNotification {
+    pub id: String,
+    pub fund_id: String,
+    pub fund_name: String,
+    pub expires_at: u64,
+    pub admin_address: Address,
+    pub notification_email: String,
+    pub registered_at: u64,
+    pub last_notified_at: u64,
+    pub is_acknowledged: bool,
+}
+
 #[contractimpl]
 impl AidRegistry {
     /// Create a new emergency fund pool
@@ -758,6 +771,132 @@ impl AidRegistry {
         env.storage().instance().set(&fund_key, &funds);
         
         log!(&env, "Transferred {} funds from {} to {}", amount, source_fund_id, destination_fund_id);
+    }
+
+    /// Register expiry notification for a fund
+    pub fn register_expiry_notification(
+        env: Env,
+        admin: Address,
+        fund_id: String,
+        fund_name: String,
+        expires_at: u64,
+        notification_email: String,
+    ) {
+        admin.require_auth();
+        
+        let notification_id = format!("notification_{}", fund_id);
+        let notification = ExpiryNotification {
+            id: notification_id.clone(),
+            fund_id: fund_id.clone(),
+            fund_name,
+            expires_at,
+            admin_address: admin.clone(),
+            notification_email,
+            registered_at: env.ledger().timestamp(),
+            last_notified_at: 0,
+            is_acknowledged: false,
+        };
+        
+        let notifications_key = Symbol::new(&env, "expiry_notifications");
+        let mut notifications: Map<String, ExpiryNotification> = env.storage().instance()
+            .get(&notifications_key)
+            .unwrap_or(Map::new(&env));
+        
+        notifications.set(notification_id, notification);
+        env.storage().instance().set(&notifications_key, &notifications);
+        
+        log!(&env, "Registered expiry notification for fund {}", fund_id);
+    }
+
+    /// Check for expiring funds and trigger notifications
+    pub fn check_expiring_funds(env: Env, admin: Address, notification_threshold_days: u64) -> Vec<String> {
+        admin.require_auth();
+        
+        let threshold_seconds = notification_threshold_days * 24 * 60 * 60;
+        let current_time = env.ledger().timestamp();
+        let mut expiring_fund_ids = Vec::new(&env);
+        
+        let fund_key = Symbol::new(&env, "fund");
+        let funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+        
+        for (fund_id, fund) in funds.iter() {
+            if fund.is_active && fund.expires_at > current_time {
+                let time_until_expiry = fund.expires_at - current_time;
+                
+                if time_until_expiry <= threshold_seconds {
+                    expiring_fund_ids.push_back(fund_id);
+                }
+            }
+        }
+        
+        expiring_fund_ids
+    }
+
+    /// Acknowledge expiry notification
+    pub fn acknowledge_notification(
+        env: Env,
+        admin: Address,
+        notification_id: String,
+    ) {
+        admin.require_auth();
+        
+        let notifications_key = Symbol::new(&env, "expiry_notifications");
+        let mut notifications: Map<String, ExpiryNotification> = env.storage().instance()
+            .get(&notifications_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut notification = notifications.get(notification_id.clone()).unwrap_or_panic_with(&env);
+        notification.is_acknowledged = true;
+        notification.last_notified_at = env.ledger().timestamp();
+        
+        notifications.set(notification_id, notification);
+        env.storage().instance().set(&notifications_key, &notifications);
+        
+        log!(&env, "Notification {} acknowledged", notification_id);
+    }
+
+    /// Disable notifications for a specific fund
+    pub fn disable_fund_notifications(
+        env: Env,
+        admin: Address,
+        fund_id: String,
+    ) {
+        admin.require_auth();
+        
+        let notification_id = format!("notification_{}", fund_id);
+        let notifications_key = Symbol::new(&env, "expiry_notifications");
+        let mut notifications: Map<String, ExpiryNotification> = env.storage().instance()
+            .get(&notifications_key)
+            .unwrap_or(Map::new(&env));
+        
+        // Remove the notification
+        if let Some(_) = notifications.get(notification_id.clone()) {
+            notifications.remove(notification_id);
+            env.storage().instance().set(&notifications_key, &notifications);
+            log!(&env, "Notifications disabled for fund {}", fund_id);
+        }
+    }
+
+    /// Update notification as sent
+    pub fn mark_notification_sent(
+        env: Env,
+        admin: Address,
+        notification_id: String,
+    ) {
+        admin.require_auth();
+        
+        let notifications_key = Symbol::new(&env, "expiry_notifications");
+        let mut notifications: Map<String, ExpiryNotification> = env.storage().instance()
+            .get(&notifications_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut notification = notifications.get(notification_id.clone()).unwrap_or_panic_with(&env);
+        notification.last_notified_at = env.ledger().timestamp();
+        
+        notifications.set(notification_id, notification);
+        env.storage().instance().set(&notifications_key, &notifications);
     }
 }
 
