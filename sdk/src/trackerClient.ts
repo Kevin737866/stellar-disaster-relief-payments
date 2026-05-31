@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
 import { 
   SupplyShipment, 
   Checkpoint, 
@@ -558,6 +559,41 @@ export class TrackerClient {
     };
   }
 
+
+  /**
+   * Build a multi-sig transaction for creating a shipment.
+   */
+  async buildMultiSigCreateShipment(
+    sourceKey: string,
+    request: any,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_shipment',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
+            nativeToScVal(request.unit), nativeToScVal(request.origin),
+            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
+            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(request.specialHandling),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
 import { 
   ConditionalTransfer, 
   SpendingRule, 
@@ -504,6 +505,43 @@ export class TransferClient {
     return results;
   }
 
+
+  /**
+   * Build a multi-sig transaction for creating a conditional transfer.
+   */
+  async buildMultiSigCreateTransfer(
+    sourceKey: string,
+    transferId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    expiresAt: number,
+    spendingRules: any[],
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_transfer',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(transferId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(expiresAt),
+            nativeToScVal(spendingRules), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

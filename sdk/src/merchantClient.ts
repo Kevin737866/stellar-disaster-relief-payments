@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
 import { 
   Merchant, 
   Transaction, 
@@ -452,6 +453,108 @@ export class MerchantClient {
     return results;
   }
 
+
+  /**
+   * Build a multi-sig transaction for registering a merchant.
+   */
+  async buildMultiSigRegisterMerchant(
+    sourceKey: string,
+    merchantId: string,
+    request: any,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_merchant',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(request.name),
+            nativeToScVal(request.businessType), nativeToScVal(request.location),
+            nativeToScVal(request.contactInfo), nativeToScVal(request.stellarTomlUrl),
+            nativeToScVal(request.acceptedTokens), nativeToScVal(request.dailyLimit),
+            nativeToScVal(request.monthlyLimit), nativeToScVal(request.verificationDocuments),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
+
+  /**
+   * Build a multi-sig transaction for approving a merchant.
+   */
+  async buildMultiSigApproveMerchant(
+    sourceKey: string,
+    merchantId: string,
+    approved: boolean,
+    notes: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'verify_merchant',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(approved), nativeToScVal(notes),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
+
+  /**
+   * Build a multi-sig transaction for processing a payment.
+   */
+  async buildMultiSigPayment(
+    merchantKey: string,
+    beneficiaryKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const merchantKeypair = Keypair.fromSecret(merchantKey);
+    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
+    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const tx = new TransactionBuilder(merchantAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantKeypair.publicKey()).toScVal(),
+            new Address(beneficiaryKeypair.publicKey()).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

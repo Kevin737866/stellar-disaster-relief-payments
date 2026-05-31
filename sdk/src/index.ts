@@ -7,6 +7,10 @@ export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 
+// Export Multi-Sig
+export { MultiSigManager } from './multiSig';
+export type { MultiSigState, MultiSigStatus, MultiSigProgress } from './multiSig';
+
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';

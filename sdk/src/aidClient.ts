@@ -14,6 +14,7 @@ import {
   DeploymentOptions,
   NetworkConfig 
 } from './types';
+import { MultiSigManager } from './multiSig';
 
 export class AidClient {
   private server: Server;
@@ -333,6 +334,81 @@ export class AidClient {
       lastDisbursement,
       beneficiariesReached: beneficiaries.size
     };
+  }
+
+  /**
+   * Build a multi-sig transaction for deploying an emergency fund.
+   * Returns a MultiSigManager — call addSignature() for each signer, then submit().
+   */
+  async buildMultiSigDeployFund(
+    sourceKey: string,
+    fundId: string,
+    name: string,
+    description: string,
+    totalAmount: string,
+    disasterType: string,
+    geographicScope: string,
+    expiresAt: number,
+    releaseTriggers: string[],
+    requiredSignatures: number,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_fund',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(fundId), nativeToScVal(name), nativeToScVal(description),
+            nativeToScVal(totalAmount), nativeToScVal(disasterType),
+            nativeToScVal(geographicScope), nativeToScVal(expiresAt),
+            nativeToScVal(releaseTriggers), nativeToScVal(requiredSignatures),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
+
+  /**
+   * Build a multi-sig transaction for triggering a disbursement.
+   */
+  async buildMultiSigDisbursement(
+    sourceKey: string,
+    fundId: string,
+    beneficiary: string,
+    amount: string,
+    purpose: string,
+    approvers: string[],
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'submit_disbursement',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(fundId), nativeToScVal(beneficiary),
+            nativeToScVal(amount), nativeToScVal(purpose), nativeToScVal(approvers),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
   }
 
   private getNetworkPassphrase(): string {
