@@ -380,3 +380,41 @@ export interface PaperBackupCode {
   createdAt: number;
   instructions: string;
 }
+
+// Contract Upgrade Types
+
+/** Identifies which deployed contract to upgrade. */
+export type ContractTarget =
+  | 'platform'
+  | 'aidRegistry'
+  | 'beneficiaryManager'
+  | 'merchantNetwork'
+  | 'cashTransfer'
+  | 'supplyChainTracker'
+  | 'antiFraud';
+
+/** Input required to perform a contract upgrade. */
+export interface ContractUpgradeRequest {
+  /** Which contract to upgrade. */
+  target: ContractTarget;
+  /**
+   * New WASM hash (hex or base64) that has already been uploaded to the
+   * Stellar network via `uploadContractWasm`.  The upgrade transaction will
+   * reference this hash rather than re-uploading the binary.
+   */
+  newWasmHash: string;
+  /** Secret key of the account authorised to perform the upgrade. */
+  adminKey: string;
+}
+
+/** Result returned after a successful upgrade submission. */
+export interface ContractUpgradeResult {
+  /** The contract identifier that was upgraded (unchanged after upgrade). */
+  contractId: string;
+  /** Stellar transaction hash of the upgrade transaction. */
+  transactionHash: string;
+  /** Terminal status reported by the network. */
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  /** Ledger number at which the upgrade was confirmed (SUCCESS only). */
+  ledger?: number;
+}

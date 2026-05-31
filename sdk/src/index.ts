@@ -1,5 +1,7 @@
 // Export all clients
 export { AidClient } from './aidClient';
+export { ContractUpgradeClient } from './contractUpgradeClient';
+export type { ContractTarget, ContractUpgradeRequest, ContractUpgradeResult } from './types';
 export { TransactionPoller } from './transactionPoller';
 export type { PollOptions, TransactionPollResult } from './transactionPoller';
 export { BeneficiaryClient } from './beneficiaryClient';
