@@ -213,14 +213,14 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Conditional Cash Transfers</h1>
+    <div className="max-w-6xl mx-auto p-4 sm:p-6">
+      <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Conditional Cash Transfers</h1>
         <p className="text-gray-600 mb-6">
           Conditional cash transfers with spending rules and expiry management
         </p>
 
-        <div className="flex space-x-4 mb-6">
+        <div className="flex flex-wrap gap-2 mb-6">
           <button
             onClick={() => setShowCreateForm(!showCreateForm)}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
@@ -247,7 +247,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
           <div className="bg-blue-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Create Conditional Transfer</h2>
             <form onSubmit={handleCreateTransfer} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Transfer ID"
@@ -266,7 +266,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="number"
                   placeholder="Amount"
@@ -286,7 +286,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 </select>
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="datetime-local"
                   placeholder="Expiry Date"
@@ -392,7 +392,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 </div>
               </div>
               
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={loading}
@@ -417,7 +417,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
           <div className="bg-green-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Process Payment</h2>
             <form onSubmit={handleSpend} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Transfer ID"
@@ -436,7 +436,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Merchant ID"
@@ -455,7 +455,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <select
                   value={spendForm.category}
                   onChange={(e) => setSpendForm({...spendForm, category: e.target.value})}
@@ -477,7 +477,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 />
               </div>
               
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={loading}
@@ -582,13 +582,13 @@ export const TransferCard: React.FC<TransferCardProps> = ({
 
         {/* Transfer Details Modal */}
         {selectedTransfer && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
               <h2 className="text-2xl font-bold mb-4">{selectedTransfer.id}</h2>
               <div className="space-y-4">
                 <div>
                   <h3 className="font-semibold">Transfer Information</h3>
-                  <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <p><strong>Beneficiary:</strong> {selectedTransfer.beneficiaryId}</p>
                     <p><strong>Status:</strong> {getStatusText(selectedTransfer)}</p>
                     <p><strong>Token:</strong> {selectedTransfer.token}</p>
@@ -600,7 +600,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                 
                 <div>
                   <h3 className="font-semibold">Financial Summary</h3>
-                  <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <p><strong>Total Amount:</strong> {selectedTransfer.amount}</p>
                     <p><strong>Spent Amount:</strong> {selectedTransfer.spentAmount}</p>
                     <p><strong>Remaining:</strong> {selectedTransfer.remainingAmount}</p>

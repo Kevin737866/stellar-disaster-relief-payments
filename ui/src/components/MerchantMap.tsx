@@ -187,14 +187,14 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Merchant Network</h1>
+    <div className="max-w-6xl mx-auto p-4 sm:p-6">
+      <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Merchant Network</h1>
         <p className="text-gray-600 mb-6">
           Local merchant onboarding and GPS-verified payment acceptance
         </p>
 
-        <div className="flex space-x-4 mb-6">
+        <div className="flex flex-wrap gap-2 mb-6">
           <button
             onClick={() => setShowOnboardingForm(!showOnboardingForm)}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
@@ -224,7 +224,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           <div className="bg-blue-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Onboard New Merchant</h2>
             <form onSubmit={handleOnboarding} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Merchant ID"
@@ -243,7 +243,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <select
                   value={onboardingForm.businessType}
                   onChange={(e) => setOnboardingForm({...onboardingForm, businessType: e.target.value})}
@@ -269,7 +269,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Stellar Address"
@@ -287,7 +287,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="number"
                   placeholder="Daily Limit"
@@ -308,7 +308,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
               
               <div className="border-t pt-4">
                 <h3 className="font-semibold mb-2">Location Information</h3>
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <input
                     type="number"
                     step="any"
@@ -335,7 +335,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                   />
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4 mt-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                   <input
                     type="text"
                     placeholder="Address"
@@ -360,7 +360,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                   />
                 </div>
                 
-                <div className="grid grid-cols-2 gap-4 mt-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                   <input
                     type="text"
                     placeholder="Country"
@@ -385,7 +385,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 </div>
               </div>
               
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={loading}
@@ -408,7 +408,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
         {/* Location Search */}
         <div className="bg-gray-50 p-4 rounded-lg mb-6">
           <h3 className="font-semibold mb-2">Search Location</h3>
-          <div className="flex space-x-4">
+          <div className="flex flex-wrap gap-3">
             <div className="flex-1">
               <label className="block text-sm font-medium mb-1">Latitude</label>
               <input
@@ -535,13 +535,13 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
 
         {/* Merchant Details Modal */}
         {selectedMerchant && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
               <h2 className="text-2xl font-bold mb-4">{selectedMerchant.name}</h2>
               <div className="space-y-4">
                 <div>
                   <h3 className="font-semibold">Business Information</h3>
-                  <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <p><strong>ID:</strong> {selectedMerchant.id}</p>
                     <p><strong>Type:</strong> {selectedMerchant.businessType}</p>
                     <p><strong>Status:</strong> {selectedMerchant.isVerified ? 'Verified' : 'Pending'}</p>
@@ -564,7 +564,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 
                 <div>
                   <h3 className="font-semibold">Financial Limits</h3>
-                  <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
                     <p><strong>Daily Limit:</strong> {selectedMerchant.dailyLimit}</p>
                     <p><strong>Monthly Limit:</strong> {selectedMerchant.monthlyLimit}</p>
                     <p><strong>Current Volume:</strong> {selectedMerchant.currentMonthVolume}</p>
@@ -591,7 +591,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                 
                 <div>
                   <h3 className="font-semibold">Actions</h3>
-                  <div className="mt-2 space-x-2">
+                  <div className="mt-2 flex flex-wrap gap-2">
                     <button
                       onClick={() => {
                         const feedback = prompt('Enter feedback score (-10 to +10):');

@@ -168,14 +168,14 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6">
-      <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Emergency Fund Deployer</h1>
+    <div className="max-w-6xl mx-auto p-4 sm:p-6">
+      <div className="bg-white rounded-lg shadow-lg p-4 sm:p-6 mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Emergency Fund Deployer</h1>
         <p className="text-gray-600 mb-6">
           Rapid deployment and monitoring of emergency relief funds
         </p>
 
-        <div className="flex space-x-4 mb-6">
+        <div className="flex flex-wrap gap-2 mb-6">
           <button
             onClick={() => setShowCreateForm(!showCreateForm)}
             className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
@@ -202,7 +202,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
           <div className="bg-gray-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Create Emergency Fund</h2>
             <form onSubmit={handleCreateFund} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Fund ID"
@@ -230,7 +230,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                 required
               />
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="number"
                   placeholder="Total Amount"
@@ -254,7 +254,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                 </select>
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Geographic Scope"
@@ -272,7 +272,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                 />
               </div>
               
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={loading}
@@ -297,7 +297,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
           <div className="bg-red-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Rapid Disaster Response</h2>
             <form onSubmit={handleRapidDeployment} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Disaster ID"
@@ -320,7 +320,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                 </select>
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
                   placeholder="Affected Area"
@@ -350,7 +350,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
                 ))}
               </div>
               
-              <div className="flex space-x-4">
+              <div className="flex flex-wrap gap-2">
                 <button
                   type="submit"
                   disabled={loading}
@@ -431,8 +431,8 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
 
         {/* Fund Details Modal */}
         {selectedFund && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-lg p-4 sm:p-6 max-w-2xl w-full max-h-screen overflow-y-auto">
               <h2 className="text-2xl font-bold mb-4">{selectedFund.name}</h2>
               <div className="space-y-4">
                 <div>
