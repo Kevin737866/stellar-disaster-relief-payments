@@ -1,5 +1,7 @@
 // Export all clients
 export { AidClient } from './aidClient';
+export { TransactionPoller } from './transactionPoller';
+export type { PollOptions, TransactionPollResult } from './transactionPoller';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
