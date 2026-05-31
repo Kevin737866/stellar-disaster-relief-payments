@@ -162,6 +162,8 @@ export class MerchantClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
+      this.cache.invalidate(`merchant:txns:${merchantId}`);
       return scValToNative(result.result.retval);
     } else {
       throw new Error(`Failed to process payment: ${result.status}`);
@@ -172,14 +174,15 @@ export class MerchantClient {
    * Get merchant details
    */
   async getMerchant(merchantId: string): Promise<Merchant | null> {
-    try {
-      const result = await this.contract.call("get_merchant", nativeToScVal(merchantId));
-      const merchant = scValToNative(result.result.retval);
-      return merchant;
-    } catch (error) {
-      console.error('Failed to get merchant:', error);
-      return null;
-    }
+    return this.cache.get(`merchant:${merchantId}`, async () => {
+      try {
+        const result = await this.contract.call("get_merchant", nativeToScVal(merchantId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get merchant:', error);
+        return null;
+      }
+    });
   }
 
   /**
@@ -209,14 +212,15 @@ export class MerchantClient {
    * Get merchant transaction history
    */
   async getMerchantTransactions(merchantId: string): Promise<Transaction[]> {
-    try {
-      const result = await this.contract.call("get_merchant_transactions", nativeToScVal(merchantId));
-      const transactions = scValToNative(result.result.retval);
-      return transactions;
-    } catch (error) {
-      console.error('Failed to get merchant transactions:', error);
-      return [];
-    }
+    return this.cache.get(`merchant:txns:${merchantId}`, async () => {
+      try {
+        const result = await this.contract.call("get_merchant_transactions", nativeToScVal(merchantId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get merchant transactions:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -251,6 +255,7 @@ export class MerchantClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
       return `Reputation updated for merchant ${merchantId}`;
     } else {
       throw new Error(`Failed to update reputation: ${result.status}`);

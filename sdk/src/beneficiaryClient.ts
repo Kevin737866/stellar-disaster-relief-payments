@@ -17,7 +17,6 @@ import {
 } from './types';
 import { createHash } from 'crypto-js';
 import { ReadCache } from './readCache';
-import { ReadCache } from './readCache';
 
 export class BeneficiaryClient {
   private server: Server;
