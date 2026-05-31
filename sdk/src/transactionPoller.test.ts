@@ -95,6 +95,15 @@ describe('TransactionPoller', () => {
     expect((result as Extract<TransactionPollResult, { status: 'FAILED' }>).response).toBe(FAILED_RESPONSE);
   });
 
+  it('aliases pollTransactionStatus to pollTransaction', async () => {
+    const poller = makePoller([SUCCESS_RESPONSE]);
+    const promise = poller.pollTransactionStatus(HASH, { intervalMs: 100, timeoutMs: 5000 });
+    await jest.runAllTimersAsync();
+    const result = await promise;
+    expect(result.status).toBe('SUCCESS');
+    expect((result as Extract<TransactionPollResult, { status: 'SUCCESS' }>).response).toBe(SUCCESS_RESPONSE);
+  });
+
   it('polls until terminal state after NOT_FOUND responses', async () => {
     const poller = makePoller([NOT_FOUND_RESPONSE, NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
     const promise = poller.pollTransaction(HASH, { intervalMs: 100, timeoutMs: 5000 });

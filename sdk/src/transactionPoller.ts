@@ -57,6 +57,19 @@ export class TransactionPoller {
     return promise;
   }
 
+  /**
+   * Poll a transaction until it reaches a terminal completion status.
+   *
+   * This is a convenience alias for `pollTransaction` that clearly expresses
+   * the intent of waiting for final transaction completion.
+   */
+  pollTransactionStatus(
+    hash: string,
+    options?: PollOptions
+  ): Promise<TransactionPollResult> {
+    return this.pollTransaction(hash, options);
+  }
+
   private async _poll(
     hash: string,
     options?: PollOptions

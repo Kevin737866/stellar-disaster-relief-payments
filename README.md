@@ -533,6 +533,16 @@ getTransfer(transferId)
 listBeneficiaryTransfers(beneficiaryId)
 ```
 
+#### Transaction Poller
+
+```typescript
+// Wait for a transaction to reach a terminal completion state
+pollTransactionStatus(hash, { intervalMs, timeoutMs })
+
+// Alias for pollTransaction
+pollTransaction(hash, { intervalMs, timeoutMs })
+```
+
 #### Merchant Client
 
 ```typescript
