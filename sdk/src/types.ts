@@ -247,6 +247,8 @@ export interface NetworkConfig {
   network: "testnet" | "mainnet" | "standalone";
   rpcUrl: string;
   horizonUrl: string;
+  /** Default TTL in milliseconds for cached read results. Defaults to 30 000. */
+  cacheTtlMs?: number;
   contractIds: {
     platform: string;
     aidRegistry: string;

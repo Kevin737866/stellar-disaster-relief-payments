@@ -12,18 +12,22 @@ import {
   Merchant, 
   Transaction, 
   Location,
-  MerchantOnboardingRequest 
+  MerchantOnboardingRequest,
+  NetworkConfig
 } from './types';
+import { ReadCache } from './readCache';
 
 export class MerchantClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.merchantNetwork);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -106,6 +110,7 @@ export class MerchantClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
       return approved 
         ? `Merchant ${merchantId} verified and activated`
         : `Merchant ${merchantId} verification rejected`;

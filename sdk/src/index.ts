@@ -4,6 +4,7 @@ export { ContractUpgradeClient } from './contractUpgradeClient';
 export type { ContractTarget, ContractUpgradeRequest, ContractUpgradeResult } from './types';
 export { TransactionPoller } from './transactionPoller';
 export type { PollOptions, TransactionPollResult } from './transactionPoller';
+export { ReadCache } from './readCache';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
