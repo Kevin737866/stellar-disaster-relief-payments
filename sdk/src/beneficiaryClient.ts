@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { withRetry } from './retry';
 import { 
   BeneficiaryProfile, 
   VerificationFactor, 
@@ -42,7 +43,7 @@ export class BeneficiaryClient {
     verificationFactors: VerificationFactor[]
   ): Promise<string> {
     const registrarKeypair = Keypair.fromSecret(registrarKey);
-    const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
+    const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
     const tx = new TransactionBuilder(registrarAccount, {
       fee: '100',
@@ -68,7 +69,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(registrarKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Beneficiary ${beneficiaryId} registered successfully`;
@@ -86,7 +87,7 @@ export class BeneficiaryClient {
     providedFactors: VerificationFactor[]
   ): Promise<boolean> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -106,7 +107,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -145,7 +146,7 @@ export class BeneficiaryClient {
    */
   async getBeneficiary(beneficiaryId: string): Promise<BeneficiaryProfile | null> {
     try {
-      const result = await this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId));
+      const result = await withRetry<any>(() => this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId)));
       const profile = scValToNative(result.result.retval);
       return profile;
     } catch (error) {
@@ -159,7 +160,7 @@ export class BeneficiaryClient {
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
     try {
-      const result = await this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId));
+      const result = await withRetry<any>(() => this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId)));
       const beneficiaries = scValToNative(result.result.retval);
       return beneficiaries;
     } catch (error) {
@@ -177,7 +178,7 @@ export class BeneficiaryClient {
     newLocation: string
   ): Promise<string> {
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const beneficiaryAccount = await this.server.getAccount(beneficiaryKeypair.publicKey());
+    const beneficiaryAccount = await withRetry<any>(() => this.server.getAccount(beneficiaryKeypair.publicKey()));
 
     const tx = new TransactionBuilder(beneficiaryAccount, {
       fee: '100',
@@ -197,7 +198,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Location updated for beneficiary ${beneficiaryId}`;

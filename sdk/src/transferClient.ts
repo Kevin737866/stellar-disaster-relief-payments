@@ -14,6 +14,7 @@ import {
   TransferTransaction,
   PaymentRequest 
 } from './types';
+import { withRetry } from './retry';
 
 export class TransferClient {
   private server: Server;
@@ -40,7 +41,7 @@ export class TransferClient {
     purpose: string
   ): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -65,7 +66,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Conditional transfer ${transferId} created successfully`;
@@ -86,7 +87,7 @@ export class TransferClient {
     location: string
   ): Promise<boolean> {
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const beneficiaryAccount = await this.server.getAccount(beneficiaryKeypair.publicKey());
+    const beneficiaryAccount = await withRetry<any>(() => this.server.getAccount(beneficiaryKeypair.publicKey()));
 
     const tx = new TransactionBuilder(beneficiaryAccount, {
       fee: '100',
@@ -109,7 +110,7 @@ export class TransferClient {
       .build();
 
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -123,7 +124,7 @@ export class TransferClient {
    */
   async getTransfer(transferId: string): Promise<ConditionalTransfer | null> {
     try {
-      const result = await this.contract.call("get_transfer", nativeToScVal(transferId));
+      const result = await withRetry<any>(() => this.contract.call("get_transfer", nativeToScVal(transferId)));
       const transfer = scValToNative(result.result.retval);
       return transfer;
     } catch (error) {
@@ -137,7 +138,7 @@ export class TransferClient {
    */
   async getTransactions(transferId: string): Promise<TransferTransaction[]> {
     try {
-      const result = await this.contract.call("get_transactions", nativeToScVal(transferId));
+      const result = await withRetry<any>(() => this.contract.call("get_transactions", nativeToScVal(transferId)));
       const transactions = scValToNative(result.result.retval);
       return transactions;
     } catch (error) {
@@ -151,7 +152,7 @@ export class TransferClient {
    */
   async recallFunds(creatorKey: string, transferId: string): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -170,7 +171,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       const recalledAmount = scValToNative(result.result.retval);
@@ -185,7 +186,7 @@ export class TransferClient {
    */
   async listBeneficiaryTransfers(beneficiaryId: string): Promise<ConditionalTransfer[]> {
     try {
-      const result = await this.contract.call("list_beneficiary_transfers", nativeToScVal(beneficiaryId));
+      const result = await withRetry<any>(() => this.contract.call("list_beneficiary_transfers", nativeToScVal(beneficiaryId)));
       const transfers = scValToNative(result.result.retval);
       return transfers;
     } catch (error) {
@@ -203,7 +204,7 @@ export class TransferClient {
     newExpiry: number
   ): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -223,7 +224,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Transfer ${transferId} expiry extended to ${new Date(newExpiry).toISOString()}`;

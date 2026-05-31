@@ -14,6 +14,7 @@ import {
   DeploymentOptions,
   NetworkConfig 
 } from './types';
+import { withRetry } from './retry';
 
 export class AidClient {
   private server: Server;
@@ -42,7 +43,7 @@ export class AidClient {
     requiredSignatures: number
   ): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -69,7 +70,7 @@ export class AidClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return fundId;
@@ -90,7 +91,7 @@ export class AidClient {
     approvers: string[]
   ): Promise<string> {
     const requesterKeypair = Keypair.fromSecret(requesterKey);
-    const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
+    const requesterAccount = await withRetry<any>(() => this.server.getAccount(requesterKeypair.publicKey()));
 
     const tx = new TransactionBuilder(requesterAccount, {
       fee: '100',
@@ -113,7 +114,7 @@ export class AidClient {
       .build();
 
     tx.sign(requesterKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Disbursement submitted for fund ${fundId}`;
@@ -127,7 +128,7 @@ export class AidClient {
    */
   async getFund(fundId: string): Promise<EmergencyFund | null> {
     try {
-      const result = await this.contract.call("get_fund", nativeToScVal(fundId));
+      const result = await withRetry<any>(() => this.contract.call("get_fund", nativeToScVal(fundId)));
       const fundData = scValToNative(result.result.retval);
       return fundData;
     } catch (error) {
@@ -141,7 +142,7 @@ export class AidClient {
    */
   async listActiveFunds(): Promise<EmergencyFund[]> {
     try {
-      const result = await this.contract.call("list_active_funds");
+      const result = await withRetry<any>(() => this.contract.call("list_active_funds"));
       const funds = scValToNative(result.result.retval);
       return funds;
     } catch (error) {
@@ -155,7 +156,7 @@ export class AidClient {
    */
   async getDisbursements(fundId: string): Promise<DisbursementRecord[]> {
     try {
-      const result = await this.contract.call("get_disbursements", nativeToScVal(fundId));
+      const result = await withRetry<any>(() => this.contract.call("get_disbursements", nativeToScVal(fundId)));
       const disbursements = scValToNative(result.result.retval);
       return disbursements;
     } catch (error) {
@@ -197,7 +198,7 @@ export class AidClient {
    */
   async cleanupExpiredFunds(adminKey: string): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -208,7 +209,7 @@ export class AidClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return 'Expired funds cleaned up successfully';

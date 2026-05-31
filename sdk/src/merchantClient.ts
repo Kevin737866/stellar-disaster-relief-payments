@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { withRetry } from './retry';
 import { 
   Merchant, 
   Transaction, 
@@ -35,7 +36,7 @@ export class MerchantClient {
     request: MerchantOnboardingRequest
   ): Promise<string> {
     const ownerKeypair = Keypair.fromSecret(ownerKey);
-    const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+    const ownerAccount = await withRetry<any>(() => this.server.getAccount(ownerKeypair.publicKey()));
 
     const tx = new TransactionBuilder(ownerAccount, {
       fee: '100',
@@ -63,7 +64,7 @@ export class MerchantClient {
       .build();
 
     tx.sign(ownerKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Merchant ${merchantId} registered successfully. Awaiting verification.`;
@@ -82,7 +83,7 @@ export class MerchantClient {
     notes: string
   ): Promise<string> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -103,7 +104,7 @@ export class MerchantClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return approved 
@@ -129,7 +130,7 @@ export class MerchantClient {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
     
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const merchantAccount = await withRetry<any>(() => this.server.getAccount(merchantKeypair.publicKey()));
 
     const tx = new TransactionBuilder(merchantAccount, {
       fee: '200', // Higher fee for multi-sig
@@ -154,7 +155,7 @@ export class MerchantClient {
 
     tx.sign(merchantKeypair);
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -168,7 +169,7 @@ export class MerchantClient {
    */
   async getMerchant(merchantId: string): Promise<Merchant | null> {
     try {
-      const result = await this.contract.call("get_merchant", nativeToScVal(merchantId));
+      const result = await withRetry<any>(() => this.contract.call("get_merchant", nativeToScVal(merchantId)));
       const merchant = scValToNative(result.result.retval);
       return merchant;
     } catch (error) {
@@ -205,7 +206,7 @@ export class MerchantClient {
    */
   async getMerchantTransactions(merchantId: string): Promise<Transaction[]> {
     try {
-      const result = await this.contract.call("get_merchant_transactions", nativeToScVal(merchantId));
+      const result = await withRetry<any>(() => this.contract.call("get_merchant_transactions", nativeToScVal(merchantId)));
       const transactions = scValToNative(result.result.retval);
       return transactions;
     } catch (error) {
@@ -223,7 +224,7 @@ export class MerchantClient {
     feedbackScore: number // -10 to +10
   ): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -243,7 +244,7 @@ export class MerchantClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Reputation updated for merchant ${merchantId}`;
@@ -257,7 +258,7 @@ export class MerchantClient {
    */
   async getVerificationQueue(): Promise<string[]> {
     try {
-      const result = await this.contract.call("get_verification_queue");
+      const result = await withRetry<any>(() => this.contract.call("get_verification_queue"));
       const queue = scValToNative(result.result.retval);
       return queue;
     } catch (error) {

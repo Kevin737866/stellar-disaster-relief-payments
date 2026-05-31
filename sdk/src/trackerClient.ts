@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { withRetry } from './retry';
 import { 
   SupplyShipment, 
   Checkpoint, 
@@ -36,7 +37,7 @@ export class TrackerClient {
     request: SupplyChainRequest
   ): Promise<string> {
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
 
     const tx = new TransactionBuilder(donorAccount, {
@@ -65,7 +66,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return shipmentId;
@@ -88,7 +89,7 @@ export class TrackerClient {
     temperature?: number
   ): Promise<string> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -113,7 +114,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Checkpoint added to shipment ${shipmentId}`;
@@ -131,7 +132,7 @@ export class TrackerClient {
     transporterAddress: string
   ): Promise<string> {
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(donorAccount, {
       fee: '100',
@@ -151,7 +152,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Transporter assigned to shipment ${shipmentId}`;
@@ -172,7 +173,7 @@ export class TrackerClient {
     photos: string[]
   ): Promise<string> {
     const recipientKeypair = Keypair.fromSecret(recipientKey);
-    const recipientAccount = await this.server.getAccount(recipientKeypair.publicKey());
+    const recipientAccount = await withRetry<any>(() => this.server.getAccount(recipientKeypair.publicKey()));
 
     const tx = new TransactionBuilder(recipientAccount, {
       fee: '100',
@@ -195,7 +196,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(recipientKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Delivery confirmed for shipment ${shipmentId}`;
@@ -209,7 +210,7 @@ export class TrackerClient {
    */
   async getShipment(shipmentId: string): Promise<SupplyShipment | null> {
     try {
-      const result = await this.contract.call("get_shipment", nativeToScVal(shipmentId));
+      const result = await withRetry<any>(() => this.contract.call("get_shipment", nativeToScVal(shipmentId)));
       const shipment = scValToNative(result.result.retval);
       return shipment;
     } catch (error) {
@@ -226,7 +227,7 @@ export class TrackerClient {
     confirmation?: RecipientConfirmation;
   }> {
     try {
-      const result = await this.contract.call("get_shipment_history", nativeToScVal(shipmentId));
+      const result = await withRetry<any>(() => this.contract.call("get_shipment_history", nativeToScVal(shipmentId)));
       const history = scValToNative(result.result.retval);
       return {
         shipment: history[0],
@@ -266,7 +267,7 @@ export class TrackerClient {
    */
   async getActiveShipments(): Promise<SupplyShipment[]> {
     try {
-      const result = await this.contract.call("get_active_shipments");
+      const result = await withRetry<any>(() => this.contract.call("get_active_shipments"));
       const shipments = scValToNative(result.result.retval);
       return shipments;
     } catch (error) {
@@ -284,7 +285,7 @@ export class TrackerClient {
     reason: string
   ): Promise<string> {
     const reporterKeypair = Keypair.fromSecret(reporterKey);
-    const reporterAccount = await this.server.getAccount(reporterKeypair.publicKey());
+    const reporterAccount = await withRetry<any>(() => this.server.getAccount(reporterKeypair.publicKey()));
 
     const tx = new TransactionBuilder(reporterAccount, {
       fee: '100',
@@ -304,7 +305,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(reporterKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Shipment ${shipmentId} reported as lost`;
@@ -318,7 +319,7 @@ export class TrackerClient {
    */
   async getShipmentsByDonor(donorId: string): Promise<SupplyShipment[]> {
     try {
-      const result = await this.contract.call("get_shipments_by_donor", nativeToScVal(donorId));
+      const result = await withRetry<any>(() => this.contract.call("get_shipments_by_donor", nativeToScVal(donorId)));
       const shipments = scValToNative(result.result.retval);
       return shipments;
     } catch (error) {
@@ -332,7 +333,7 @@ export class TrackerClient {
    */
   async getTemperatureAlerts(): Promise<Array<{ shipmentId: string; alert: string }>> {
     try {
-      const result = await this.contract.call("get_temperature_alerts");
+      const result = await withRetry<any>(() => this.contract.call("get_temperature_alerts"));
       const alerts = scValToNative(result.result.retval);
       return alerts;
     } catch (error) {
