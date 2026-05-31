@@ -7,6 +7,10 @@ export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 
+// Export Offline Signing
+export { OfflineSigner, NetworkMismatchError } from './offlineSigner';
+export type { OfflineEnvelope } from './offlineSigner';
+
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';

@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
 import { 
   Merchant, 
   Transaction, 
@@ -452,6 +453,98 @@ export class MerchantClient {
     return results;
   }
 
+
+  /**
+   * Build an unsigned transaction for registering a merchant.
+   */
+  async buildOfflineRegisterMerchant(
+    sourcePublicKey: string,
+    merchantId: string,
+    request: any
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_merchant',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(request.name),
+            nativeToScVal(request.businessType), nativeToScVal(request.location),
+            nativeToScVal(request.contactInfo), nativeToScVal(request.stellarTomlUrl),
+            nativeToScVal(request.acceptedTokens), nativeToScVal(request.dailyLimit),
+            nativeToScVal(request.monthlyLimit), nativeToScVal(request.verificationDocuments),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build an unsigned transaction for approving a merchant.
+   */
+  async buildOfflineApproveMerchant(
+    sourcePublicKey: string,
+    merchantId: string,
+    approved: boolean,
+    notes: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'verify_merchant',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(approved), nativeToScVal(notes),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build an unsigned transaction for processing a payment.
+   */
+  async buildOfflinePayment(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(merchantPublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantPublicKey).toScVal(),
+            new Address(beneficiaryPublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

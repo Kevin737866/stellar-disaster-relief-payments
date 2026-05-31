@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
 import { 
   EmergencyFund, 
   DisbursementRecord, 
@@ -335,6 +336,75 @@ export class AidClient {
     };
   }
 
+
+  /**
+   * Build an unsigned transaction for deploying an emergency fund.
+   * Returns an OfflineEnvelope that can be signed offline and submitted later.
+   */
+  async buildOfflineDeployFund(
+    sourcePublicKey: string,
+    fundId: string,
+    name: string,
+    description: string,
+    totalAmount: string,
+    disasterType: string,
+    geographicScope: string,
+    expiresAt: number,
+    releaseTriggers: string[],
+    requiredSignatures: number
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_fund',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(fundId), nativeToScVal(name), nativeToScVal(description),
+            nativeToScVal(totalAmount), nativeToScVal(disasterType),
+            nativeToScVal(geographicScope), nativeToScVal(expiresAt),
+            nativeToScVal(releaseTriggers), nativeToScVal(requiredSignatures),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build an unsigned transaction for triggering a disbursement.
+   */
+  async buildOfflineDisbursement(
+    sourcePublicKey: string,
+    fundId: string,
+    beneficiary: string,
+    amount: string,
+    purpose: string,
+    approvers: string[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'submit_disbursement',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(fundId), nativeToScVal(beneficiary),
+            nativeToScVal(amount), nativeToScVal(purpose), nativeToScVal(approvers),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
