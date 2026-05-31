@@ -383,6 +383,59 @@ export interface PaperBackupCode {
   instructions: string;
 }
 
+// Batch Contract Call Types
+
+/** Maximum number of operations allowed in a single Stellar transaction. */
+export const BATCH_MAX_SIZE = 100;
+
+/** A single contract call within a batch. */
+export interface BatchContractCall {
+  /** Which deployed contract to invoke (maps to NetworkConfig.contractIds). */
+  contractTarget: ContractTarget;
+  /** Name of the contract method to invoke. */
+  method: string;
+  /**
+   * Positional arguments for the method, already encoded as xdr.ScVal.
+   * Use `nativeToScVal` from stellar-sdk to convert native JS values.
+   */
+  args: import('stellar-sdk').xdr.ScVal[];
+}
+
+/** Input to a batch execution request. */
+export interface BatchExecuteRequest {
+  /** Ordered list of contract calls to include in the transaction. */
+  calls: BatchContractCall[];
+  /** Secret key of the account that will sign and pay for the transaction. */
+  signerKey: string;
+}
+
+/** Result for a single call within a batch. */
+export interface BatchCallResult {
+  /** Zero-based index matching the original calls array. */
+  index: number;
+  /** Whether this individual call succeeded. */
+  success: boolean;
+  /**
+   * Native JS value decoded from the call's return value (SUCCESS only).
+   * Undefined when the overall transaction failed or the call produced no value.
+   */
+  returnValue?: unknown;
+  /** Error message when success is false. */
+  error?: string;
+}
+
+/** Result returned after a batch execution attempt. */
+export interface BatchExecuteResult {
+  /** Stellar transaction hash. */
+  transactionHash: string;
+  /** Terminal status of the overall transaction. */
+  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+  /** Per-call results in the same order as the input calls array. */
+  results: BatchCallResult[];
+  /** Ledger number at which the transaction was confirmed (SUCCESS only). */
+  ledger?: number;
+}
+
 // Contract Upgrade Types
 
 /** Identifies which deployed contract to upgrade. */

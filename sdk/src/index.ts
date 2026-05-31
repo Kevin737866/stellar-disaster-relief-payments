@@ -2,6 +2,14 @@
 export { AidClient } from './aidClient';
 export { ContractUpgradeClient } from './contractUpgradeClient';
 export type { ContractTarget, ContractUpgradeRequest, ContractUpgradeResult } from './types';
+export { BatchClient } from './batchClient';
+export type {
+  BatchContractCall,
+  BatchExecuteRequest,
+  BatchExecuteResult,
+  BatchCallResult,
+} from './types';
+export { BATCH_MAX_SIZE } from './types';
 export { TransactionPoller } from './transactionPoller';
 export type { PollOptions, TransactionPollResult } from './transactionPoller';
 export { ReadCache } from './readCache';
