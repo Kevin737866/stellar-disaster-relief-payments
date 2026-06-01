@@ -1,5 +1,9 @@
 // Export all clients
 export { AidClient } from './aidClient';
+export { FeeBumpClient } from './feeBumpClient';
+export type { FeeBumpOptions, FeeBumpResult } from './feeBumpClient';
+export { TransactionSimulator } from './transactionSimulator';
+export type { SimulationResult } from './transactionSimulator';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
@@ -58,7 +62,9 @@ export const createDisasterReliefSDK = (config: any) => ({
   beneficiaryClient: new BeneficiaryClient(config),
   merchantClient: new MerchantClient(config),
   transferClient: new TransferClient(config),
-  trackerClient: new TrackerClient(config)
+  trackerClient: new TrackerClient(config),
+  feeBumpClient: new FeeBumpClient(config),
+  transactionSimulator: new TransactionSimulator(config),
 });
 
 // Export constants
