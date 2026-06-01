@@ -18,6 +18,9 @@ export { MerchantApp } from './merchantApp';
 // Export all types
 export * from './types';
 
+// Export validation utilities
+export { validateAddress, validateAddressList } from './validation';
+
 // Export network configurations
 export const TESTNET_CONFIG = {
   network: 'testnet' as const,

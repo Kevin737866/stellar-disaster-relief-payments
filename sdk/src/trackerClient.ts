@@ -16,6 +16,7 @@ import {
   RecipientConfirmation,
   SupplyChainRequest 
 } from './types';
+import { validateAddress } from './validation';
 
 export class TrackerClient {
   private server: Server;
@@ -130,6 +131,7 @@ export class TrackerClient {
     shipmentId: string,
     transporterAddress: string
   ): Promise<string> {
+    validateAddress(transporterAddress, 'transporterAddress');
     const donorKeypair = Keypair.fromSecret(donorKey);
     const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
 

@@ -11,6 +11,7 @@ import {
   BASE_FEE,
 } from 'stellar-sdk';
 import axios from 'axios';
+import { validateAddress, validateAddressList } from './validation';
 
 export interface EmergencyFund {
   id: string;
@@ -137,6 +138,8 @@ export class EmergencyFundsClient {
     signersArray: string[],
     requiredSignatures: number
   ): Promise<{ success: boolean; transactionHash: string; fundId: string }> {
+    validateAddress(adminAddress, 'adminAddress');
+    validateAddressList(signersArray, 'signersArray');
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
       const contract = new Contract(this.contractId);
