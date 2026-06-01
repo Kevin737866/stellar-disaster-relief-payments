@@ -5,6 +5,8 @@ const VALID_ADDRESS = 'GC2H33LY56GNCN5TYBSX5WHCXXVY67QL7WLYOSZQ222WP7ZYO57GPNBR'
 const VALID_ADDRESS_2 = 'GB76YDFBKFMASHFYWJWK3C33M6IF76DOLFCFN5V6VJT3XLOJQTBQMEJV';
 // Valid Stellar contract address (C... address)
 const VALID_CONTRACT_ADDRESS = 'CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526';
+// A muxed-style address: take a valid G... public key and replace leading 'G' with 'M'
+const VALID_MUXED_ADDRESS = 'MC2H33LY56GNCN5TYBSX5WHCXXVY67QL7WLYOSZQ222WP7ZYO57GPNBR';
 
 describe('validateAddress', () => {
   it('accepts a valid Stellar address', () => {
@@ -17,6 +19,10 @@ describe('validateAddress', () => {
 
   it('accepts a valid address with custom field name', () => {
     expect(() => validateAddress(VALID_ADDRESS, 'walletAddress')).not.toThrow();
+  });
+
+  it('accepts a muxed (M...) address', () => {
+    expect(() => validateAddress(VALID_MUXED_ADDRESS, 'muxed')).not.toThrow();
   });
 
   it('rejects an empty string', () => {

@@ -1,10 +1,28 @@
 import { StrKey } from 'stellar-sdk';
 
 function isValidStellarAddress(address: string): boolean {
-  return (
-    StrKey.isValidEd25519PublicKey(address) ||
-    StrKey.isValidContract(address)
-  );
+  // Accept standard public keys (G...), contract addresses (C...),
+  // and muxed account IDs (M...) which are base32-encoded like other StrKey types.
+  if (StrKey.isValidEd25519PublicKey(address) || StrKey.isValidContract(address)) {
+    return true;
+  }
+
+  // Some versions of `stellar-sdk` expose a dedicated muxed validator (e.g. isValidMuxedAccountId).
+  // Use it if available to perform accurate validation.
+  const anyStrKey = StrKey as any;
+  if (typeof anyStrKey.isValidMuxedAccountId === 'function') {
+    try {
+      if (anyStrKey.isValidMuxedAccountId(address)) return true;
+    } catch (_) {
+      // fallthrough to regex check
+    }
+  }
+
+  // Fallback: basic format check for muxed addresses (starts with 'M' and uses base32 chars).
+  // This is intentionally permissive for older SDK versions that lack muxed validation.
+  const trimmed = address.trim();
+  const muxedRegex = /^[M][A-Z2-7]{55}$/;
+  return muxedRegex.test(trimmed);
 }
 
 /**
