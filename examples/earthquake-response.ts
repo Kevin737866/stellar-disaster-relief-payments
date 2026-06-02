@@ -44,7 +44,13 @@ async function earthquakeResponse() {
       config.affectedArea,
       Date.now() + (config.duration * 24 * 60 * 60 * 1000),
       [config.adminKey],
-      1
+      1,
+      {
+        'response_team_id': 'EQ_TEAM_2024_001',
+        'donor_agency': 'International Relief Fund',
+        'priority_level': 'critical',
+        'contact_email': 'earthquake-response@relief.org'
+      }
     );
 
     // Step 2: Deploy rapid emergency funds

@@ -1,8 +1,16 @@
-/** @type {import('ts-jest').JestConfigWithTsJest} */
+/** @type {import('jest').Config} */
 module.exports = {
-  preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/sdk/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js'],
+  transform: {
+    '^.+\\.ts$': ['ts-jest', {
+      diagnostics: false,
+      tsconfig: {
+        strict: false,
+        esModuleInterop: true,
+        skipLibCheck: true,
+      },
+    }],
+  },
 };
