@@ -93,12 +93,21 @@ pub struct DisbursementRecord {
 }
 
 #[derive(Clone)]
+pub struct PaginatedDisbursements {
+    pub records: Vec<DisbursementRecord>,
+    pub total_count: u64,
+    pub has_more: bool,
+}
+
+#[derive(Clone)]
 pub struct FundAllocation {
     pub sector: String,
     pub amount: U256,
     pub beneficiaries: Vec<Address>,
     pub proof_of_need: String,
     pub allocated_at: u64,
+    pub min_amount: U256,
+    pub max_amount: U256,
 }
 
 #[derive(Clone)]
@@ -140,9 +149,16 @@ impl AidRegistry {
         // Verify admin authorization
         admin.require_auth();
         
-        // Validate release_triggers list and required_signatures
-        require_non_empty_address_list(&env, &release_triggers);
-        require_min_address_count(&env, &release_triggers, required_signatures);
+        // Input validation
+        if fund_id.len() == 0 {
+            panic_with_error!(&env, "fund_id must not be empty");
+        }
+        if total_amount <= U256::from_u64(0) {
+            panic_with_error!(&env, "total_amount must be positive");
+        }
+        if expires_at <= env.ledger().timestamp() {
+            panic_with_error!(&env, "expires_at must be in the future");
+        }
         
         // Create fund structure
         let fund = EmergencyFund {
@@ -360,18 +376,38 @@ impl AidRegistry {
         env.storage().instance().set(&fund_key, &funds);
     }
 
-    /// Get disbursement history for a fund
-    pub fn get_disbursements(env: Env, fund_id: String) -> Vec<DisbursementRecord> {
+    /// Get disbursement history for a fund with pagination
+    pub fn get_disbursements(env: Env, fund_id: String, offset: u32, limit: u32) -> PaginatedDisbursements {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = env.storage().instance()
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
         
+        let total_count = disbursements.len() as u64;
+        
         let mut result = Vec::new(&env);
+        let mut count = 0;
+        let mut skipped = 0;
+        
         for (_, record) in disbursements.iter() {
+            if skipped < offset as u64 {
+                skipped += 1;
+                continue;
+            }
+            if count >= limit as u64 {
+                break;
+            }
             result.push_back(record);
+            count += 1;
         }
-        result
+        
+        let has_more = (offset as u64 + count) < total_count;
+        
+        PaginatedDisbursements {
+            records: result,
+            total_count,
+            has_more,
+        }
     }
 
     /// Deactivate expired funds
@@ -940,11 +976,18 @@ impl AidRegistry {
         amount: U256,
         beneficiaries: Vec<Address>,
         proof_of_need: String,
+        min_amount: U256,
+        max_amount: U256,
     ) {
         admin.require_auth();
         
-        // Validate beneficiaries list
-        require_non_empty_address_list(&env, &beneficiaries);
+        // Validate amount is within min/max bounds
+        if amount < min_amount {
+            panic_with_error!(&env, "Allocation amount is below minimum threshold");
+        }
+        if amount > max_amount {
+            panic_with_error!(&env, "Allocation amount exceeds maximum threshold");
+        }
         
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
@@ -966,6 +1009,8 @@ impl AidRegistry {
             beneficiaries,
             proof_of_need,
             allocated_at: env.ledger().timestamp(),
+            min_amount,
+            max_amount,
         };
         
         // Add to fund allocations

@@ -1,22 +1,25 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  Server,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-import { 
-  SupplyShipment, 
-  Checkpoint, 
+import {
+  SupplyShipment,
+  Checkpoint,
   Location,
   TemperatureRequirements,
   RecipientConfirmation,
-  SupplyChainRequest 
+  SupplyChainRequest
 } from './types';
-import { validateAddress } from './validation';
+import {
+  NetworkError,
+  ValidationError,
+} from './errors';
 
 export class TrackerClient {
   private server: Server;
@@ -71,7 +74,7 @@ export class TrackerClient {
     if (result.status === 'SUCCESS') {
       return shipmentId;
     } else {
-      throw new Error(`Failed to create shipment: ${result.status}`);
+      throw new NetworkError('create shipment', result.status, { shipmentId });
     }
   }
 
@@ -119,7 +122,7 @@ export class TrackerClient {
     if (result.status === 'SUCCESS') {
       return `Checkpoint added to shipment ${shipmentId}`;
     } else {
-      throw new Error(`Failed to add checkpoint: ${result.status}`);
+      throw new NetworkError('add checkpoint', result.status, { shipmentId });
     }
   }
 
@@ -158,7 +161,7 @@ export class TrackerClient {
     if (result.status === 'SUCCESS') {
       return `Transporter assigned to shipment ${shipmentId}`;
     } else {
-      throw new Error(`Failed to assign transporter: ${result.status}`);
+      throw new NetworkError('assign transporter', result.status, { shipmentId, transporterAddress });
     }
   }
 
@@ -202,7 +205,7 @@ export class TrackerClient {
     if (result.status === 'SUCCESS') {
       return `Delivery confirmed for shipment ${shipmentId}`;
     } else {
-      throw new Error(`Failed to confirm delivery: ${result.status}`);
+      throw new NetworkError('confirm delivery', result.status, { shipmentId, recipientId });
     }
   }
 
@@ -311,7 +314,7 @@ export class TrackerClient {
     if (result.status === 'SUCCESS') {
       return `Shipment ${shipmentId} reported as lost`;
     } else {
-      throw new Error(`Failed to report lost shipment: ${result.status}`);
+      throw new NetworkError('report lost shipment', result.status, { shipmentId });
     }
   }
 
@@ -508,7 +511,7 @@ export class TrackerClient {
     const history = await this.getShipmentHistory(shipmentId);
     
     if (!history.shipment) {
-      throw new Error(`Shipment ${shipmentId} not found`);
+      throw new NetworkError('get shipment analytics', 'Shipment not found', { shipmentId });
     }
 
     const shipment = history.shipment;

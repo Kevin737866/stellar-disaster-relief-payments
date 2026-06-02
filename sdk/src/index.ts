@@ -1,11 +1,8 @@
 // Export all clients
 export { AidClient } from './aidClient';
-export { FeeBumpClient } from './feeBumpClient';
-export type { FeeBumpOptions, FeeBumpResult } from './feeBumpClient';
-export { TransactionSimulator } from './transactionSimulator';
-export type { SimulationResult } from './transactionSimulator';
-export { logger, validateLoggingConfig } from './logger';
-export type { LoggingConfig, LogLevel, LogDestination } from './logger';
+export { CostEstimationClient } from './costEstimation';
+export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
+export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
@@ -33,8 +30,8 @@ export { MerchantApp } from './merchantApp';
 // Export all types
 export * from './types';
 
-// Export validation utilities
-export { validateAddress, validateAddressList } from './validation';
+// Export error types
+export * from './errors';
 
 // Export network configurations
 export const TESTNET_CONFIG = {

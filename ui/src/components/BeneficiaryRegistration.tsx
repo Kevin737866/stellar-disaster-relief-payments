@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
 import {
+  useFormValidation,
+  FieldError,
+  compose,
+  required,
+  minLength,
+  maxLength,
+  identifier,
+  isInteger,
+  minValue,
+  stellarAddress,
+  commaSeparatedRequired,
+} from '../validation';
+import {
   SkeletonList,
   StatusMessage,
   EmptyState,
@@ -42,6 +55,24 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
     beneficiaryId: '', verifierKey: '', providedFactors: '',
   });
 
+  const regValidation = useFormValidation<typeof registrationForm>({
+    beneficiaryId: compose(required('Beneficiary ID'), identifier('Beneficiary ID')),
+    name: compose(required('Full Name'), minLength(2, 'Full Name'), maxLength(100, 'Full Name')),
+    disasterId: compose(required('Disaster ID'), identifier('Disaster ID')),
+    location: compose(required('Location'), minLength(2, 'Location'), maxLength(200, 'Location')),
+    walletAddress: compose(required('Wallet Address'), stellarAddress),
+    familySize: compose(required('Family Size'), isInteger('Family Size'), minValue(1, 'Family Size')),
+    possessionFactors: compose(required('Possession Factors'), commaSeparatedRequired('Possession Factors')),
+    behavioralFactors: compose(required('Behavioral Factors'), commaSeparatedRequired('Behavioral Factors')),
+    socialFactors: compose(required('Social Factors'), commaSeparatedRequired('Social Factors')),
+  });
+
+  const verifyValidation = useFormValidation<typeof verificationForm>({
+    beneficiaryId: compose(required('Beneficiary ID'), identifier('Beneficiary ID')),
+    verifierKey: required('Verifier Key'),
+    providedFactors: compose(required('Provided Factors'), commaSeparatedRequired('Provided Factors')),
+  });
+
   const [ussdSession, setUssdSession] = useState({
     sessionId: '', phoneNumber: '', currentStep: 'welcome', response: '',
   });
@@ -66,6 +97,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
 
   const handleRegistration = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!regValidation.validateAll(registrationForm as Record<keyof typeof registrationForm, string>)) return;
     setSubmitting(true);
     setSubmitStatus(null);
     try {
@@ -85,6 +117,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       setRecoveryCodes(codes);
       setShowRegistrationForm(false);
       setRegistrationForm({ beneficiaryId: '', name: '', disasterId: '', location: '', walletAddress: '', familySize: '1', specialNeeds: '', possessionFactors: '', behavioralFactors: '', socialFactors: '' });
+      regValidation.reset();
       setSubmitStatus({ type: 'success', message: 'Beneficiary registered successfully. Save your recovery codes.' });
       loadBeneficiaries();
     } catch {
@@ -96,6 +129,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
 
   const handleVerification = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!verifyValidation.validateAll(verificationForm as Record<keyof typeof verificationForm, string>)) return;
     setSubmitting(true);
     setSubmitStatus(null);
     try {
@@ -110,6 +144,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       );
       setShowVerificationForm(false);
       setVerificationForm({ beneficiaryId: '', verifierKey: '', providedFactors: '' });
+      verifyValidation.reset();
       loadBeneficiaries();
     } catch {
       setSubmitStatus({ type: 'error', message: 'Failed to verify beneficiary.' });
@@ -175,42 +210,66 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
             <h2 className="text-xl font-semibold mb-4">Register New Beneficiary</h2>
             <form onSubmit={handleRegistration} className="space-y-4" aria-label="Beneficiary registration form">
               <div className="grid grid-cols-2 gap-4">
-                <input type="text" placeholder="Beneficiary ID" value={registrationForm.beneficiaryId} required aria-label="Beneficiary ID"
-                  onChange={e => setRegistrationForm({ ...registrationForm, beneficiaryId: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                <input type="text" placeholder="Full Name" value={registrationForm.name} required aria-label="Full Name"
-                  onChange={e => setRegistrationForm({ ...registrationForm, name: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <div>
+                  <input type="text" placeholder="Beneficiary ID" value={registrationForm.beneficiaryId} aria-label="Beneficiary ID" aria-describedby="reg-beneficiaryId-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, beneficiaryId: e.target.value }); regValidation.validateField('beneficiaryId', e.target.value); }}
+                    onBlur={e => regValidation.validateField('beneficiaryId', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.beneficiaryId && regValidation.errors.beneficiaryId ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-beneficiaryId-error" error={regValidation.touched.beneficiaryId ? regValidation.errors.beneficiaryId : null} />
+                </div>
+                <div>
+                  <input type="text" placeholder="Full Name" value={registrationForm.name} aria-label="Full Name" aria-describedby="reg-name-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, name: e.target.value }); regValidation.validateField('name', e.target.value); }}
+                    onBlur={e => regValidation.validateField('name', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.name && regValidation.errors.name ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-name-error" error={regValidation.touched.name ? regValidation.errors.name : null} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <input type="text" placeholder="Disaster ID" value={registrationForm.disasterId} required aria-label="Disaster ID"
-                  onChange={e => setRegistrationForm({ ...registrationForm, disasterId: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                <input type="text" placeholder="Location" value={registrationForm.location} required aria-label="Location"
-                  onChange={e => setRegistrationForm({ ...registrationForm, location: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <div>
+                  <input type="text" placeholder="Disaster ID" value={registrationForm.disasterId} aria-label="Disaster ID" aria-describedby="reg-disasterId-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, disasterId: e.target.value }); regValidation.validateField('disasterId', e.target.value); }}
+                    onBlur={e => regValidation.validateField('disasterId', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.disasterId && regValidation.errors.disasterId ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-disasterId-error" error={regValidation.touched.disasterId ? regValidation.errors.disasterId : null} />
+                </div>
+                <div>
+                  <input type="text" placeholder="Location" value={registrationForm.location} aria-label="Location" aria-describedby="reg-location-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, location: e.target.value }); regValidation.validateField('location', e.target.value); }}
+                    onBlur={e => regValidation.validateField('location', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.location && regValidation.errors.location ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-location-error" error={regValidation.touched.location ? regValidation.errors.location : null} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <input type="text" placeholder="Wallet Address" value={registrationForm.walletAddress} required aria-label="Wallet Address"
-                  onChange={e => setRegistrationForm({ ...registrationForm, walletAddress: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
-                <input type="number" placeholder="Family Size" value={registrationForm.familySize} required min="1" aria-label="Family Size"
-                  onChange={e => setRegistrationForm({ ...registrationForm, familySize: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <div>
+                  <input type="text" placeholder="Wallet Address" value={registrationForm.walletAddress} aria-label="Wallet Address" aria-describedby="reg-walletAddress-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, walletAddress: e.target.value }); regValidation.validateField('walletAddress', e.target.value); }}
+                    onBlur={e => regValidation.validateField('walletAddress', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.walletAddress && regValidation.errors.walletAddress ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-walletAddress-error" error={regValidation.touched.walletAddress ? regValidation.errors.walletAddress : null} />
+                </div>
+                <div>
+                  <input type="number" placeholder="Family Size" value={registrationForm.familySize} min="1" aria-label="Family Size" aria-describedby="reg-familySize-error"
+                    onChange={e => { setRegistrationForm({ ...registrationForm, familySize: e.target.value }); regValidation.validateField('familySize', e.target.value); }}
+                    onBlur={e => regValidation.validateField('familySize', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched.familySize && regValidation.errors.familySize ? 'border-red-500' : ''}`} />
+                  <FieldError id="reg-familySize-error" error={regValidation.touched.familySize ? regValidation.errors.familySize : null} />
+                </div>
               </div>
               {[
-                { label: 'Special Needs (comma-separated)', field: 'specialNeeds', placeholder: 'e.g., medical, mobility' },
-                { label: 'Possession Factors (comma-separated)', field: 'possessionFactors', placeholder: 'e.g., phone_number, id_card', required: true },
-                { label: 'Behavioral Factors (comma-separated)', field: 'behavioralFactors', placeholder: 'e.g., signature_pattern', required: true },
-                { label: 'Social Factors (comma-separated)', field: 'socialFactors', placeholder: 'e.g., community_leader_vouch', required: true },
-              ].map(({ label, field, placeholder, required }) => (
+                { label: 'Special Needs (comma-separated)', field: 'specialNeeds' as const, placeholder: 'e.g., medical, mobility', required: false },
+                { label: 'Possession Factors (comma-separated)', field: 'possessionFactors' as const, placeholder: 'e.g., phone_number, id_card', required: true },
+                { label: 'Behavioral Factors (comma-separated)', field: 'behavioralFactors' as const, placeholder: 'e.g., signature_pattern', required: true },
+                { label: 'Social Factors (comma-separated)', field: 'socialFactors' as const, placeholder: 'e.g., community_leader_vouch', required: true },
+              ].map(({ label, field, placeholder }) => (
                 <div key={field}>
                   <label className="block text-sm font-medium mb-1">{label}</label>
-                  <input type="text" placeholder={placeholder} required={required}
-                    value={(registrationForm as Record<string, string>)[field]}
-                    onChange={e => setRegistrationForm({ ...registrationForm, [field]: e.target.value })}
-                    className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    aria-label={label} />
+                  <input type="text" placeholder={placeholder} value={registrationForm[field]} aria-label={label} aria-describedby={`reg-${field}-error`}
+                    onChange={e => { setRegistrationForm({ ...registrationForm, [field]: e.target.value }); regValidation.validateField(field, e.target.value); }}
+                    onBlur={e => regValidation.validateField(field, e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500 ${regValidation.touched[field] && regValidation.errors[field] ? 'border-red-500' : ''}`} />
+                  <FieldError id={`reg-${field}-error`} error={regValidation.touched[field] ? regValidation.errors[field] : null} />
                 </div>
               ))}
               <div className="flex gap-3">
@@ -231,19 +290,28 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
             <h2 className="text-xl font-semibold mb-4">Verify Beneficiary Identity</h2>
             <form onSubmit={handleVerification} className="space-y-4" aria-label="Verification form">
               <div className="grid grid-cols-2 gap-4">
-                <input type="text" placeholder="Beneficiary ID" value={verificationForm.beneficiaryId} required aria-label="Beneficiary ID"
-                  onChange={e => setVerificationForm({ ...verificationForm, beneficiaryId: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500" />
-                <input type="password" placeholder="Verifier Key" value={verificationForm.verifierKey} required aria-label="Verifier Key"
-                  onChange={e => setVerificationForm({ ...verificationForm, verifierKey: e.target.value })}
-                  className="px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500" />
+                <div>
+                  <input type="text" placeholder="Beneficiary ID" value={verificationForm.beneficiaryId} aria-label="Beneficiary ID" aria-describedby="ver-beneficiaryId-error"
+                    onChange={e => { setVerificationForm({ ...verificationForm, beneficiaryId: e.target.value }); verifyValidation.validateField('beneficiaryId', e.target.value); }}
+                    onBlur={e => verifyValidation.validateField('beneficiaryId', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500 ${verifyValidation.touched.beneficiaryId && verifyValidation.errors.beneficiaryId ? 'border-red-500' : ''}`} />
+                  <FieldError id="ver-beneficiaryId-error" error={verifyValidation.touched.beneficiaryId ? verifyValidation.errors.beneficiaryId : null} />
+                </div>
+                <div>
+                  <input type="password" placeholder="Verifier Key" value={verificationForm.verifierKey} aria-label="Verifier Key" aria-describedby="ver-verifierKey-error"
+                    onChange={e => { setVerificationForm({ ...verificationForm, verifierKey: e.target.value }); verifyValidation.validateField('verifierKey', e.target.value); }}
+                    onBlur={e => verifyValidation.validateField('verifierKey', e.target.value)}
+                    className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500 ${verifyValidation.touched.verifierKey && verifyValidation.errors.verifierKey ? 'border-red-500' : ''}`} />
+                  <FieldError id="ver-verifierKey-error" error={verifyValidation.touched.verifierKey ? verifyValidation.errors.verifierKey : null} />
+                </div>
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">Provided Factors (comma-separated)</label>
-                <input type="text" placeholder="e.g., phone_number, signature_pattern" required aria-label="Provided Factors"
-                  value={verificationForm.providedFactors}
-                  onChange={e => setVerificationForm({ ...verificationForm, providedFactors: e.target.value })}
-                  className="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500" />
+                <input type="text" placeholder="e.g., phone_number, signature_pattern" value={verificationForm.providedFactors} aria-label="Provided Factors" aria-describedby="ver-providedFactors-error"
+                  onChange={e => { setVerificationForm({ ...verificationForm, providedFactors: e.target.value }); verifyValidation.validateField('providedFactors', e.target.value); }}
+                  onBlur={e => verifyValidation.validateField('providedFactors', e.target.value)}
+                  className={`w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-green-500 ${verifyValidation.touched.providedFactors && verifyValidation.errors.providedFactors ? 'border-red-500' : ''}`} />
+                <FieldError id="ver-providedFactors-error" error={verifyValidation.touched.providedFactors ? verifyValidation.errors.providedFactors : null} />
               </div>
               <div className="flex gap-3">
                 <LoadingButton type="submit" loading={submitting} loadingLabel="Verifying…"
