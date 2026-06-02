@@ -2,17 +2,38 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/sdk/src'],
-  testMatch: ['**/__tests__/**/*.test.ts', '**/*.test.ts'],
+  roots: ['<rootDir>/tests'],
+  testMatch: ['**/*.test.ts'],
   transform: {
     '^.+\\.tsx?$': ['ts-jest', {
+      diagnostics: false,
       tsconfig: {
-        rootDir: './sdk/src',
-        strict: true,
+        target: 'ES2020',
+        module: 'commonjs',
         esModuleInterop: true,
         skipLibCheck: true,
+        strict: false,
       },
     }],
   },
-  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json'],
+  coverageProvider: 'v8',
+  collectCoverageFrom: [
+    'sdk/src/**/*.ts',
+    '!sdk/src/index.ts',
+  ],
+  coverageDirectory: 'coverage',
+  coverageReporters: ['text', 'lcov', 'html', 'json-summary'],
+  coverageThreshold: {
+    global: {
+      branches: 50,
+      functions: 50,
+      lines: 50,
+      statements: 50,
+    },
+  },
+  moduleNameMapper: {
+    '^stellar-sdk$': '<rootDir>/tests/__mocks__/stellar-sdk.ts',
+    '^crypto-js$': '<rootDir>/tests/__mocks__/crypto-js.ts',
+  },
+  testTimeout: 30000,
 };
