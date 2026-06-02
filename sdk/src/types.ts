@@ -82,6 +82,7 @@ export interface EmergencyFund {
   isActive: boolean;
   releaseTriggers: string[];
   requiredSignatures: number;
+  metadata: Record<string, string>;
 }
 
 export interface DisbursementRecord {
@@ -93,6 +94,24 @@ export interface DisbursementRecord {
   purpose: string;
   approvedBy: string[];
   transactionHash: string;
+}
+
+/** A single entry within a batch disbursement request */
+export interface BatchDisbursementEntry {
+  beneficiary: string;
+  amount: string;
+  purpose: string;
+}
+
+/** Result returned after submitting a batch disbursement */
+export interface BatchDisbursementResult {
+  success: boolean;
+  fundId: string;
+  disbursementIds: string[];
+  totalAmount: string;
+  count: number;
+  transactionHash?: string;
+  error?: string;
 }
 
 export interface ConditionalTransfer {
@@ -383,93 +402,31 @@ export interface PaperBackupCode {
   instructions: string;
 }
 
-// Batch Contract Call Types
+// ─── Pagination ──────────────────────────────────────────────────────────────
 
-/** Maximum number of operations allowed in a single Stellar transaction. */
-export const BATCH_MAX_SIZE = 100;
+/** Opaque cursor string returned by paginated endpoints. */
+export type PaginationCursor = string;
 
-/** A single contract call within a batch. */
-export interface BatchContractCall {
-  /** Which deployed contract to invoke (maps to NetworkConfig.contractIds). */
-  contractTarget: ContractTarget;
-  /** Name of the contract method to invoke. */
-  method: string;
+/** Generic paginated response wrapper. */
+export interface PaginatedResponse<T> {
+  /** Items in this page. */
+  items: T[];
   /**
-   * Positional arguments for the method, already encoded as xdr.ScVal.
-   * Use `nativeToScVal` from stellar-sdk to convert native JS values.
+   * Cursor to pass as `cursor` in the next request.
+   * `null` means there are no more pages.
    */
-  args: import('stellar-sdk').xdr.ScVal[];
+  nextCursor: PaginationCursor | null;
+  /** Convenience flag – true when `nextCursor` is non-null. */
+  hasMore: boolean;
 }
 
-/** Input to a batch execution request. */
-export interface BatchExecuteRequest {
-  /** Ordered list of contract calls to include in the transaction. */
-  calls: BatchContractCall[];
-  /** Secret key of the account that will sign and pay for the transaction. */
-  signerKey: string;
-}
-
-/** Result for a single call within a batch. */
-export interface BatchCallResult {
-  /** Zero-based index matching the original calls array. */
-  index: number;
-  /** Whether this individual call succeeded. */
-  success: boolean;
+/** Options accepted by paginated list methods. */
+export interface PaginationOptions {
+  /** Cursor from the previous page's `nextCursor`. Omit for the first page. */
+  cursor?: PaginationCursor;
   /**
-   * Native JS value decoded from the call's return value (SUCCESS only).
-   * Undefined when the overall transaction failed or the call produced no value.
+   * Maximum number of items to return.
+   * Must be between 1 and 100 (inclusive). Defaults to 20.
    */
-  returnValue?: unknown;
-  /** Error message when success is false. */
-  error?: string;
-}
-
-/** Result returned after a batch execution attempt. */
-export interface BatchExecuteResult {
-  /** Stellar transaction hash. */
-  transactionHash: string;
-  /** Terminal status of the overall transaction. */
-  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
-  /** Per-call results in the same order as the input calls array. */
-  results: BatchCallResult[];
-  /** Ledger number at which the transaction was confirmed (SUCCESS only). */
-  ledger?: number;
-}
-
-// Contract Upgrade Types
-
-/** Identifies which deployed contract to upgrade. */
-export type ContractTarget =
-  | 'platform'
-  | 'aidRegistry'
-  | 'beneficiaryManager'
-  | 'merchantNetwork'
-  | 'cashTransfer'
-  | 'supplyChainTracker'
-  | 'antiFraud';
-
-/** Input required to perform a contract upgrade. */
-export interface ContractUpgradeRequest {
-  /** Which contract to upgrade. */
-  target: ContractTarget;
-  /**
-   * New WASM hash (hex or base64) that has already been uploaded to the
-   * Stellar network via `uploadContractWasm`.  The upgrade transaction will
-   * reference this hash rather than re-uploading the binary.
-   */
-  newWasmHash: string;
-  /** Secret key of the account authorised to perform the upgrade. */
-  adminKey: string;
-}
-
-/** Result returned after a successful upgrade submission. */
-export interface ContractUpgradeResult {
-  /** The contract identifier that was upgraded (unchanged after upgrade). */
-  contractId: string;
-  /** Stellar transaction hash of the upgrade transaction. */
-  transactionHash: string;
-  /** Terminal status reported by the network. */
-  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
-  /** Ledger number at which the upgrade was confirmed (SUCCESS only). */
-  ledger?: number;
+  limit?: number;
 }
