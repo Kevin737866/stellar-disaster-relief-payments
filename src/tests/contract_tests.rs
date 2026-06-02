@@ -921,3 +921,165 @@ mod batch_disbursement_tests {
         assert_eq!(released, U256::from_u64(&env, 250)); // 200 batch + 50 single
     }
 }
+
+
+// ── Event Emission Tests ─────────────────────────────────────────────────────
+
+mod event_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Events, Map, U256};
+    use crate::AidRegistry;
+
+    #[test]
+    fn test_create_fund_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, AidRegistry);
+        let client = crate::AidRegistryClient::new(&env, &contract_id);
+
+        let fund_id = String::from_str(&env, "fund_event_test");
+        let mut signers: Vec<Address> = Vec::new(&env);
+        signers.push_back(admin.clone());
+        let metadata: Map<String, String> = Map::new(&env);
+
+        client.create_fund(
+            &admin, &fund_id,
+            &String::from_str(&env, "Test Fund"),
+            &String::from_str(&env, "Test Description"),
+            &U256::from_u64(&env, 1000),
+            &String::from_str(&env, "earthquake"),
+            &String::from_str(&env, "Test Region"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers, &1u32, &metadata,
+        );
+
+        let events = env.events().all();
+        assert!(events.len() > 0);
+    }
+
+    #[test]
+    fn test_submit_disbursement_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let contract_id = env.register_contract(None, AidRegistry);
+        let client = crate::AidRegistryClient::new(&env, &contract_id);
+
+        let fund_id = String::from_str(&env, "fund_disb_event");
+        let mut signers: Vec<Address> = Vec::new(&env);
+        signers.push_back(admin.clone());
+        let metadata: Map<String, String> = Map::new(&env);
+
+        client.create_fund(
+            &admin, &fund_id,
+            &String::from_str(&env, "Test Fund"),
+            &String::from_str(&env, "Description"),
+            &U256::from_u64(&env, 5000),
+            &String::from_str(&env, "flood"),
+            &String::from_str(&env, "Region"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers, &1u32, &metadata,
+        );
+
+        let mut approvers: Vec<Address> = Vec::new(&env);
+        approvers.push_back(admin.clone());
+
+        client.submit_disbursement(
+            &admin, &fund_id, &beneficiary,
+            &U256::from_u64(&env, 100),
+            &String::from_str(&env, "emergency"),
+            &approvers,
+        );
+
+        let events = env.events().all();
+        assert!(events.len() >= 2); // fund_created + fund_disbursed
+    }
+
+    #[test]
+    fn test_batch_disbursement_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, AidRegistry);
+        let client = crate::AidRegistryClient::new(&env, &contract_id);
+
+        let fund_id = String::from_str(&env, "fund_batch_event");
+        let mut signers: Vec<Address> = Vec::new(&env);
+        signers.push_back(admin.clone());
+        let metadata: Map<String, String> = Map::new(&env);
+
+        client.create_fund(
+            &admin, &fund_id,
+            &String::from_str(&env, "Batch Test"),
+            &String::from_str(&env, "Batch Description"),
+            &U256::from_u64(&env, 10000),
+            &String::from_str(&env, "drought"),
+            &String::from_str(&env, "Region"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers, &1u32, &metadata,
+        );
+
+        let mut entries: Vec<(Address, U256, String)> = Vec::new(&env);
+        entries.push_back((Address::generate(&env), U256::from_u64(&env, 50), String::from_str(&env, "food")));
+        entries.push_back((Address::generate(&env), U256::from_u64(&env, 75), String::from_str(&env, "shelter")));
+
+        let mut approvers: Vec<Address> = Vec::new(&env);
+        approvers.push_back(admin.clone());
+
+        client.submit_batch_disbursement(&admin, &fund_id, &entries, &approvers);
+
+        let events = env.events().all();
+        assert!(events.len() >= 2); // fund_created + batch_disbursed
+    }
+
+    #[test]
+    fn test_execute_trigger_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let contract_id = env.register_contract(None, AidRegistry);
+        let client = crate::AidRegistryClient::new(&env, &contract_id);
+
+        let fund_id = String::from_str(&env, "fund_trigger_event");
+        let trigger_id = String::from_str(&env, "trigger_1");
+        let mut signers: Vec<Address> = Vec::new(&env);
+        signers.push_back(admin.clone());
+        let metadata: Map<String, String> = Map::new(&env);
+
+        client.create_fund(
+            &admin, &fund_id,
+            &String::from_str(&env, "Trigger Test"),
+            &String::from_str(&env, "Description"),
+            &U256::from_u64(&env, 10000),
+            &String::from_str(&env, "seismic"),
+            &String::from_str(&env, "Region"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers, &1u32, &metadata,
+        );
+
+        client.add_trigger(
+            &admin, &fund_id, &trigger_id,
+            &String::from_str(&env, "seismic"),
+            &String::from_str(&env, "6.0"),
+            &oracle.to_string(),
+            &U256::from_u64(&env, 500),
+            &18_000_000i64, &-70_000_000i64, &100u64, &1u32,
+        );
+
+        client.submit_oracle_data(
+            &oracle, &fund_id, &trigger_id,
+            &String::from_str(&env, "seismic"),
+            &String::from_str(&env, "700"),
+            &String::from_str(&env, "Epicenter Region"),
+            &85u64,
+        );
+
+        client.execute_trigger(&fund_id, &trigger_id);
+
+        let events = env.events().all();
+        assert!(events.len() >= 2); // fund_created + trigger_activated
+    }
+}

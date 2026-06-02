@@ -11,6 +11,13 @@ import {
   BASE_FEE,
 } from 'stellar-sdk';
 import axios from 'axios';
+import type {
+  AidRegistryEvent,
+  FundCreatedEvent,
+  FundDisbursedEvent,
+  BatchDisbursedEvent,
+  TriggerActivatedEvent,
+} from './types';
 
 export interface EmergencyFund {
   id: string;
@@ -749,6 +756,113 @@ export class EmergencyFundsClient {
       };
     } catch (error: any) {
       throw new Error(`Impact report generation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Parses a contract event from transaction result metadata.
+   * Returns null if the event is not an AidRegistry event or parsing fails.
+   */
+  static parseEvent(event: any): AidRegistryEvent | null {
+    try {
+      // Soroban events have topics and data. Topic[0] is typically the event name.
+      if (!event.topics || event.topics.length === 0) return null;
+      const topic = event.topics[0];
+      const eventName = topic.toString(); // Simplified - real parsing would decode ScVal
+
+      switch (eventName) {
+        case 'fund_created': {
+          // Extract data from event.topics and event.data
+          // In practice, you would decode ScVal using stellar-sdk utilities
+          const fundId = event.topics[1]?.toString() || '';
+          const admin = event.data?.admin?.toString() || '';
+          const totalAmount = event.data?.totalAmount?.toString() || '0';
+          const disasterType = event.data?.disasterType?.toString() || '';
+          const expiresAt = Number(event.data?.expiresAt || 0);
+          return {
+            type: 'fund_created',
+            fundId,
+            admin,
+            totalAmount,
+            disasterType,
+            expiresAt,
+          };
+        }
+        case 'fund_disbursed': {
+          const fundId = event.topics[1]?.toString() || '';
+          const disbursementId = event.data?.disbursementId?.toString() || '';
+          const beneficiary = event.data?.beneficiary?.toString() || '';
+          const amount = event.data?.amount?.toString() || '0';
+          const purpose = event.data?.purpose?.toString() || '';
+          return {
+            type: 'fund_disbursed',
+            fundId,
+            disbursementId,
+            beneficiary,
+            amount,
+            purpose,
+          };
+        }
+        case 'batch_disbursed': {
+          const fundId = event.topics[1]?.toString() || '';
+          const count = Number(event.data?.count || 0);
+          const totalAmount = event.data?.totalAmount?.toString() || '0';
+          return {
+            type: 'batch_disbursed',
+            fundId,
+            count,
+            totalAmount,
+          };
+        }
+        case 'trigger_activated': {
+          const fundId = event.topics[1]?.toString() || '';
+          const triggerId = event.data?.triggerId?.toString() || '';
+          const amountReleased = event.data?.amountReleased?.toString() || '0';
+          const confirmations = Number(event.data?.confirmations || 0);
+          return {
+            type: 'trigger_activated',
+            fundId,
+            triggerId,
+            amountReleased,
+            confirmations,
+          };
+        }
+        default:
+          return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Retrieves events for a given transaction hash.
+   * Returns an array of parsed AidRegistryEvent objects.
+   */
+  async getEvents(transactionHash: string): Promise<AidRegistryEvent[]> {
+    try {
+      // Fetch transaction result from Horizon
+      const txResult = await this.server.transactions().transaction(transactionHash).call();
+      if (!txResult || !txResult.resultMetaXdr) {
+        return [];
+      }
+
+      // Parse transaction meta XDR to extract events
+      const meta = xdr.TransactionMeta.fromXDR(txResult.resultMetaXdr, 'base64');
+      const events: AidRegistryEvent[] = [];
+
+      // Extract events from meta (simplified - real implementation needs proper XDR parsing)
+      // This is a placeholder structure; actual Soroban event extraction would differ
+      if ((meta as any).v3?.sorobanMeta?.events) {
+        for (const event of (meta as any).v3.sorobanMeta.events) {
+          const parsed = EmergencyFundsClient.parseEvent(event);
+          if (parsed) events.push(parsed);
+        }
+      }
+
+      return events;
+    } catch (error: any) {
+      throw new Error(`Failed to get events: ${error.message}`);
     }
   }
 }
