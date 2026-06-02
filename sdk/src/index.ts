@@ -1,5 +1,8 @@
 // Export all clients
 export { AidClient } from './aidClient';
+export { CostEstimationClient } from './costEstimation';
+export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
+export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
