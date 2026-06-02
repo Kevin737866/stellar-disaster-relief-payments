@@ -82,6 +82,7 @@ export interface EmergencyFund {
   isActive: boolean;
   releaseTriggers: string[];
   requiredSignatures: number;
+  metadata: Record<string, string>;
 }
 
 export interface DisbursementRecord {
@@ -93,6 +94,24 @@ export interface DisbursementRecord {
   purpose: string;
   approvedBy: string[];
   transactionHash: string;
+}
+
+/** A single entry within a batch disbursement request */
+export interface BatchDisbursementEntry {
+  beneficiary: string;
+  amount: string;
+  purpose: string;
+}
+
+/** Result returned after submitting a batch disbursement */
+export interface BatchDisbursementResult {
+  success: boolean;
+  fundId: string;
+  disbursementIds: string[];
+  totalAmount: string;
+  count: number;
+  transactionHash?: string;
+  error?: string;
 }
 
 export interface ConditionalTransfer {
@@ -381,40 +400,31 @@ export interface PaperBackupCode {
   instructions: string;
 }
 
-// Contract Upgrade Types
+// ─── Pagination ──────────────────────────────────────────────────────────────
 
-/** Identifies which deployed contract to upgrade. */
-export type ContractTarget =
-  | 'platform'
-  | 'aidRegistry'
-  | 'beneficiaryManager'
-  | 'merchantNetwork'
-  | 'cashTransfer'
-  | 'supplyChainTracker'
-  | 'antiFraud';
+/** Opaque cursor string returned by paginated endpoints. */
+export type PaginationCursor = string;
 
-/** Input required to perform a contract upgrade. */
-export interface ContractUpgradeRequest {
-  /** Which contract to upgrade. */
-  target: ContractTarget;
+/** Generic paginated response wrapper. */
+export interface PaginatedResponse<T> {
+  /** Items in this page. */
+  items: T[];
   /**
-   * New WASM hash (hex or base64) that has already been uploaded to the
-   * Stellar network via `uploadContractWasm`.  The upgrade transaction will
-   * reference this hash rather than re-uploading the binary.
+   * Cursor to pass as `cursor` in the next request.
+   * `null` means there are no more pages.
    */
-  newWasmHash: string;
-  /** Secret key of the account authorised to perform the upgrade. */
-  adminKey: string;
+  nextCursor: PaginationCursor | null;
+  /** Convenience flag – true when `nextCursor` is non-null. */
+  hasMore: boolean;
 }
 
-/** Result returned after a successful upgrade submission. */
-export interface ContractUpgradeResult {
-  /** The contract identifier that was upgraded (unchanged after upgrade). */
-  contractId: string;
-  /** Stellar transaction hash of the upgrade transaction. */
-  transactionHash: string;
-  /** Terminal status reported by the network. */
-  status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
-  /** Ledger number at which the upgrade was confirmed (SUCCESS only). */
-  ledger?: number;
+/** Options accepted by paginated list methods. */
+export interface PaginationOptions {
+  /** Cursor from the previous page's `nextCursor`. Omit for the first page. */
+  cursor?: PaginationCursor;
+  /**
+   * Maximum number of items to return.
+   * Must be between 1 and 100 (inclusive). Defaults to 20.
+   */
+  limit?: number;
 }

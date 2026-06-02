@@ -1,19 +1,24 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  Server,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-import { 
-  ConditionalTransfer, 
-  SpendingRule, 
+import {
+  ConditionalTransfer,
+  SpendingRule,
   TransferTransaction,
-  PaymentRequest 
+  PaymentRequest
 } from './types';
+import {
+  TransactionError,
+  NetworkError,
+  ValidationError,
+} from './errors';
 
 export class TransferClient {
   private server: Server;
@@ -70,7 +75,7 @@ export class TransferClient {
     if (result.status === 'SUCCESS') {
       return `Conditional transfer ${transferId} created successfully`;
     } else {
-      throw new Error(`Failed to create transfer: ${result.status}`);
+      throw new TransactionError(transferId, result.status, { operation: 'create transfer' });
     }
   }
 
@@ -114,7 +119,7 @@ export class TransferClient {
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
-      throw new Error(`Failed to process spend: ${result.status}`);
+      throw new TransactionError(transferId, result.status, { operation: 'spend', merchantId });
     }
   }
 
@@ -176,7 +181,7 @@ export class TransferClient {
       const recalledAmount = scValToNative(result.result.retval);
       return `Recalled ${recalledAmount} units from transfer ${transferId}`;
     } else {
-      throw new Error(`Failed to recall funds: ${result.status}`);
+      throw new TransactionError(transferId, result.status, { operation: 'recall funds' });
     }
   }
 
@@ -228,7 +233,7 @@ export class TransferClient {
     if (result.status === 'SUCCESS') {
       return `Transfer ${transferId} expiry extended to ${new Date(newExpiry).toISOString()}`;
     } else {
-      throw new Error(`Failed to extend expiry: ${result.status}`);
+      throw new TransactionError(transferId, result.status, { operation: 'extend expiry' });
     }
   }
 
@@ -445,7 +450,7 @@ export class TransferClient {
     const transactions = await this.getTransactions(transferId);
 
     if (!transfer) {
-      throw new Error(`Transfer ${transferId} not found`);
+      throw new TransactionError(transferId, 'Transfer not found', { operation: 'get transfer stats' });
     }
 
     const totalSpent = transfer.spentAmount;
