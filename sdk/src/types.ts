@@ -428,3 +428,49 @@ export interface PaginationOptions {
    */
   limit?: number;
 }
+
+// ─── Contract Event Types ────────────────────────────────────────────────────
+
+/** Event emitted when a new emergency fund is created via create_fund. */
+export interface FundCreatedEvent {
+  type: 'fund_created';
+  fundId: string;
+  admin: string;
+  totalAmount: string;
+  disasterType: string;
+  expiresAt: number;
+}
+
+/** Event emitted when a disbursement is made via submit_disbursement or execute_multi_sig_release. */
+export interface FundDisbursedEvent {
+  type: 'fund_disbursed';
+  fundId: string;
+  disbursementId: string;
+  beneficiary: string;
+  amount: string;
+  purpose: string;
+}
+
+/** Event emitted when a batch disbursement is completed via submit_batch_disbursement. */
+export interface BatchDisbursedEvent {
+  type: 'batch_disbursed';
+  fundId: string;
+  count: number;
+  totalAmount: string;
+}
+
+/** Event emitted when an automated trigger is activated via execute_trigger. */
+export interface TriggerActivatedEvent {
+  type: 'trigger_activated';
+  fundId: string;
+  triggerId: string;
+  amountReleased: string;
+  confirmations: number;
+}
+
+/** Union of all contract event types emitted by the AidRegistry contract. */
+export type AidRegistryEvent =
+  | FundCreatedEvent
+  | FundDisbursedEvent
+  | BatchDisbursedEvent
+  | TriggerActivatedEvent;

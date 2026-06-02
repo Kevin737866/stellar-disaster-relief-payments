@@ -175,6 +175,12 @@ impl AidRegistry {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = Map::new(&env);
         env.storage().instance().set(&disbursement_key, &disbursements);
+
+        // Emit fund_created event
+        env.events().publish(
+            (Symbol::new(&env, "fund_created"), fund_id.clone()),
+            (admin, total_amount, disaster_type, expires_at),
+        );
     }
 
     /// Get fund details
@@ -330,10 +336,10 @@ impl AidRegistry {
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
-            beneficiary,
-            amount,
+            beneficiary: beneficiary.clone(),
+            amount: amount.clone(),
             timestamp: env.ledger().timestamp(),
-            purpose,
+            purpose: purpose.clone(),
             approved_by: approvers,
             transaction_hash: String::from_str(&env, ""), // Will be set after transaction
             trigger_id: None,
@@ -347,9 +353,15 @@ impl AidRegistry {
         env.storage().instance().set(&disbursement_key, &disbursements);
         
         // Update fund released amount
-        fund.released_amount += amount;
-        funds.set(fund_id, fund);
+        fund.released_amount += amount.clone();
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit fund_disbursed event
+        env.events().publish(
+            (Symbol::new(&env, "fund_disbursed"), fund_id.clone()),
+            (disbursement_id, beneficiary, amount, purpose),
+        );
     }
 
     /// Get disbursement history for a fund
@@ -720,6 +732,12 @@ impl AidRegistry {
         let release_summary_key = Symbol::new(&env, &format!("auto_release_{}_{}", fund_id, env.ledger().timestamp()));
         env.storage().instance().set(&release_summary_key, &trigger.auto_release_amount);
         
+        // Emit trigger_activated event
+        env.events().publish(
+            (Symbol::new(&env, "trigger_activated"), fund_id.clone()),
+            (trigger_id, trigger.auto_release_amount.clone(), valid_confirmations),
+        );
+
         trigger.auto_release_amount
     }
 
@@ -838,9 +856,15 @@ impl AidRegistry {
             .set(&disbursement_key, &disbursements);
 
         // ── Update fund released amount ──────────────────────────────────────
-        fund.released_amount = fund.released_amount + total;
+        fund.released_amount = fund.released_amount + total.clone();
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit batch_disbursed event
+        env.events().publish(
+            (Symbol::new(&env, "batch_disbursed"), fund_id.clone()),
+            (ids.len() as u32, total),
+        );
 
         ids
     }
@@ -887,17 +911,17 @@ impl AidRegistry {
         }
         
         // Execute release
-        fund.released_amount += amount;
+        fund.released_amount += amount.clone();
         fund.current_status = String::from_str(&env, FUND_STATUS_RELEASED);
         
         let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
-            beneficiary,
-            amount,
+            beneficiary: beneficiary.clone(),
+            amount: amount.clone(),
             timestamp: env.ledger().timestamp(),
-            purpose,
+            purpose: purpose.clone(),
             approved_by: approvers.clone(),
             transaction_hash: String::from_str(&env, ""),
             trigger_id: None,
@@ -910,12 +934,18 @@ impl AidRegistry {
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
         
-        disbursements.set(disbursement_id, disbursement);
+        disbursements.set(disbursement_id.clone(), disbursement);
         env.storage().instance().set(&disbursement_key, &disbursements);
         
         // Update fund
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit fund_disbursed event (multi-sig path)
+        env.events().publish(
+            (Symbol::new(&env, "fund_disbursed"), fund_id.clone()),
+            (disbursement_id, beneficiary, amount, purpose),
+        );
         
         true
     }
