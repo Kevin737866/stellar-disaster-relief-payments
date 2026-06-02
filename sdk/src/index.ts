@@ -1,10 +1,8 @@
 // Export all clients
 export { AidClient } from './aidClient';
-export { ContractUpgradeClient } from './contractUpgradeClient';
-export type { ContractTarget, ContractUpgradeRequest, ContractUpgradeResult } from './types';
-export { TransactionPoller } from './transactionPoller';
-export type { PollOptions, TransactionPollResult } from './transactionPoller';
-export { ReadCache } from './readCache';
+export { CostEstimationClient } from './costEstimation';
+export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
+export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
 export { BeneficiaryClient } from './beneficiaryClient';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
@@ -22,6 +20,9 @@ export { MerchantApp } from './merchantApp';
 
 // Export all types
 export * from './types';
+
+// Export error types
+export * from './errors';
 
 // Export network configurations
 export const TESTNET_CONFIG = {
