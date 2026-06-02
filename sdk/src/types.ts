@@ -82,6 +82,7 @@ export interface EmergencyFund {
   isActive: boolean;
   releaseTriggers: string[];
   requiredSignatures: number;
+  metadata: Record<string, string>;
 }
 
 export interface DisbursementRecord {
@@ -93,6 +94,24 @@ export interface DisbursementRecord {
   purpose: string;
   approvedBy: string[];
   transactionHash: string;
+}
+
+/** A single entry within a batch disbursement request */
+export interface BatchDisbursementEntry {
+  beneficiary: string;
+  amount: string;
+  purpose: string;
+}
+
+/** Result returned after submitting a batch disbursement */
+export interface BatchDisbursementResult {
+  success: boolean;
+  fundId: string;
+  disbursementIds: string[];
+  totalAmount: string;
+  count: number;
+  transactionHash?: string;
+  error?: string;
 }
 
 export interface ConditionalTransfer {
@@ -379,4 +398,33 @@ export interface PaperBackupCode {
   checksum: string;
   createdAt: number;
   instructions: string;
+}
+
+// ─── Pagination ──────────────────────────────────────────────────────────────
+
+/** Opaque cursor string returned by paginated endpoints. */
+export type PaginationCursor = string;
+
+/** Generic paginated response wrapper. */
+export interface PaginatedResponse<T> {
+  /** Items in this page. */
+  items: T[];
+  /**
+   * Cursor to pass as `cursor` in the next request.
+   * `null` means there are no more pages.
+   */
+  nextCursor: PaginationCursor | null;
+  /** Convenience flag – true when `nextCursor` is non-null. */
+  hasMore: boolean;
+}
+
+/** Options accepted by paginated list methods. */
+export interface PaginationOptions {
+  /** Cursor from the previous page's `nextCursor`. Omit for the first page. */
+  cursor?: PaginationCursor;
+  /**
+   * Maximum number of items to return.
+   * Must be between 1 and 100 (inclusive). Defaults to 20.
+   */
+  limit?: number;
 }

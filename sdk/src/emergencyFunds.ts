@@ -30,6 +30,7 @@ export interface EmergencyFund {
   currentStatus: 'active' | 'triggered' | 'released' | 'recalled' | 'expired';
   fundAllocation: FundAllocation[];
   reservedForRecall: string;
+  metadata: Record<string, string>;
 }
 
 export interface Trigger {
@@ -135,7 +136,8 @@ export class EmergencyFundsClient {
     geographicScope: string,
     expiresAt: number,
     signersArray: string[],
-    requiredSignatures: number
+    requiredSignatures: number,
+    metadata: Record<string, string> = {}
   ): Promise<{ success: boolean; transactionHash: string; fundId: string }> {
     if (!fundId || fundId.trim().length === 0) {
       throw new Error('fund_id cannot be empty');
@@ -167,7 +169,8 @@ export class EmergencyFundsClient {
             geographicScope,
             expiresAt,
             signersArray.map(s => new Address(s)),
-            requiredSignatures
+            requiredSignatures,
+            metadata
           )
         )
         .setTimeout(300)
@@ -337,6 +340,58 @@ export class EmergencyFundsClient {
         timestamp: Date.now(),
         error: error.message,
       };
+    }
+  }
+
+  /**
+   * Executes batch multi-sig release for multiple beneficiaries atomically.
+   * All entries succeed or all fail.
+   *
+   * @param fundId    Fund to draw from
+   * @param entries   Array of { beneficiary, amount, purpose }
+   * @param approvers Keypairs of multi-sig approvers
+   */
+  async executeBatchMultiSigRelease(
+    fundId: string,
+    entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
+    approvers: Keypair[]
+  ): Promise<{ success: boolean; transactionHash: string; count: number }> {
+    if (entries.length === 0) {
+      throw new Error('Batch must contain at least one entry');
+    }
+
+    try {
+      const primaryAccount = await this.server.loadAccount(approvers[0].publicKey());
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(primaryAccount, {
+        fee: String(Number(BASE_FEE) * approvers.length),
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'submit_batch_disbursement',
+            new Address(approvers[0].publicKey()),
+            fundId,
+            entries.map(e => [new Address(e.beneficiary), e.amount, e.purpose]),
+            approvers.map(a => new Address(a.publicKey()))
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      for (const approver of approvers) {
+        transaction.sign(approver);
+      }
+
+      const response = await this.server.submitTransaction(transaction);
+      return {
+        success: true,
+        transactionHash: response.hash,
+        count: entries.length,
+      };
+    } catch (error: any) {
+      throw new Error(`Batch multi-sig release failed: ${error.message}`);
     }
   }
 
@@ -600,6 +655,60 @@ export class EmergencyFundsClient {
       };
     } catch (error: any) {
       throw new Error(`Trigger deactivation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Updates metadata for a fund
+   */
+  async updateMetadata(
+    adminAddress: string,
+    fundId: string,
+    metadata: Record<string, string>
+  ): Promise<{ success: boolean; transactionHash: string }> {
+    try {
+      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'update_metadata',
+            new Address(adminAddress),
+            fundId,
+            metadata
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      transaction.sign(this.signingKey);
+      const response = await this.server.submitTransaction(transaction);
+
+      return {
+        success: true,
+        transactionHash: response.hash,
+      };
+    } catch (error: any) {
+      throw new Error(`Metadata update failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Gets metadata for a fund
+   */
+  async getMetadata(fundId: string): Promise<Record<string, string>> {
+    try {
+      const contract = new Contract(this.contractId);
+
+      // Note: This would typically use contract.call() in a simulation
+      // For now, returning a placeholder structure
+      return {};
+    } catch (error: any) {
+      throw new Error(`Failed to get fund metadata: ${error.message}`);
     }
   }
 
