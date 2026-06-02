@@ -123,6 +123,63 @@ export class AidClient {
   }
 
   /**
+   * Submit multiple disbursements atomically in a single transaction.
+   * All entries succeed or all fail — no partial state.
+   *
+   * @param requesterKey  Secret key of the requester
+   * @param fundId        Fund to draw from
+   * @param entries       Array of { beneficiary, amount, purpose }
+   * @param approvers     Secret keys of multi-sig approvers
+   * @returns Array of disbursement IDs created on-chain
+   */
+  async triggerBatchDisbursement(
+    requesterKey: string,
+    fundId: string,
+    entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
+    approvers: string[]
+  ): Promise<string[]> {
+    if (entries.length === 0) {
+      throw new Error('Batch must contain at least one entry');
+    }
+
+    const requesterKeypair = Keypair.fromSecret(requesterKey);
+    const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
+
+    // Build the entries as a Vec of tuples for the contract call
+    const entriesScVal = nativeToScVal(
+      entries.map(e => [e.beneficiary, e.amount, e.purpose])
+    );
+
+    const tx = new TransactionBuilder(requesterAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'submit_batch_disbursement',
+          ...[
+            new Address(requesterKeypair.publicKey()).toScVal(),
+            nativeToScVal(fundId),
+            entriesScVal,
+            nativeToScVal(approvers),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    tx.sign(requesterKeypair);
+    const result = await this.server.sendTransaction(tx);
+
+    if (result.status === 'SUCCESS') {
+      const ids = scValToNative(result.resultMetaXdr) as string[];
+      return ids ?? [];
+    } else {
+      throw new Error(`Batch disbursement failed: ${result.status}`);
+    }
+  }
+
+  /**
    * Get fund details
    */
   async getFund(fundId: string): Promise<EmergencyFund | null> {
