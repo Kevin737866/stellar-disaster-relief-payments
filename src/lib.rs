@@ -8,6 +8,9 @@ mod cash_transfer;
 mod supply_chain_tracker;
 mod anti_fraud;
 
+#[cfg(test)]
+mod test;
+
 pub use aid_registry::*;
 pub use beneficiary_manager::*;
 pub use merchant_network::*;
