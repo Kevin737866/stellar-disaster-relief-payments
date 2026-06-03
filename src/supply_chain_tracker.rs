@@ -1,4 +1,6 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256};
+
+use crate::rbac::{self, ROLE_NGO, ROLE_TRANSPORTER, ROLE_RECIPIENT};
 
 #[contract]
 pub struct SupplyChainTracker;
@@ -14,11 +16,13 @@ pub struct SupplyShipment {
     pub destination: Location,
     pub created_at: u64,
     pub estimated_arrival: u64,
-    pub current_status: String, // "in_transit", "at_checkpoint", "delivered", "lost"
+    pub current_status: String,
     pub checkpoints: Vec<Checkpoint>,
     pub assigned_transporter: Option<Address>,
     pub temperature_requirements: Option<TemperatureRequirements>,
     pub special_handling: Vec<String>,
+    /// The address that created this shipment (used for ownership checks).
+    pub creator: Address,
 }
 
 #[derive(Clone)]
@@ -37,8 +41,8 @@ pub struct Checkpoint {
     pub timestamp: u64,
     pub verified_by: Address,
     pub quantity_verified: U256,
-    pub condition: String, // "good", "damaged", "partial_loss"
-    pub photos: Vec<String>, // IPFS hashes or similar
+    pub condition: String,
+    pub photos: Vec<String>,
     pub notes: String,
     pub temperature: Option<f64>,
 }
@@ -47,7 +51,7 @@ pub struct Checkpoint {
 pub struct TemperatureRequirements {
     pub min_temp: f64,
     pub max_temp: f64,
-    pub critical: bool, // Whether temperature excursions compromise the supply
+    pub critical: bool,
 }
 
 #[derive(Clone)]
@@ -63,7 +67,9 @@ pub struct RecipientConfirmation {
 
 #[contractimpl]
 impl SupplyChainTracker {
-    /// Create a new supply shipment
+    /// Create a new supply shipment.
+    ///
+    /// **Required role:** NGO
     pub fn create_shipment(
         env: Env,
         donor: Address,
@@ -79,18 +85,19 @@ impl SupplyChainTracker {
         special_handling: Vec<String>,
     ) {
         donor.require_auth();
-        
-        // Check for duplicate shipment
+        rbac::require_role(&env, &donor, ROLE_NGO);
+
         let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+
         if shipments.contains_key(shipment_id.clone()) {
-            panic_with_error!(&env, "Shipment already exists");
+            panic!("Shipment already exists");
         }
-        
-        // Create shipment
+
         let shipment = SupplyShipment {
             id: shipment_id.clone(),
             donor_id,
@@ -106,13 +113,16 @@ impl SupplyChainTracker {
             assigned_transporter: None,
             temperature_requirements,
             special_handling,
+            creator: donor,
         };
-        
-        shipments.set(shipment_id.clone(), shipment);
+
+        shipments.set(shipment_id, shipment);
         env.storage().instance().set(&shipments_key, &shipments);
     }
 
-    /// Add checkpoint to shipment journey
+    /// Add a checkpoint to a shipment's journey.
+    ///
+    /// **Required role:** NGO
     pub fn add_checkpoint(
         env: Env,
         verifier: Address,
@@ -125,25 +135,30 @@ impl SupplyChainTracker {
         temperature: Option<f64>,
     ) {
         verifier.require_auth();
-        
+        rbac::require_role(&env, &verifier, ROLE_NGO);
+
         let shipments_key = Symbol::new(&env, "shipments");
-        let mut shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut shipment = match shipments.get(shipment_id.clone()) {
             Some(s) => s,
-            None => panic_with_error!(&env, "Shipment not found"),
+            None => panic!("Shipment not found"),
         };
-        
-        // Verify temperature requirements if applicable
-        if let (Some(temp_req), Some(current_temp)) = (&shipment.temperature_requirements, temperature) {
-            if temp_req.critical && (current_temp < temp_req.min_temp || current_temp > temp_req.max_temp) {
-                panic_with_error!(&env, "Temperature outside required range");
+
+        if let (Some(temp_req), Some(current_temp)) =
+            (&shipment.temperature_requirements, temperature)
+        {
+            if temp_req.critical
+                && (current_temp < temp_req.min_temp || current_temp > temp_req.max_temp)
+            {
+                panic!("Temperature outside required range");
             }
         }
-        
-        // Create checkpoint
+
         let checkpoint_id = format!("cp_{}_{}", shipment_id, env.ledger().timestamp());
         let checkpoint = Checkpoint {
             id: checkpoint_id,
@@ -156,20 +171,19 @@ impl SupplyChainTracker {
             notes,
             temperature,
         };
-        
-        // Add to checkpoints
+
         shipment.checkpoints.push_back(checkpoint);
-        
-        // Update status based on progress
         if shipment.checkpoints.len() > 2 {
             shipment.current_status = String::from_str(&env, "at_checkpoint");
         }
-        
+
         shipments.set(shipment_id, shipment);
         env.storage().instance().set(&shipments_key, &shipments);
     }
 
-    /// Assign transporter to shipment
+    /// Assign a transporter to a shipment.
+    ///
+    /// Only the shipment creator (NGO) may assign a transporter.
     pub fn assign_transporter(
         env: Env,
         donor: Address,
@@ -177,20 +191,34 @@ impl SupplyChainTracker {
         transporter: Address,
     ) {
         donor.require_auth();
-        
+        rbac::require_role(&env, &donor, ROLE_NGO);
+
+        // Ensure the assigned transporter is a registered transporter.
+        if !rbac::has_role(&env, &transporter, ROLE_TRANSPORTER) {
+            panic!("Unauthorized: transporter does not hold ROLE_TRANSPORTER");
+        }
+
         let shipments_key = Symbol::new(&env, "shipments");
-        let mut shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut shipment) = shipments.get(shipment_id.clone()) {
+            // Only the original creator may reassign the transporter.
+            if shipment.creator != donor {
+                panic!("Unauthorized: caller is not the shipment creator");
+            }
             shipment.assigned_transporter = Some(transporter);
             shipments.set(shipment_id, shipment);
             env.storage().instance().set(&shipments_key, &shipments);
         }
     }
 
-    /// Confirm final delivery
+    /// Confirm final delivery.
+    ///
+    /// Any authenticated address may confirm delivery (the recipient signs).
     pub fn confirm_delivery(
         env: Env,
         recipient: Address,
@@ -201,18 +229,22 @@ impl SupplyChainTracker {
         photos: Vec<String>,
     ) {
         recipient.require_auth();
-        
+
+        // Require recipient to hold the recipient role for confirmation.
+        rbac::require_role(&env, &recipient, ROLE_RECIPIENT);
+
         let shipments_key = Symbol::new(&env, "shipments");
-        let mut shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut shipment = match shipments.get(shipment_id.clone()) {
             Some(s) => s,
-            None => panic_with_error!(&env, "Shipment not found"),
+            None => panic!("Shipment not found"),
         };
-        
-        // Create recipient confirmation
+
         let confirmation = RecipientConfirmation {
             shipment_id: shipment_id.clone(),
             recipient_id,
@@ -222,128 +254,39 @@ impl SupplyChainTracker {
             confirmed_by: recipient,
             photos,
         };
-        
-        // Store confirmation
+
         let confirmations_key = Symbol::new(&env, "confirmations");
-        let mut confirmations: Map<String, RecipientConfirmation> = env.storage().instance()
+        let mut confirmations: Map<String, RecipientConfirmation> = env
+            .storage()
+            .instance()
             .get(&confirmations_key)
             .unwrap_or(Map::new(&env));
-        
         confirmations.set(shipment_id.clone(), confirmation);
         env.storage().instance().set(&confirmations_key, &confirmations);
-        
-        // Update shipment status
+
         shipment.current_status = String::from_str(&env, "delivered");
         shipments.set(shipment_id, shipment);
         env.storage().instance().set(&shipments_key, &shipments);
     }
 
-    /// Get shipment details
-    pub fn get_shipment(env: Env, shipment_id: String) -> Option<SupplyShipment> {
-        let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
-            .get(&shipments_key)
-            .unwrap_or(Map::new(&env));
-        
-        shipments.get(shipment_id)
-    }
-
-    /// Get shipment history with all checkpoints
-    pub fn get_shipment_history(env: Env, shipment_id: String) -> (Option<SupplyShipment>, Option<RecipientConfirmation>) {
-        let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
-            .get(&shipments_key)
-            .unwrap_or(Map::new(&env));
-        
-        let confirmations_key = Symbol::new(&env, "confirmations");
-        let confirmations: Map<String, RecipientConfirmation> = env.storage().instance()
-            .get(&confirmations_key)
-            .unwrap_or(Map::new(&env));
-        
-        (shipments.get(shipment_id.clone()), confirmations.get(shipment_id))
-    }
-
-    /// Track shipments by current location (geographic search)
-    pub fn track_by_location(
-        env: Env,
-        latitude: f64,
-        longitude: f64,
-        radius_km: f64,
-    ) -> Vec<SupplyShipment> {
-        let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
-            .get(&shipments_key)
-            .unwrap_or(Map::new(&env));
-        
-        let mut nearby_shipments = Vec::new(&env);
-        
-        for (_, shipment) in shipments.iter() {
-            // Check latest checkpoint location
-            if let Some(latest_checkpoint) = shipment.checkpoints.get(shipment.checkpoints.len() - 1) {
-                let distance = Self::calculate_distance(
-                    latitude, longitude,
-                    latest_checkpoint.location.latitude, latest_checkpoint.location.longitude
-                );
-                
-                if distance <= radius_km {
-                    nearby_shipments.push_back(shipment);
-                }
-            }
-        }
-        
-        nearby_shipments
-    }
-
-    /// Simple distance calculation
-    fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-        let r = 6371.0; // Earth's radius in km
-        let dlat = (lat2 - lat1).to_radians();
-        let dlon = (lon2 - lon1).to_radians();
-        let a = (dlat / 2.0).sin().powi(2) +
-                lat1.to_radians().cos() * lat2.to_radians().cos() *
-                (dlon / 2.0).sin().powi(2);
-        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
-        r * c
-    }
-
-    /// Get all active shipments
-    pub fn get_active_shipments(env: Env) -> Vec<SupplyShipment> {
-        let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
-            .get(&shipments_key)
-            .unwrap_or(Map::new(&env));
-        
-        let mut active_shipments = Vec::new(&env);
-        for (_, shipment) in shipments.iter() {
-            if shipment.current_status != String::from_str(&env, "delivered") 
-                && shipment.current_status != String::from_str(&env, "lost") {
-                active_shipments.push_back(shipment);
-            }
-        }
-        active_shipments
-    }
-
-    /// Report shipment as lost
-    pub fn report_lost(
-        env: Env,
-        reporter: Address,
-        shipment_id: String,
-        reason: String,
-    ) {
+    /// Report a shipment as lost.
+    ///
+    /// Any authenticated address may report a loss (the reporter signs).
+    pub fn report_lost(env: Env, reporter: Address, shipment_id: String, reason: String) {
         reporter.require_auth();
-        
+
         let shipments_key = Symbol::new(&env, "shipments");
-        let mut shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut shipment) = shipments.get(shipment_id.clone()) {
             shipment.current_status = String::from_str(&env, "lost");
-            
-            // Add loss as final checkpoint
             let loss_checkpoint = Checkpoint {
                 id: format!("loss_{}", shipment_id),
-                location: shipment.destination, // Assume lost near destination
+                location: shipment.destination.clone(),
                 timestamp: env.ledger().timestamp(),
                 verified_by: reporter,
                 quantity_verified: U256::from_u64(0),
@@ -352,52 +295,147 @@ impl SupplyChainTracker {
                 notes: reason,
                 temperature: None,
             };
-            
             shipment.checkpoints.push_back(loss_checkpoint);
             shipments.set(shipment_id, shipment);
             env.storage().instance().set(&shipments_key, &shipments);
         }
     }
 
-    /// Get shipments by donor
-    pub fn get_shipments_by_donor(env: Env, donor_id: String) -> Vec<SupplyShipment> {
+    // ── Read-only helpers ────────────────────────────────────────────────────
+
+    pub fn get_shipment(env: Env, shipment_id: String) -> Option<SupplyShipment> {
         let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
-        let mut donor_shipments = Vec::new(&env);
-        for (_, shipment) in shipments.iter() {
-            if shipment.donor_id == donor_id {
-                donor_shipments.push_back(shipment);
-            }
-        }
-        donor_shipments
+        shipments.get(shipment_id)
     }
 
-    /// Get temperature alerts for cold chain shipments
-    pub fn get_temperature_alerts(env: Env) -> Vec<(String, String)> {
+    pub fn get_shipment_history(
+        env: Env,
+        shipment_id: String,
+    ) -> (Option<SupplyShipment>, Option<RecipientConfirmation>) {
         let shipments_key = Symbol::new(&env, "shipments");
-        let shipments: Map<String, SupplyShipment> = env.storage().instance()
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
-        
+        let confirmations_key = Symbol::new(&env, "confirmations");
+        let confirmations: Map<String, RecipientConfirmation> = env
+            .storage()
+            .instance()
+            .get(&confirmations_key)
+            .unwrap_or(Map::new(&env));
+        (
+            shipments.get(shipment_id.clone()),
+            confirmations.get(shipment_id),
+        )
+    }
+
+    pub fn get_active_shipments(env: Env) -> Vec<SupplyShipment> {
+        let shipments_key = Symbol::new(&env, "shipments");
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+        let mut active = Vec::new(&env);
+        for (_, shipment) in shipments.iter() {
+            if shipment.current_status != String::from_str(&env, "delivered")
+                && shipment.current_status != String::from_str(&env, "lost")
+            {
+                active.push_back(shipment);
+            }
+        }
+        active
+    }
+
+    pub fn get_shipments_by_donor(env: Env, donor_id: String) -> Vec<SupplyShipment> {
+        let shipments_key = Symbol::new(&env, "shipments");
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+        let mut result = Vec::new(&env);
+        for (_, shipment) in shipments.iter() {
+            if shipment.donor_id == donor_id {
+                result.push_back(shipment);
+            }
+        }
+        result
+    }
+
+    pub fn track_by_location(
+        env: Env,
+        latitude: f64,
+        longitude: f64,
+        radius_km: f64,
+    ) -> Vec<SupplyShipment> {
+        let shipments_key = Symbol::new(&env, "shipments");
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+        let mut nearby = Vec::new(&env);
+        for (_, shipment) in shipments.iter() {
+            if let Some(latest) = shipment.checkpoints.get(shipment.checkpoints.len() - 1) {
+                let distance = Self::calculate_distance(
+                    latitude,
+                    longitude,
+                    latest.location.latitude,
+                    latest.location.longitude,
+                );
+                if distance <= radius_km {
+                    nearby.push_back(shipment);
+                }
+            }
+        }
+        nearby
+    }
+
+    pub fn get_temperature_alerts(env: Env) -> Vec<(String, String)> {
+        let shipments_key = Symbol::new(&env, "shipments");
+        let shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
         let mut alerts = Vec::new(&env);
-        
         for (shipment_id, shipment) in shipments.iter() {
             if let Some(temp_req) = &shipment.temperature_requirements {
-                if let Some(latest_checkpoint) = shipment.checkpoints.get(shipment.checkpoints.len() - 1) {
-                    if let Some(current_temp) = latest_checkpoint.temperature {
+                if let Some(latest) =
+                    shipment.checkpoints.get(shipment.checkpoints.len() - 1)
+                {
+                    if let Some(current_temp) = latest.temperature {
                         if current_temp < temp_req.min_temp || current_temp > temp_req.max_temp {
-                            let alert_msg = format!("Temperature breach: {}°C (required: {}-{}°C)", 
-                                current_temp, temp_req.min_temp, temp_req.max_temp);
-                            alerts.push_back((shipment_id.clone(), String::from_str(&env, &alert_msg)));
+                            let alert_msg = format!(
+                                "Temperature breach: {}°C (required: {}-{}°C)",
+                                current_temp, temp_req.min_temp, temp_req.max_temp
+                            );
+                            alerts.push_back((
+                                shipment_id.clone(),
+                                String::from_str(&env, &alert_msg),
+                            ));
                         }
                     }
                 }
             }
         }
-        
         alerts
+    }
+
+    fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+        let r = 6371.0f64;
+        let dlat = (lat2 - lat1).to_radians();
+        let dlon = (lon2 - lon1).to_radians();
+        let a = (dlat / 2.0).sin().powi(2)
+            + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+        let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+        r * c
     }
 }

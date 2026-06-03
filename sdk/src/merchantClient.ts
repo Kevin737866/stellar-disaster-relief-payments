@@ -1,19 +1,24 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  Server,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-import { 
-  Merchant, 
-  Transaction, 
+import {
+  Merchant,
+  Transaction,
   Location,
-  MerchantOnboardingRequest 
+  MerchantOnboardingRequest
 } from './types';
+import {
+  MerchantNotFoundError,
+  NetworkError,
+  ValidationError,
+} from './errors';
 
 export class MerchantClient {
   private server: Server;
@@ -68,7 +73,7 @@ export class MerchantClient {
     if (result.status === 'SUCCESS') {
       return `Merchant ${merchantId} registered successfully. Awaiting verification.`;
     } else {
-      throw new Error(`Failed to register merchant: ${result.status}`);
+      throw new NetworkError('register merchant', result.status, { merchantId });
     }
   }
 
@@ -110,7 +115,7 @@ export class MerchantClient {
         ? `Merchant ${merchantId} verified and activated`
         : `Merchant ${merchantId} verification rejected`;
     } else {
-      throw new Error(`Failed to verify merchant: ${result.status}`);
+      throw new NetworkError('verify merchant', result.status, { merchantId });
     }
   }
 
@@ -159,7 +164,7 @@ export class MerchantClient {
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
-      throw new Error(`Failed to process payment: ${result.status}`);
+      throw new NetworkError('process payment', result.status, { merchantId, beneficiaryKey });
     }
   }
 
@@ -248,7 +253,7 @@ export class MerchantClient {
     if (result.status === 'SUCCESS') {
       return `Reputation updated for merchant ${merchantId}`;
     } else {
-      throw new Error(`Failed to update reputation: ${result.status}`);
+      throw new NetworkError('update reputation', result.status, { merchantId });
     }
   }
 
@@ -402,7 +407,7 @@ export class MerchantClient {
     const merchant = await this.getMerchant(merchantId);
     
     if (!merchant) {
-      throw new Error(`Merchant ${merchantId} not found`);
+      throw new MerchantNotFoundError(merchantId);
     }
 
     const totalTransactions = transactions.length;

@@ -132,6 +132,7 @@ impl BeneficiaryManager {
             family_size,
             special_needs,
             trust_score: 50, // Initial trust score
+            identity: None,
         };
         
         beneficiaries.set(beneficiary_id.clone(), profile);
@@ -301,6 +302,98 @@ impl BeneficiaryManager {
             }
         }
         result
+    }
+
+    /// List beneficiaries by disaster with cursor-based pagination.
+    ///
+    /// Cursor is split into two parameters to avoid string parsing in the
+    /// no_std Soroban environment:
+    ///   - `cursor_ts`  – `registration_date` of the last item on the previous
+    ///                    page (pass `0` for the first page).
+    ///   - `cursor_id`  – `id` of the last item on the previous page (pass an
+    ///                    empty string for the first page).
+    ///
+    /// Results are ordered by (registration_date ASC, id ASC) for stable
+    /// ordering even when new registrations arrive between pages.
+    ///
+    /// `limit` is clamped to [1, 100].  Returns the page of profiles plus the
+    /// cursor values to use for the next call (`next_ts == 0` and
+    /// `next_id.is_empty()` means no more data).
+    pub fn list_beneficiaries_paginated(
+        env: Env,
+        disaster_id: String,
+        cursor_ts: u64,
+        cursor_id: String,
+        limit: u32,
+    ) -> (Vec<BeneficiaryProfile>, u64, String) {
+        // Validate and clamp limit
+        let page_size = if limit == 0 { 20 } else if limit > 100 { 100 } else { limit };
+
+        let beneficiaries_key = Symbol::new(&env, "beneficiaries");
+        let beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
+            .get(&beneficiaries_key)
+            .unwrap_or(Map::new(&env));
+
+        // Collect matching profiles into a sortable Vec
+        let mut all: Vec<BeneficiaryProfile> = Vec::new(&env);
+        for (_, profile) in beneficiaries.iter() {
+            if profile.disaster_id == disaster_id && profile.is_active {
+                all.push_back(profile);
+            }
+        }
+
+        // Sort by (registration_date ASC, id ASC) for stable ordering.
+        // Soroban Vec doesn't have sort_by, so we use insertion sort
+        // (dataset sizes are bounded by contract storage limits).
+        let len = all.len();
+        for i in 1..len {
+            let mut j = i;
+            while j > 0 {
+                let a = all.get(j - 1).unwrap();
+                let b = all.get(j).unwrap();
+                let swap = if a.registration_date != b.registration_date {
+                    a.registration_date > b.registration_date
+                } else {
+                    a.id > b.id
+                };
+                if swap {
+                    all.set(j - 1, b.clone());
+                    all.set(j, a.clone());
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Determine whether we are on the first page
+        let empty_id = String::from_str(&env, "");
+        let is_first_page = cursor_ts == 0 && cursor_id == empty_id;
+
+        // Skip entries up to and including the cursor position
+        let mut page: Vec<BeneficiaryProfile> = Vec::new(&env);
+        let mut past_cursor = is_first_page;
+
+        for profile in all.iter() {
+            if !past_cursor {
+                if profile.registration_date == cursor_ts && profile.id == cursor_id {
+                    past_cursor = true;
+                }
+                continue;
+            }
+            page.push_back(profile.clone());
+            if page.len() >= page_size {
+                break;
+            }
+        }
+
+        // Return next cursor from the last item in the page, or (0, "") if done
+        if page.len() < page_size {
+            (page, 0u64, empty_id)
+        } else {
+            let last = page.get(page.len() - 1).unwrap();
+            (page, last.registration_date, last.id.clone())
+        }
     }
 
     /// Update beneficiary location (for tracking displacement)
