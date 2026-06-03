@@ -11,7 +11,18 @@ import {
   BASE_FEE,
 } from 'stellar-sdk';
 import axios from 'axios';
-import { validateAddress, validateAddressList } from './validation';
+import {
+  FundCreationError,
+  TriggerExecutionError,
+  InsufficientApprovalsError,
+  UnauthorizedApproverError,
+  AllocationError,
+  AllocationBelowMinimumError,
+  AllocationExceedsMaximumError,
+  NetworkError,
+  ValidationError,
+  UnauthorizedError,
+} from './errors';
 
 export interface EmergencyFund {
   id: string;
@@ -31,6 +42,7 @@ export interface EmergencyFund {
   currentStatus: 'active' | 'triggered' | 'released' | 'recalled' | 'expired';
   fundAllocation: FundAllocation[];
   reservedForRecall: string;
+  metadata: Record<string, string>;
 }
 
 export interface Trigger {
@@ -56,6 +68,8 @@ export interface FundAllocation {
   beneficiaries: string[];
   proofOfNeed: string;
   allocatedAt: number;
+  minAmount: string;
+  maxAmount: string;
 }
 
 export interface OracleData {
@@ -79,6 +93,12 @@ export interface DisbursementRecord {
   transactionHash: string;
   triggerId?: string;
   isAutoReleased: boolean;
+}
+
+export interface PaginatedDisbursements {
+  records: DisbursementRecord[];
+  totalCount: number;
+  hasMore: boolean;
 }
 
 export interface TriggerExecutionResult {
@@ -136,7 +156,8 @@ export class EmergencyFundsClient {
     geographicScope: string,
     expiresAt: number,
     signersArray: string[],
-    requiredSignatures: number
+    requiredSignatures: number,
+    metadata: Record<string, string> = {}
   ): Promise<{ success: boolean; transactionHash: string; fundId: string }> {
     validateAddress(adminAddress, 'adminAddress');
     validateAddressList(signersArray, 'signersArray');
@@ -160,7 +181,8 @@ export class EmergencyFundsClient {
             geographicScope,
             expiresAt,
             signersArray.map(s => new Address(s)),
-            requiredSignatures
+            requiredSignatures,
+            metadata
           )
         )
         .setTimeout(300)
@@ -175,7 +197,7 @@ export class EmergencyFundsClient {
         fundId,
       };
     } catch (error: any) {
-      throw new Error(`Fund creation failed: ${error.message}`);
+      throw new FundCreationError(fundId, error.message, { adminAddress, disasterType, geographicScope });
     }
   }
 
@@ -322,14 +344,59 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
+      throw new TriggerExecutionError(triggerId, fundId, error.message, { signerAddress });
+    }
+  }
+
+  /**
+   * Executes batch multi-sig release for multiple beneficiaries atomically.
+   * All entries succeed or all fail.
+   *
+   * @param fundId    Fund to draw from
+   * @param entries   Array of { beneficiary, amount, purpose }
+   * @param approvers Keypairs of multi-sig approvers
+   */
+  async executeBatchMultiSigRelease(
+    fundId: string,
+    entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
+    approvers: Keypair[]
+  ): Promise<{ success: boolean; transactionHash: string; count: number }> {
+    if (entries.length === 0) {
+      throw new Error('Batch must contain at least one entry');
+    }
+
+    try {
+      const primaryAccount = await this.server.loadAccount(approvers[0].publicKey());
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(primaryAccount, {
+        fee: String(Number(BASE_FEE) * approvers.length),
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'submit_batch_disbursement',
+            new Address(approvers[0].publicKey()),
+            fundId,
+            entries.map(e => [new Address(e.beneficiary), e.amount, e.purpose]),
+            approvers.map(a => new Address(a.publicKey()))
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      for (const approver of approvers) {
+        transaction.sign(approver);
+      }
+
+      const response = await this.server.submitTransaction(transaction);
       return {
-        success: false,
-        fundId,
-        triggerId,
-        amountReleased: '0',
-        timestamp: Date.now(),
-        error: error.message,
+        success: true,
+        transactionHash: response.hash,
+        count: entries.length,
       };
+    } catch (error: any) {
+      throw new Error(`Batch multi-sig release failed: ${error.message}`);
     }
   }
 
@@ -376,7 +443,13 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
-      throw new Error(`Multi-sig release failed: ${error.message}`);
+      if (error.message?.includes('Insufficient approvals')) {
+        throw new InsufficientApprovalsError(fundId, approvers.length, 0, { beneficiary, amount });
+      }
+      if (error.message?.includes('Unauthorized')) {
+        throw new UnauthorizedApproverError(fundId, approvers[0].publicKey(), { beneficiary });
+      }
+      throw new NetworkError('multi-sig release', error.message, { fundId, beneficiary, amount });
     }
   }
 
@@ -389,7 +462,9 @@ export class EmergencyFundsClient {
     sector: string,
     amount: string,
     beneficiaries: string[],
-    proofOfNeed: string
+    proofOfNeed: string,
+    minAmount: string,
+    maxAmount: string
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
@@ -407,7 +482,9 @@ export class EmergencyFundsClient {
             sector,
             amount,
             beneficiaries.map(b => new Address(b)),
-            proofOfNeed
+            proofOfNeed,
+            minAmount,
+            maxAmount
           )
         )
         .setTimeout(300)
@@ -421,7 +498,13 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
-      throw new Error(`Fund allocation failed: ${error.message}`);
+      if (error.message?.includes('below minimum')) {
+        throw new AllocationBelowMinimumError(fundId, sector, amount, minAmount, { adminAddress });
+      }
+      if (error.message?.includes('exceeds maximum')) {
+        throw new AllocationExceedsMaximumError(fundId, sector, amount, maxAmount, { adminAddress });
+      }
+      throw new AllocationError(fundId, sector, error.message, { adminAddress, amount, beneficiaries });
     }
   }
 
@@ -442,7 +525,7 @@ export class EmergencyFundsClient {
         beneficiaryCount: 0,
       };
     } catch (error: any) {
-      throw new Error(`Failed to get fund status: ${error.message}`);
+      throw new NetworkError('get fund status', error.message, { fundId });
     }
   }
 
@@ -454,7 +537,7 @@ export class EmergencyFundsClient {
       // Query contract for triggers
       return [];
     } catch (error: any) {
-      throw new Error(`Failed to get fund triggers: ${error.message}`);
+      throw new NetworkError('get fund triggers', error.message, { fundId });
     }
   }
 
@@ -466,19 +549,30 @@ export class EmergencyFundsClient {
       // Query contract for allocations
       return [];
     } catch (error: any) {
-      throw new Error(`Failed to get fund allocations: ${error.message}`);
+      throw new NetworkError('get fund allocations', error.message, { fundId });
     }
   }
 
   /**
-   * Gets disbursement history for a fund
+   * Gets disbursement history for a fund with pagination
    */
-  async getDisbursementHistory(fundId: string): Promise<DisbursementRecord[]> {
+  async getDisbursementHistory(
+    fundId: string,
+    offset: number = 0,
+    limit: number = 50
+  ): Promise<PaginatedDisbursements> {
     try {
-      // Query contract for disbursements
-      return [];
+      const contract = new Contract(this.contractId);
+
+      // Note: This would typically use contract.call() in a simulation
+      // For now, returning a placeholder structure
+      return {
+        records: [],
+        totalCount: 0,
+        hasMore: false,
+      };
     } catch (error: any) {
-      throw new Error(`Failed to get disbursement history: ${error.message}`);
+      throw new NetworkError('get disbursement history', error.message, { fundId, offset, limit });
     }
   }
 
@@ -516,7 +610,7 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
-      throw new Error(`Fund recall failed: ${error.message}`);
+      throw new NetworkError('recall unused funds', error.message, { fundId, donorAddress });
     }
   }
 
@@ -553,7 +647,7 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
-      throw new Error(`Recall enablement failed: ${error.message}`);
+      throw new NetworkError('enable recall', error.message, { fundId, adminAddress });
     }
   }
 
@@ -592,7 +686,61 @@ export class EmergencyFundsClient {
         transactionHash: response.hash,
       };
     } catch (error: any) {
-      throw new Error(`Trigger deactivation failed: ${error.message}`);
+      throw new TriggerExecutionError(triggerId, fundId, error.message, { adminAddress });
+    }
+  }
+
+  /**
+   * Updates metadata for a fund
+   */
+  async updateMetadata(
+    adminAddress: string,
+    fundId: string,
+    metadata: Record<string, string>
+  ): Promise<{ success: boolean; transactionHash: string }> {
+    try {
+      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const contract = new Contract(this.contractId);
+
+      const transaction = new TransactionBuilder(sourceAccount, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'update_metadata',
+            new Address(adminAddress),
+            fundId,
+            metadata
+          )
+        )
+        .setTimeout(300)
+        .build();
+
+      transaction.sign(this.signingKey);
+      const response = await this.server.submitTransaction(transaction);
+
+      return {
+        success: true,
+        transactionHash: response.hash,
+      };
+    } catch (error: any) {
+      throw new NetworkError('update metadata', error.message, { fundId, adminAddress });
+    }
+  }
+
+  /**
+   * Gets metadata for a fund
+   */
+  async getMetadata(fundId: string): Promise<Record<string, string>> {
+    try {
+      const contract = new Contract(this.contractId);
+
+      // Note: This would typically use contract.call() in a simulation
+      // For now, returning a placeholder structure
+      return {};
+    } catch (error: any) {
+      throw new NetworkError('get fund metadata', error.message, { fundId });
     }
   }
 
@@ -607,7 +755,7 @@ export class EmergencyFundsClient {
       // Implementation would query actual oracle data
       return oracleEntries;
     } catch (error: any) {
-      throw new Error(`Oracle monitoring failed: ${error.message}`);
+      throw new NetworkError('monitor oracle feeds', error.message, { fundId, triggerId });
     }
   }
 
@@ -639,10 +787,10 @@ export class EmergencyFundsClient {
         totalBeneficiaries,
         sectorBreakdown,
         amountDistributed,
-        transactionCount: disbursements.length,
+        transactionCount: disbursements.records.length,
       };
     } catch (error: any) {
-      throw new Error(`Impact report generation failed: ${error.message}`);
+      throw new NetworkError('generate impact report', error.message, { fundId });
     }
   }
 }

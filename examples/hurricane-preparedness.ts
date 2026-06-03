@@ -163,10 +163,13 @@ async function setupCaribbeanFund(
         'GSHAKEMWEPJ3A4DCEHLCAPDQC6GQCRMVFHQZUTZ4F7V3EBCGVJLQT4FT', // Caribbean Red Cross
         'GBFMZFKMQ7YYVQJLBWJK4MXQVJJSGC4RTRWLZ2G3MPYQ3KCBJ3HFSJM', // CARICOM Disaster Centre
       ],
-      'Temporary shelter, emergency housing, structural repair in storm-affected areas'
+      'Temporary shelter, emergency housing, structural repair in storm-affected areas',
+      '5000000', // minAmount: $5M minimum for shelter sector
+      '8000000'  // maxAmount: $8M maximum for shelter sector
     );
     console.log('    ✓ Emergency Shelter: $6M allocated');
-    console.log('      Partners: Caribbean Red Cross, CARICOM Disaster Centre\n');
+    console.log('      Partners: Caribbean Red Cross, CARICOM Disaster Centre');
+    console.log('      Allocation bounds: $5M - $8M\n');
 
     // Food & Water Security
     await emergencyFunds.allocateFunds(
@@ -178,10 +181,13 @@ async function setupCaribbeanFund(
         'GZBZZYXZLJLSTZ4K3HPDL5QGVZPWFM3HSWBLM3I6PJQNMXWT4YCXL7L', // WFP Caribbean Hub
         'GWMFPQSXZUQ5FKMVJ3ABJQRQ5XZQWLVZX4Q6VLTQ7MJQY3PNQWQ7YT', // Local water authorities
       ],
-      'Emergency water systems, food distribution, supply chain setup'
+      'Emergency water systems, food distribution, supply chain setup',
+      '3000000', // minAmount: $3M minimum for food & water sector
+      '6000000'  // maxAmount: $6M maximum for food & water sector
     );
     console.log('    ✓ Food & Water: $4M allocated');
-    console.log('      Partners: WFP, Local water authorities\n');
+    console.log('      Partners: WFP, Local water authorities');
+    console.log('      Allocation bounds: $3M - $6M\n');
 
     // Medical Response
     await emergencyFunds.allocateFunds(
@@ -193,10 +199,13 @@ async function setupCaribbeanFund(
         'GQZML2WKWX4YQVMLQHZPFXQJ3VPQHVFQZ7MK4FTQJMWVPQQZTXPGXQZ', // MSF Caribbean
         'GPFVMXPQZ3SHWXXMLM3WPQVX5HQYQRQZX4NM6QTSVNXZQQ7QRXTQVJM', // Pan American Health Org
       ],
-      'Emergency medical care, pharmacy supplies, trauma centers'
+      'Emergency medical care, pharmacy supplies, trauma centers',
+      '2000000', // minAmount: $2M minimum for medical sector
+      '5000000'  // maxAmount: $5M maximum for medical sector
     );
     console.log('    ✓ Medical Response: $3M allocated');
-    console.log('      Partners: MSF, PAHO\n');
+    console.log('      Partners: MSF, PAHO');
+    console.log('      Allocation bounds: $2M - $5M\n');
 
     // Infrastructure Recovery
     await emergencyFunds.allocateFunds(
@@ -207,10 +216,13 @@ async function setupCaribbeanFund(
       [
         'GXPQ3MQRST2UZWXL4NV5OYQPZX6AB7CDEZ1FG2HI3JK4LM5NOPQR6ST', // Caribbean Development Bank
       ],
-      'Road networks, power systems, communication infrastructure restoration'
+      'Road networks, power systems, communication infrastructure restoration',
+      '1000000', // minAmount: $1M minimum for infrastructure sector
+      '4000000'  // maxAmount: $4M maximum for infrastructure sector
     );
     console.log('    ✓ Infrastructure: $2M allocated');
-    console.log('      Partners: Caribbean Development Bank\n');
+    console.log('      Partners: Caribbean Development Bank');
+    console.log('      Allocation bounds: $1M - $4M\n');
 
     // Step 4: Enable auto-release and recall
     console.log('PHASE 4: FUND LIFECYCLE CONFIGURATION\n');
@@ -362,6 +374,20 @@ async function coordinateMultiRegionResponse(signers: Keypair[]) {
     console.log(`  Coverage: ${affectedCountries.join(', ')}`);
     console.log(`  Beneficiary: ${medicalBeneficiary.substring(0, 20)}...`);
     console.log(`  Deployment: Immediate to field hospitals\n`);
+
+    // Demonstrate pagination through disbursement history
+    console.log('Retrieving disbursement history with pagination...\n');
+    
+    const page1 = await emergencyFunds.getDisbursementHistory(CARIBBEAN_FUND_ID, 0, 10);
+    console.log(`Page 1: ${page1.records.length} records`);
+    console.log(`Total count: ${page1.totalCount}`);
+    console.log(`Has more: ${page1.hasMore}\n`);
+
+    if (page1.hasMore) {
+      const page2 = await emergencyFunds.getDisbursementHistory(CARIBBEAN_FUND_ID, 10, 10);
+      console.log(`Page 2: ${page2.records.length} records`);
+      console.log(`Has more: ${page2.hasMore}\n`);
+    }
 
     console.log('═══════════════════════════════════════════════════════════════\n');
   } catch (error) {
