@@ -14,17 +14,19 @@ import {
   DeploymentOptions,
   NetworkConfig 
 } from './types';
-import { validateAddress, validateAddressList } from './validation';
+import { ReadCache } from './readCache';
 
 export class AidClient {
   private server: Server;
   private contract: Contract;
   private config: NetworkConfig;
+  readonly cache: ReadCache;
 
   constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.aidRegistry);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -74,6 +76,7 @@ export class AidClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate('aid:listActiveFunds');
       return fundId;
     } else {
       throw new Error(`Failed to deploy emergency fund: ${result.status}`);
@@ -120,6 +123,8 @@ export class AidClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`aid:fund:${fundId}`);
+      this.cache.invalidate(`aid:disbursements:${fundId}`);
       return `Disbursement submitted for fund ${fundId}`;
     } else {
       throw new Error(`Failed to submit disbursement: ${result.status}`);
@@ -187,42 +192,45 @@ export class AidClient {
    * Get fund details
    */
   async getFund(fundId: string): Promise<EmergencyFund | null> {
-    try {
-      const result = await this.contract.call("get_fund", nativeToScVal(fundId));
-      const fundData = scValToNative(result.result.retval);
-      return fundData;
-    } catch (error) {
-      console.error('Failed to get fund:', error);
-      return null;
-    }
+    return this.cache.get(`aid:fund:${fundId}`, async () => {
+      try {
+        const result = await this.contract.call("get_fund", nativeToScVal(fundId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get fund:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * List all active emergency funds
    */
   async listActiveFunds(): Promise<EmergencyFund[]> {
-    try {
-      const result = await this.contract.call("list_active_funds");
-      const funds = scValToNative(result.result.retval);
-      return funds;
-    } catch (error) {
-      console.error('Failed to list active funds:', error);
-      return [];
-    }
+    return this.cache.get('aid:listActiveFunds', async () => {
+      try {
+        const result = await this.contract.call("list_active_funds");
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to list active funds:', error);
+        return [];
+      }
+    });
   }
 
   /**
    * Get disbursement history for a fund
    */
   async getDisbursements(fundId: string): Promise<DisbursementRecord[]> {
-    try {
-      const result = await this.contract.call("get_disbursements", nativeToScVal(fundId));
-      const disbursements = scValToNative(result.result.retval);
-      return disbursements;
-    } catch (error) {
-      console.error('Failed to get disbursements:', error);
-      return [];
-    }
+    return this.cache.get(`aid:disbursements:${fundId}`, async () => {
+      try {
+        const result = await this.contract.call("get_disbursements", nativeToScVal(fundId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get disbursements:', error);
+        return [];
+      }
+    });
   }
 
   /**
