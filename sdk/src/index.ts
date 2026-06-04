@@ -10,6 +10,15 @@ export { MerchantClient } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 
+import { AidClient } from './aidClient';
+import { FeeBumpClient } from './feeBumpClient';
+import { TransactionSimulator } from './transactionSimulator';
+import { logger } from './logger';
+import { BeneficiaryClient } from './beneficiaryClient';
+import { MerchantClient } from './merchantClient';
+import { TransferClient } from './transferClient';
+import { TrackerClient } from './trackerClient';
+
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
@@ -56,15 +65,20 @@ export const MAINNET_CONFIG = {
 };
 
 // Export utility functions
-export const createDisasterReliefSDK = (config: any) => ({
-  aidClient: new AidClient(config),
-  beneficiaryClient: new BeneficiaryClient(config),
-  merchantClient: new MerchantClient(config),
-  transferClient: new TransferClient(config),
-  trackerClient: new TrackerClient(config),
-  feeBumpClient: new FeeBumpClient(config),
-  transactionSimulator: new TransactionSimulator(config),
-});
+export const createDisasterReliefSDK = (config: any) => {
+  if (config.logging) {
+    logger.configure(config.logging);
+  }
+  return {
+    aidClient: new AidClient(config),
+    beneficiaryClient: new BeneficiaryClient(config),
+    merchantClient: new MerchantClient(config),
+    transferClient: new TransferClient(config),
+    trackerClient: new TrackerClient(config),
+    feeBumpClient: new FeeBumpClient(config),
+    transactionSimulator: new TransactionSimulator(config),
+  };
+};
 
 // Export constants
 export const DISASTER_TYPES = {
