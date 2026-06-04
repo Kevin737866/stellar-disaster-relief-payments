@@ -61,7 +61,9 @@ export const createDisasterReliefSDK = (config: any) => ({
   beneficiaryClient: new BeneficiaryClient(config),
   merchantClient: new MerchantClient(config),
   transferClient: new TransferClient(config),
-  trackerClient: new TrackerClient(config)
+  trackerClient: new TrackerClient(config),
+  feeBumpClient: new FeeBumpClient(config),
+  transactionSimulator: new TransactionSimulator(config),
 });
 
 // Export constants
