@@ -50,6 +50,7 @@ export class BeneficiaryClient {
     specialNeeds: string[],
     verificationFactors: VerificationFactor[]
   ): Promise<string> {
+    validateAddress(walletAddress, 'walletAddress');
     const registrarKeypair = Keypair.fromSecret(registrarKey);
     const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
 
@@ -135,6 +136,7 @@ export class BeneficiaryClient {
     recoveryCode: string,
     newWalletAddress: string
   ): Promise<boolean> {
+    validateAddress(newWalletAddress, 'newWalletAddress');
     try {
       const result = await this.contract.call(
         "restore_access",

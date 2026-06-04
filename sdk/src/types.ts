@@ -277,6 +277,8 @@ export interface NetworkConfig {
     supplyChainTracker: string;
     antiFraud: string;
   };
+  /** Optional logging configuration. Defaults to level='info', destination='console'. */
+  logging?: import('./logger').LoggingConfig;
 }
 
 export interface DeploymentOptions {

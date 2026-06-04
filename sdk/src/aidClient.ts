@@ -44,6 +44,7 @@ export class AidClient {
     releaseTriggers: string[],
     requiredSignatures: number
   ): Promise<string> {
+    validateAddressList(releaseTriggers, 'releaseTriggers');
     const adminKeypair = Keypair.fromSecret(adminKey);
     const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
 
@@ -93,6 +94,8 @@ export class AidClient {
     purpose: string,
     approvers: string[]
   ): Promise<string> {
+    validateAddress(beneficiary, 'beneficiary');
+    validateAddressList(approvers, 'approvers');
     const requesterKeypair = Keypair.fromSecret(requesterKey);
     const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
 
