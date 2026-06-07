@@ -14,16 +14,19 @@ import {
   DeploymentOptions,
   NetworkConfig 
 } from './types';
+import { ReadCache } from './readCache';
 
 export class AidClient {
   private server: Server;
   private contract: Contract;
   private config: NetworkConfig;
+  readonly cache: ReadCache;
 
   constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.aidRegistry);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -41,6 +44,7 @@ export class AidClient {
     releaseTriggers: string[],
     requiredSignatures: number
   ): Promise<string> {
+    validateAddressList(releaseTriggers, 'releaseTriggers');
     const adminKeypair = Keypair.fromSecret(adminKey);
     const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
 
@@ -72,6 +76,7 @@ export class AidClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate('aid:listActiveFunds');
       return fundId;
     } else {
       throw new Error(`Failed to deploy emergency fund: ${result.status}`);
@@ -89,6 +94,8 @@ export class AidClient {
     purpose: string,
     approvers: string[]
   ): Promise<string> {
+    validateAddress(beneficiary, 'beneficiary');
+    validateAddressList(approvers, 'approvers');
     const requesterKeypair = Keypair.fromSecret(requesterKey);
     const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
 
@@ -116,6 +123,8 @@ export class AidClient {
     const result = await this.server.sendTransaction(tx);
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`aid:fund:${fundId}`);
+      this.cache.invalidate(`aid:disbursements:${fundId}`);
       return `Disbursement submitted for fund ${fundId}`;
     } else {
       throw new Error(`Failed to submit disbursement: ${result.status}`);
@@ -123,45 +132,105 @@ export class AidClient {
   }
 
   /**
+   * Submit multiple disbursements atomically in a single transaction.
+   * All entries succeed or all fail — no partial state.
+   *
+   * @param requesterKey  Secret key of the requester
+   * @param fundId        Fund to draw from
+   * @param entries       Array of { beneficiary, amount, purpose }
+   * @param approvers     Secret keys of multi-sig approvers
+   * @returns Array of disbursement IDs created on-chain
+   */
+  async triggerBatchDisbursement(
+    requesterKey: string,
+    fundId: string,
+    entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
+    approvers: string[]
+  ): Promise<string[]> {
+    if (entries.length === 0) {
+      throw new Error('Batch must contain at least one entry');
+    }
+
+    const requesterKeypair = Keypair.fromSecret(requesterKey);
+    const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
+
+    // Build the entries as a Vec of tuples for the contract call
+    const entriesScVal = nativeToScVal(
+      entries.map(e => [e.beneficiary, e.amount, e.purpose])
+    );
+
+    const tx = new TransactionBuilder(requesterAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'submit_batch_disbursement',
+          ...[
+            new Address(requesterKeypair.publicKey()).toScVal(),
+            nativeToScVal(fundId),
+            entriesScVal,
+            nativeToScVal(approvers),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    tx.sign(requesterKeypair);
+    const result = await this.server.sendTransaction(tx);
+
+    if (result.status === 'SUCCESS') {
+      const ids = scValToNative(result.resultMetaXdr) as string[];
+      return ids ?? [];
+    } else {
+      throw new Error(`Batch disbursement failed: ${result.status}`);
+    }
+  }
+
+  /**
    * Get fund details
    */
   async getFund(fundId: string): Promise<EmergencyFund | null> {
-    try {
-      const result = await this.contract.call("get_fund", nativeToScVal(fundId));
-      const fundData = scValToNative(result.result.retval);
-      return fundData;
-    } catch (error) {
-      console.error('Failed to get fund:', error);
-      return null;
-    }
+    return this.cache.get(`aid:fund:${fundId}`, async () => {
+      try {
+        const result = await this.contract.call("get_fund", nativeToScVal(fundId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get fund:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * List all active emergency funds
    */
   async listActiveFunds(): Promise<EmergencyFund[]> {
-    try {
-      const result = await this.contract.call("list_active_funds");
-      const funds = scValToNative(result.result.retval);
-      return funds;
-    } catch (error) {
-      console.error('Failed to list active funds:', error);
-      return [];
-    }
+    return this.cache.get('aid:listActiveFunds', async () => {
+      try {
+        const result = await this.contract.call("list_active_funds");
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to list active funds:', error);
+        return [];
+      }
+    });
   }
 
   /**
    * Get disbursement history for a fund
    */
   async getDisbursements(fundId: string): Promise<DisbursementRecord[]> {
-    try {
-      const result = await this.contract.call("get_disbursements", nativeToScVal(fundId));
-      const disbursements = scValToNative(result.result.retval);
-      return disbursements;
-    } catch (error) {
-      console.error('Failed to get disbursements:', error);
-      return [];
-    }
+    return this.cache.get(`aid:disbursements:${fundId}`, async () => {
+      try {
+        const result = await this.contract.call("get_disbursements", nativeToScVal(fundId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get disbursements:', error);
+        return [];
+      }
+    });
   }
 
   /**

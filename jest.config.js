@@ -2,8 +2,7 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  roots: ['<rootDir>/ui/src'],
+  roots: ['<rootDir>/sdk/src'],
   testMatch: ['**/__tests__/**/*.test.ts'],
-  moduleFileExtensions: ['ts', 'tsx', 'js'],
-  transform: { '^.+\\.tsx?$': ['ts-jest', { tsconfig: { jsx: 'react', esModuleInterop: true } }] },
+  moduleFileExtensions: ['ts', 'js'],
 };
