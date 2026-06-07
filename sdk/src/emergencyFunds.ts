@@ -159,6 +159,8 @@ export class EmergencyFundsClient {
     requiredSignatures: number,
     metadata: Record<string, string> = {}
   ): Promise<{ success: boolean; transactionHash: string; fundId: string }> {
+    validateAddress(adminAddress, 'adminAddress');
+    validateAddressList(signersArray, 'signersArray');
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
       const contract = new Contract(this.contractId);

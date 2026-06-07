@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, panic_with_error, log};
+use crate::validation::{require_non_empty_address_list, require_min_address_count};
 
 const DISASTER_SEISMIC: &str = "seismic";
 const DISASTER_WEATHER: &str = "weather";
@@ -303,6 +304,9 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         requester.require_auth();
+        
+        // Validate approvers list
+        require_non_empty_address_list(&env, &approvers);
         
         // Verify fund exists and is active
         let fund_key = Symbol::new(&env, "fund");
@@ -894,6 +898,9 @@ impl AidRegistry {
         purpose: String,
         approvers: Vec<Address>,
     ) -> bool {
+        // Validate approvers list before loading fund
+        require_non_empty_address_list(&env, &approvers);
+
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
