@@ -15,6 +15,7 @@ import {
   GeofenceZone,
   SocialRecoveryRequest 
 } from './types';
+import { validateAddress, validateAddressList } from './validation';
 
 export class BeneficiaryIdentityClient {
   private server: Server;
@@ -42,6 +43,8 @@ export class BeneficiaryIdentityClient {
     if (factors.length < 3) {
       throw new Error('Minimum 3 identity factors required for security');
     }
+    validateAddressList(recoveryContacts, 'recoveryContacts');
+    validateAddress(walletAddress, 'walletAddress');
 
     const registrarKeypair = Keypair.fromSecret(registrarKey);
     const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());

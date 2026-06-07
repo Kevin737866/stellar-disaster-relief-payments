@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 import {
   useFormValidation,
   FieldError,
@@ -31,7 +34,10 @@ interface BeneficiaryRegistrationProps {
 export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = ({
   beneficiaryClient, config, registrarKey,
 }) => {
+  const { notify } = useNotifications();
   const [beneficiaries, setBeneficiaries] = useState<BeneficiaryProfile[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -84,6 +90,13 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
     setListLoading(true);
     setListError(null);
     try {
+      setLoading(true);
+      setError(null);
+      // Load beneficiaries for a sample disaster
+      const beneficiaries = await beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001');
+      setBeneficiaries(beneficiaries);
+    } catch (error) {
+      setError(friendlyError(error));
       const data = await beneficiaryClient.listBeneficiariesByDisaster('sample_disaster_001');
       setBeneficiaries(data);
     } catch {
@@ -120,6 +133,10 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       regValidation.reset();
       setSubmitStatus({ type: 'success', message: 'Beneficiary registered successfully. Save your recovery codes.' });
       loadBeneficiaries();
+      notify({ type: 'success', title: 'Beneficiary registered', message: 'Save the recovery codes shown below.' });
+    } catch (error) {
+      console.error('Failed to register beneficiary:', error);
+      setError(friendlyError(error));
     } catch {
       setSubmitStatus({ type: 'error', message: 'Failed to register beneficiary. Please try again.' });
     } finally {
@@ -142,10 +159,41 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
         ? { type: 'success', message: 'Beneficiary verified successfully.' }
         : { type: 'error', message: 'Verification failed. Please check the provided factors.' }
       );
+
+      if (verified) {
+        notify({ type: 'success', title: 'Identity verified', message: `Beneficiary ${verificationForm.beneficiaryId} has been verified.` });
+      } else {
+        setError('Verification failed. The provided factors did not match. Please check and try again.');
+      }
+
       setShowVerificationForm(false);
       setVerificationForm({ beneficiaryId: '', verifierKey: '', providedFactors: '' });
       verifyValidation.reset();
       loadBeneficiaries();
+    } catch (error) {
+      console.error('Failed to verify beneficiary:', error);
+      setError(friendlyError(error));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRestoreAccess = async (beneficiaryId: string, recoveryCode: string) => {
+    try {
+      const newWalletAddress = prompt('Enter new wallet address:');
+      if (!newWalletAddress) return;
+
+      const restored = await beneficiaryClient.restoreAccess(beneficiaryId, recoveryCode, newWalletAddress);
+      
+      if (restored) {
+        notify({ type: 'success', title: 'Access restored', message: 'The wallet address has been updated.' });
+        loadBeneficiaries();
+      } else {
+        setError('Failed to restore access. Check the recovery code and try again.');
+      }
+    } catch (error) {
+      console.error('Failed to restore access:', error);
+      setError(friendlyError(error));
     } catch {
       setSubmitStatus({ type: 'error', message: 'Failed to verify beneficiary.' });
     } finally {
@@ -205,6 +253,11 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
           </button>
         </div>
 
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        {/* Registration Form */}
+        {showRegistrationForm && (
+          <div className="bg-blue-50 p-6 rounded-lg mb-6">
           {/* Registration Form */}
           <section id="registration-form" aria-label="Register New Beneficiary" hidden={!showRegistrationForm} className="bg-blue-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Register New Beneficiary</h2>
