@@ -548,6 +548,42 @@ export class BeneficiaryClient {
     };
   }
 
+
+  /**
+   * Build an unsigned transaction for registering a beneficiary.
+   */
+  async buildOfflineRegister(
+    sourcePublicKey: string,
+    beneficiaryId: string,
+    name: string,
+    disasterId: string,
+    location: string,
+    walletAddress: string,
+    familySize: number,
+    specialNeeds: string[],
+    verificationFactors: any[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_beneficiary',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(beneficiaryId), nativeToScVal(name), nativeToScVal(disasterId),
+            nativeToScVal(location), new Address(walletAddress).toScVal(),
+            nativeToScVal(familySize), nativeToScVal(specialNeeds),
+            nativeToScVal(verificationFactors),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

@@ -520,6 +520,40 @@ export class TransferClient {
     return results;
   }
 
+
+  /**
+   * Build an unsigned transaction for creating a conditional transfer.
+   */
+  async buildOfflineCreateTransfer(
+    sourcePublicKey: string,
+    transferId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    expiresAt: number,
+    spendingRules: any[],
+    purpose: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_transfer',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(transferId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(expiresAt),
+            nativeToScVal(spendingRules), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
