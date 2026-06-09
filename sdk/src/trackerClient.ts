@@ -42,7 +42,7 @@ export class TrackerClient {
     request: SupplyChainRequest
   ): Promise<string> {
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
 
     const tx = new TransactionBuilder(donorAccount, {
@@ -71,7 +71,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate('tracker:activeShipments');
@@ -96,7 +96,7 @@ export class TrackerClient {
     temperature?: number
   ): Promise<string> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -121,7 +121,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`tracker:shipment:${shipmentId}`);
@@ -144,7 +144,7 @@ export class TrackerClient {
   ): Promise<string> {
     validateAddress(transporterAddress, 'transporterAddress');
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(donorAccount, {
       fee: '100',
@@ -164,7 +164,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Transporter assigned to shipment ${shipmentId}`;
@@ -185,7 +185,7 @@ export class TrackerClient {
     photos: string[]
   ): Promise<string> {
     const recipientKeypair = Keypair.fromSecret(recipientKey);
-    const recipientAccount = await this.server.getAccount(recipientKeypair.publicKey());
+    const recipientAccount = await withRetry<any>(() => this.server.getAccount(recipientKeypair.publicKey()));
 
     const tx = new TransactionBuilder(recipientAccount, {
       fee: '100',
@@ -208,7 +208,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(recipientKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`tracker:shipment:${shipmentId}`);
@@ -301,7 +301,7 @@ export class TrackerClient {
     reason: string
   ): Promise<string> {
     const reporterKeypair = Keypair.fromSecret(reporterKey);
-    const reporterAccount = await this.server.getAccount(reporterKeypair.publicKey());
+    const reporterAccount = await withRetry<any>(() => this.server.getAccount(reporterKeypair.publicKey()));
 
     const tx = new TransactionBuilder(reporterAccount, {
       fee: '100',
@@ -321,7 +321,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(reporterKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`tracker:shipment:${shipmentId}`);

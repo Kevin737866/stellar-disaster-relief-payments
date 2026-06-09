@@ -47,7 +47,7 @@ export class TransferClient {
     purpose: string
   ): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -72,7 +72,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidatePrefix(`transfer:beneficiary:${beneficiaryId}`);
@@ -94,7 +94,7 @@ export class TransferClient {
     location: string
   ): Promise<boolean> {
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const beneficiaryAccount = await this.server.getAccount(beneficiaryKeypair.publicKey());
+    const beneficiaryAccount = await withRetry<any>(() => this.server.getAccount(beneficiaryKeypair.publicKey()));
 
     const tx = new TransactionBuilder(beneficiaryAccount, {
       fee: '100',
@@ -117,7 +117,7 @@ export class TransferClient {
       .build();
 
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`transfer:${transferId}`);
@@ -163,7 +163,7 @@ export class TransferClient {
    */
   async recallFunds(creatorKey: string, transferId: string): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -182,7 +182,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`transfer:${transferId}`);
@@ -218,7 +218,7 @@ export class TransferClient {
     newExpiry: number
   ): Promise<string> {
     const creatorKeypair = Keypair.fromSecret(creatorKey);
-    const creatorAccount = await this.server.getAccount(creatorKeypair.publicKey());
+    const creatorAccount = await withRetry<any>(() => this.server.getAccount(creatorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(creatorAccount, {
       fee: '100',
@@ -238,7 +238,7 @@ export class TransferClient {
       .build();
 
     tx.sign(creatorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`transfer:${transferId}`);

@@ -162,7 +162,7 @@ export class EmergencyFundsClient {
     validateAddress(adminAddress, 'adminAddress');
     validateAddressList(signersArray, 'signersArray');
     try {
-      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -190,7 +190,7 @@ export class EmergencyFundsClient {
 
       transaction.sign(this.signingKey);
 
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
       return {
         success: true,
         transactionHash: response.hash,
@@ -219,7 +219,7 @@ export class EmergencyFundsClient {
     minOracleConfirmations: number
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -246,7 +246,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -271,7 +271,7 @@ export class EmergencyFundsClient {
     confidence: number
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(oracleAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(oracleAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -294,7 +294,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -315,7 +315,7 @@ export class EmergencyFundsClient {
     signerAddress: string
   ): Promise<TriggerExecutionResult> {
     try {
-      const sourceAccount = await this.server.loadAccount(signerAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(signerAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -333,7 +333,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -412,7 +412,7 @@ export class EmergencyFundsClient {
     approvers: Keypair[]
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const primaryAccount = await this.server.loadAccount(approvers[0].publicKey());
+      const primaryAccount = await withRetry<any>(() => this.server.loadAccount(approvers[0].publicKey()));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(primaryAccount, {
@@ -437,7 +437,7 @@ export class EmergencyFundsClient {
         transaction.sign(approver);
       }
 
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
       return {
         success: true,
         transactionHash: response.hash,
@@ -467,7 +467,7 @@ export class EmergencyFundsClient {
     maxAmount: string
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -491,7 +491,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -584,7 +584,7 @@ export class EmergencyFundsClient {
     fundId: string
   ): Promise<{ success: boolean; recalledAmount: string; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(donorAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(donorAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -602,7 +602,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -622,7 +622,7 @@ export class EmergencyFundsClient {
     fundId: string
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -640,7 +640,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,
@@ -660,7 +660,7 @@ export class EmergencyFundsClient {
     triggerId: string
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
-      const sourceAccount = await this.server.loadAccount(adminAddress);
+      const sourceAccount = await withRetry<any>(() => this.server.loadAccount(adminAddress));
       const contract = new Contract(this.contractId);
 
       const transaction = new TransactionBuilder(sourceAccount, {
@@ -679,7 +679,7 @@ export class EmergencyFundsClient {
         .build();
 
       transaction.sign(this.signingKey);
-      const response = await this.server.submitTransaction(transaction);
+      const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
       return {
         success: true,

@@ -52,7 +52,7 @@ export class BeneficiaryClient {
   ): Promise<string> {
     validateAddress(walletAddress, 'walletAddress');
     const registrarKeypair = Keypair.fromSecret(registrarKey);
-    const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
+    const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
     const tx = new TransactionBuilder(registrarAccount, {
       fee: '100',
@@ -78,7 +78,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(registrarKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`beneficiary:${beneficiaryId}`);
@@ -98,7 +98,7 @@ export class BeneficiaryClient {
     providedFactors: VerificationFactor[]
   ): Promise<boolean> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -118,7 +118,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`beneficiary:${beneficiaryId}`);
@@ -264,7 +264,7 @@ export class BeneficiaryClient {
     newLocation: string
   ): Promise<string> {
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const beneficiaryAccount = await this.server.getAccount(beneficiaryKeypair.publicKey());
+    const beneficiaryAccount = await withRetry<any>(() => this.server.getAccount(beneficiaryKeypair.publicKey()));
 
     const tx = new TransactionBuilder(beneficiaryAccount, {
       fee: '100',
@@ -284,7 +284,7 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`beneficiary:${beneficiaryId}`);

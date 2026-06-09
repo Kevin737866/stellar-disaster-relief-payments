@@ -47,7 +47,7 @@ export class AidClient {
   ): Promise<string> {
     validateAddressList(releaseTriggers, 'releaseTriggers');
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -74,7 +74,7 @@ export class AidClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate('aid:listActiveFunds');
@@ -98,7 +98,7 @@ export class AidClient {
     validateAddress(beneficiary, 'beneficiary');
     validateAddressList(approvers, 'approvers');
     const requesterKeypair = Keypair.fromSecret(requesterKey);
-    const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
+    const requesterAccount = await withRetry<any>(() => this.server.getAccount(requesterKeypair.publicKey()));
 
     const tx = new TransactionBuilder(requesterAccount, {
       fee: '100',
@@ -121,7 +121,7 @@ export class AidClient {
       .build();
 
     tx.sign(requesterKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`aid:fund:${fundId}`);
@@ -267,7 +267,7 @@ export class AidClient {
    */
   async cleanupExpiredFunds(adminKey: string): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -278,7 +278,7 @@ export class AidClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return 'Expired funds cleaned up successfully';
