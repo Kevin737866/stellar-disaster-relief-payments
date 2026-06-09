@@ -38,6 +38,8 @@ export const TESTNET_CONFIG = {
   network: 'testnet' as const,
   rpcUrl: 'https://soroban-testnet.stellar.org',
   horizonUrl: 'https://horizon-testnet.stellar.org',
+  networkPassphrase: 'Test SDF Network ; September 2015',
+  explorerUrl: 'https://stellar.expert/explorer/testnet',
   contractIds: {
     platform: 'CONTRACT_ID_HERE',
     aidRegistry: 'CONTRACT_ID_HERE',
@@ -53,6 +55,8 @@ export const MAINNET_CONFIG = {
   network: 'mainnet' as const,
   rpcUrl: 'https://soroban.stellar.org',
   horizonUrl: 'https://horizon.stellar.org',
+  networkPassphrase: 'Public Global Stellar Network ; September 2015',
+  explorerUrl: 'https://stellar.expert/explorer/public',
   contractIds: {
     platform: 'CONTRACT_ID_HERE',
     aidRegistry: 'CONTRACT_ID_HERE',

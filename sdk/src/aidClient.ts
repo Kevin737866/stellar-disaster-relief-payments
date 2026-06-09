@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
 import { 
   EmergencyFund, 
   DisbursementRecord, 
@@ -404,12 +405,13 @@ export class AidClient {
     };
   }
 
+
   /**
-   * Build a multi-sig transaction for deploying an emergency fund.
-   * Returns a MultiSigManager — call addSignature() for each signer, then submit().
+   * Build an unsigned transaction for deploying an emergency fund.
+   * Returns an OfflineEnvelope that can be signed offline and submitted later.
    */
-  async buildMultiSigDeployFund(
-    sourceKey: string,
+  async buildOfflineDeployFund(
+    sourcePublicKey: string,
     fundId: string,
     name: string,
     description: string,
@@ -418,12 +420,9 @@ export class AidClient {
     geographicScope: string,
     expiresAt: number,
     releaseTriggers: string[],
-    requiredSignatures: number,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const sourceKeypair = Keypair.fromSecret(sourceKey);
-    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    requiredSignatures: number
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -432,7 +431,7 @@ export class AidClient {
         this.contract.call(
           'create_fund',
           ...[
-            new Address(sourceKeypair.publicKey()).toScVal(),
+            new Address(sourcePublicKey).toScVal(),
             nativeToScVal(fundId), nativeToScVal(name), nativeToScVal(description),
             nativeToScVal(totalAmount), nativeToScVal(disasterType),
             nativeToScVal(geographicScope), nativeToScVal(expiresAt),
@@ -440,26 +439,23 @@ export class AidClient {
           ]
         )
       )
-      .setTimeout(30)
+      .setTimeout(0)
       .build();
-    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+    return OfflineSigner.serialize(tx);
   }
 
   /**
-   * Build a multi-sig transaction for triggering a disbursement.
+   * Build an unsigned transaction for triggering a disbursement.
    */
-  async buildMultiSigDisbursement(
-    sourceKey: string,
+  async buildOfflineDisbursement(
+    sourcePublicKey: string,
     fundId: string,
     beneficiary: string,
     amount: string,
     purpose: string,
-    approvers: string[],
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const sourceKeypair = Keypair.fromSecret(sourceKey);
-    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    approvers: string[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -468,17 +464,16 @@ export class AidClient {
         this.contract.call(
           'submit_disbursement',
           ...[
-            new Address(sourceKeypair.publicKey()).toScVal(),
+            new Address(sourcePublicKey).toScVal(),
             nativeToScVal(fundId), nativeToScVal(beneficiary),
             nativeToScVal(amount), nativeToScVal(purpose), nativeToScVal(approvers),
           ]
         )
       )
-      .setTimeout(30)
+      .setTimeout(0)
       .build();
-    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+    return OfflineSigner.serialize(tx);
   }
-
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

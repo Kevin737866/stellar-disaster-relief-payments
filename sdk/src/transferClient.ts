@@ -522,22 +522,19 @@ export class TransferClient {
 
 
   /**
-   * Build a multi-sig transaction for creating a conditional transfer.
+   * Build an unsigned transaction for creating a conditional transfer.
    */
-  async buildMultiSigCreateTransfer(
-    sourceKey: string,
+  async buildOfflineCreateTransfer(
+    sourcePublicKey: string,
     transferId: string,
     beneficiaryId: string,
     amount: string,
     token: string,
     expiresAt: number,
     spendingRules: any[],
-    purpose: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const sourceKeypair = Keypair.fromSecret(sourceKey);
-    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    purpose: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -546,16 +543,16 @@ export class TransferClient {
         this.contract.call(
           'create_transfer',
           ...[
-            new Address(sourceKeypair.publicKey()).toScVal(),
+            new Address(sourcePublicKey).toScVal(),
             nativeToScVal(transferId), nativeToScVal(beneficiaryId),
             nativeToScVal(amount), nativeToScVal(token), nativeToScVal(expiresAt),
             nativeToScVal(spendingRules), nativeToScVal(purpose),
           ]
         )
       )
-      .setTimeout(30)
+      .setTimeout(0)
       .build();
-    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+    return OfflineSigner.serialize(tx);
   }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {

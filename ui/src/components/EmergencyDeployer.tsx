@@ -29,7 +29,7 @@ import {
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 

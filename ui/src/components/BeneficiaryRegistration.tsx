@@ -27,7 +27,7 @@ import {
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   registrarKey: string;
 }
 

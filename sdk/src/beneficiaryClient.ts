@@ -554,10 +554,10 @@ export class BeneficiaryClient {
 
 
   /**
-   * Build a multi-sig transaction for registering a beneficiary.
+   * Build an unsigned transaction for registering a beneficiary.
    */
-  async buildMultiSigRegister(
-    sourceKey: string,
+  async buildOfflineRegister(
+    sourcePublicKey: string,
     beneficiaryId: string,
     name: string,
     disasterId: string,
@@ -565,12 +565,9 @@ export class BeneficiaryClient {
     walletAddress: string,
     familySize: number,
     specialNeeds: string[],
-    verificationFactors: any[],
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const sourceKeypair = Keypair.fromSecret(sourceKey);
-    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    verificationFactors: any[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -579,7 +576,7 @@ export class BeneficiaryClient {
         this.contract.call(
           'register_beneficiary',
           ...[
-            new Address(sourceKeypair.publicKey()).toScVal(),
+            new Address(sourcePublicKey).toScVal(),
             nativeToScVal(beneficiaryId), nativeToScVal(name), nativeToScVal(disasterId),
             nativeToScVal(location), new Address(walletAddress).toScVal(),
             nativeToScVal(familySize), nativeToScVal(specialNeeds),
@@ -587,40 +584,9 @@ export class BeneficiaryClient {
           ]
         )
       )
-      .setTimeout(30)
+      .setTimeout(0)
       .build();
-    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
-  }
-
-  /**
-   * Build a multi-sig transaction for approving/verifying a beneficiary.
-   */
-  async buildMultiSigVerify(
-    sourceKey: string,
-    beneficiaryId: string,
-    verified: boolean,
-    notes: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const sourceKeypair = Keypair.fromSecret(sourceKey);
-    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
-    const tx = new TransactionBuilder(sourceAccount, {
-      fee: '100',
-      networkPassphrase: this.getNetworkPassphrase(),
-    })
-      .addOperation(
-        this.contract.call(
-          'verify_beneficiary',
-          ...[
-            new Address(sourceKeypair.publicKey()).toScVal(),
-            nativeToScVal(beneficiaryId), nativeToScVal(verified), nativeToScVal(notes),
-          ]
-        )
-      )
-      .setTimeout(30)
-      .build();
-    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+    return OfflineSigner.serialize(tx);
   }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
