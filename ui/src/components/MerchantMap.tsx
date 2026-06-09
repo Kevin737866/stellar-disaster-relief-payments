@@ -1,13 +1,28 @@
 import React, { useState, useEffect } from 'react';
+import { MerchantClient, Merchant, Location, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 import { MerchantClient, Merchant, Location, NetworkConfig, Transaction } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 import { ExportButton, merchantFields, merchantTransactionFields } from '../export';
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
+export const MerchantMap: React.FC<MerchantMapProps> = ({
+  merchantClient,
+  config,
+  adminKey
+}) => {
+  const { notify } = useNotifications();
+  const [merchants, setMerchants] = useState<Merchant[]>([]);
+  const [verificationQueue, setVerificationQueue] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config, adminKey }) => {
   const [merchants, setMerchants] = useState<Merchant[]>([]);
   const [verificationQueue, setVerificationQueue] = useState<string[]>([]);
@@ -22,6 +37,8 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
   const [merchantTransactionsError, setMerchantTransactionsError] = useState<string | null>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 40.7128, lng: -74.0060 }); // NYC default
   const [searchRadius, setSearchRadius] = useState(10); // km
+  const [confirmReject, setConfirmReject] = useState<string | null>(null); // merchantId
+  const [confirmBatchApprove, setConfirmBatchApprove] = useState(false);
 
   const [onboardingForm, setOnboardingForm] = useState({
     merchantId: '', name: '', businessType: 'grocery', contactInfo: '', stellarAddress: '',
@@ -49,6 +66,16 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
     setListLoading(true);
     setListError(null);
     try {
+      setLoading(true);
+      setError(null);
+      const nearbyMerchants = await merchantClient.findMerchantsByLocation(
+        mapCenter.lat,
+        mapCenter.lng,
+        searchRadius
+      );
+      setMerchants(nearbyMerchants);
+    } catch (error) {
+      setError(friendlyError(error));
       const data = await merchantClient.findMerchantsByLocation(mapCenter.lat, mapCenter.lng, searchRadius);
       setMerchants(data);
     } catch {
@@ -79,6 +106,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
       const txns = await merchantClient.getMerchantTransactions(merchantId);
       setMerchantTransactions(txns);
     } catch (error) {
+      setError(friendlyError(error));
       console.error('Failed to load merchant transactions:', error);
       setMerchantTransactionsError('Failed to load transaction history. Please try again.');
       setMerchantTransactions([]);
@@ -116,6 +144,10 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
       onboardValidation.reset();
       setSubmitStatus({ type: 'success', message: 'Merchant registered successfully. Awaiting verification.' });
       loadVerificationQueue();
+      notify({ type: 'success', title: 'Merchant registered', message: `${onboardingForm.name} is awaiting verification.` });
+    } catch (error) {
+      console.error('Failed to onboard merchant:', error);
+      setError(friendlyError(error));
     } catch {
       setSubmitStatus({ type: 'error', message: 'Failed to onboard merchant. Please try again.' });
     } finally {
@@ -127,10 +159,20 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
     setSubmitting(true);
     setSubmitStatus(null);
     try {
+      setLoading(true);
+      setError(null);
       await merchantClient.verifyMerchant(adminKey, merchantId, approved, '');
       setSubmitStatus({ type: 'success', message: `Merchant ${approved ? 'approved' : 'rejected'} successfully.` });
       loadVerificationQueue();
       loadMerchants();
+      notify({
+        type: approved ? 'success' : 'info',
+        title: approved ? 'Merchant approved' : 'Merchant rejected',
+        message: `${merchantId} has been ${approved ? 'approved' : 'rejected'}.`,
+      });
+    } catch (error) {
+      console.error('Failed to verify merchant:', error);
+      setError(friendlyError(error));
     } catch {
       setSubmitStatus({ type: 'error', message: 'Failed to verify merchant.' });
     } finally {
@@ -142,6 +184,20 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
     setSubmitting(true);
     setSubmitStatus(null);
     try {
+      setLoading(true);
+      setError(null);
+      const results = await merchantClient.batchVerifyMerchants(
+        adminKey,
+        verificationQueue,
+        approved,
+        'Batch verification'
+      );
+      loadVerificationQueue();
+      loadMerchants();
+      notify({ type: 'success', title: 'Batch verification complete', message: `${results.length} merchants processed.` });
+    } catch (error) {
+      console.error('Failed to batch verify:', error);
+      setError(friendlyError(error));
       const results = await merchantClient.batchVerifyMerchants(adminKey, verificationQueue, approved, 'Batch verification');
       setSubmitStatus({ type: 'success', message: `Batch verification completed: ${results.length} merchants processed.` });
       loadVerificationQueue();
@@ -191,6 +247,11 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
             Search Location
           </LoadingButton>
           {verificationQueue.length > 0 && (
+            <button
+              onClick={() => setConfirmBatchApprove(true)}
+              disabled={loading}
+              className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700"
+            >
             <LoadingButton onClick={() => handleBatchVerify(true)} loading={submitting} loadingLabel="Approving…"
               className="bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500">
               Approve All ({verificationQueue.length})
@@ -198,6 +259,31 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
           )}
         </div>
 
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmBatchApprove}
+          title={`Approve all ${verificationQueue.length} merchants?`}
+          message="This will verify all merchants in the queue at once. Each approval is permanent."
+          confirmLabel="Approve all"
+          variant="warning"
+          onConfirm={() => { setConfirmBatchApprove(false); handleBatchVerify(true); }}
+          onCancel={() => setConfirmBatchApprove(false)}
+        />
+
+        <ConfirmDialog
+          isOpen={confirmReject !== null}
+          title="Reject this merchant?"
+          message={`Rejecting "${confirmReject}" is permanent. They will need to re-apply to join the network.`}
+          confirmLabel="Yes, reject"
+          variant="danger"
+          onConfirm={() => { const id = confirmReject!; setConfirmReject(null); handleVerifyMerchant(id, false); }}
+          onCancel={() => setConfirmReject(null)}
+        />
+
+        {/* Onboarding Form */}
+        {showOnboardingForm && (
+          <div className="bg-blue-50 p-6 rounded-lg mb-6">
           {/* Onboarding Form */}
           <section
             id="onboarding-form"
@@ -358,6 +444,11 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({ merchantClient, config
                     <LoadingButton onClick={() => handleVerifyMerchant(merchantId, true)} loading={submitting} loadingLabel="…"
                       className="bg-green-500 text-white px-3 py-1 text-sm rounded hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-400">
                       Approve
+                    </button>
+                    <button
+                      onClick={() => setConfirmReject(merchantId)}
+                      className="bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600"
+                    >
                     </LoadingButton>
                     <LoadingButton onClick={() => handleVerifyMerchant(merchantId, false)} loading={submitting} loadingLabel="…"
                       className="bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400">

@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { ConfirmDialog } from './ConfirmDialog';
+import { ErrorMessage, friendlyError } from './ErrorMessage';
+import { useNotifications } from './NotificationSystem';
 import {
   useFormValidation,
   FieldError,
@@ -26,7 +29,7 @@ import {
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
@@ -37,7 +40,10 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   config,
   adminKey,
 }) => {
+  const { notify } = useNotifications();
   const [funds, setFunds] = useState<EmergencyFund[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -46,6 +52,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   const [showRapidForm, setShowRapidForm] = useState(false);
   const [showBatchForm, setShowBatchForm] = useState(false);
   const [selectedFund, setSelectedFund] = useState<EmergencyFund | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
   const [cleaningUp, setCleaningUp] = useState(false);
 
   const [fundForm, setFundForm] = useState({
@@ -94,6 +101,12 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
     setListLoading(true);
     setListError(null);
     try {
+      setLoading(true);
+      setError(null);
+      const activeFunds = await aidClient.listActiveFunds();
+      setFunds(activeFunds);
+    } catch (error) {
+      setError(friendlyError(error));
       const activeFunds = await aidClient.listActiveFunds();
       setFunds(activeFunds);
     } catch (error) {
@@ -114,6 +127,8 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
     setSubmitting(true);
     setSubmitStatus(null);
     try {
+      setLoading(true);
+      setError(null);
       await aidClient.deployEmergencyFund(
         adminKey,
         fundForm.fundId,
@@ -140,9 +155,11 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       fundValidation.reset();
       setSubmitStatus({ type: 'success', message: 'Emergency fund created successfully.' });
       loadActiveFunds();
+      notify({ type: 'success', title: 'Emergency fund created', message: `Fund "${fundForm.name}" is now active.` });
     } catch (error) {
       setSubmitStatus({ type: 'error', message: 'Failed to create emergency fund. Please try again.' });
       console.error('Failed to create fund:', error);
+      setError(friendlyError(error));
     } finally {
       setSubmitting(false);
     }
@@ -167,9 +184,11 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       rapidValidation.reset();
       setSubmitStatus({ type: 'success', message: `Created ${fundIds.length} emergency funds for rapid response.` });
       loadActiveFunds();
+      notify({ type: 'success', title: 'Rapid response deployed', message: `${fundIds.length} emergency funds created.` });
     } catch (error) {
       setSubmitStatus({ type: 'error', message: 'Failed to deploy rapid response. Please try again.' });
       console.error('Failed to deploy rapid response:', error);
+      setError(friendlyError(error));
     } finally {
       setSubmitting(false);
     }
@@ -254,19 +273,23 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       const fund = await aidClient.getFund(fundId);
       if (fund) setSelectedFund(fund);
     } catch (error) {
-      console.error('Failed to monitor fund:', error);
+      setError(friendlyError(error));
     }
   };
 
   const handleCleanupExpired = async () => {
     setCleaningUp(true);
     try {
+      setLoading(true);
+      setError(null);
       await aidClient.cleanupExpiredFunds(adminKey);
       setSubmitStatus({ type: 'success', message: 'Expired funds cleaned up successfully.' });
       loadActiveFunds();
+      notify({ type: 'success', title: 'Cleanup complete', message: 'Expired funds have been removed.' });
     } catch (error) {
       setSubmitStatus({ type: 'error', message: 'Failed to cleanup expired funds.' });
       console.error('Failed to cleanup expired funds:', error);
+      setError(friendlyError(error));
     } finally {
       setCleaningUp(false);
     }
@@ -319,6 +342,10 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
           >
             Rapid Disaster Response
           </button>
+          <button
+            onClick={() => setConfirmCleanup(true)}
+            disabled={loading}
+            className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
           <LoadingButton
             onClick={handleCleanupExpired}
             loading={cleaningUp}
@@ -331,6 +358,18 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
             Cleanup Expired
           </LoadingButton>
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmCleanup}
+          title="Clean up expired funds?"
+          message="This will permanently remove all expired emergency funds. This action cannot be undone."
+          confirmLabel="Yes, clean up"
+          variant="danger"
+          onConfirm={() => { setConfirmCleanup(false); handleCleanupExpired(); }}
+          onCancel={() => setConfirmCleanup(false)}
+        />
 
         {/* Create Fund Form */}
         {showCreateForm && (

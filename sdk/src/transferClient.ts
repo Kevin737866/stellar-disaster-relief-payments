@@ -23,12 +23,14 @@ import {
 export class TransferClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.cashTransfer);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -73,6 +75,7 @@ export class TransferClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidatePrefix(`transfer:beneficiary:${beneficiaryId}`);
       return `Conditional transfer ${transferId} created successfully`;
     } else {
       throw new TransactionError(transferId, result.status, { operation: 'create transfer' });
@@ -117,6 +120,8 @@ export class TransferClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`transfer:${transferId}`);
+      this.cache.invalidate(`transfer:transactions:${transferId}`);
       return scValToNative(result.result.retval);
     } else {
       throw new TransactionError(transferId, result.status, { operation: 'spend', merchantId });
@@ -127,28 +132,30 @@ export class TransferClient {
    * Get transfer details
    */
   async getTransfer(transferId: string): Promise<ConditionalTransfer | null> {
-    try {
-      const result = await withRetry<any>(() => this.contract.call("get_transfer", nativeToScVal(transferId)));
-      const transfer = scValToNative(result.result.retval);
-      return transfer;
-    } catch (error) {
-      console.error('Failed to get transfer:', error);
-      return null;
-    }
+    return this.cache.get(`transfer:${transferId}`, async () => {
+      try {
+        const result = await this.contract.call("get_transfer", nativeToScVal(transferId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get transfer:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * Get transaction history for a transfer
    */
   async getTransactions(transferId: string): Promise<TransferTransaction[]> {
-    try {
-      const result = await withRetry<any>(() => this.contract.call("get_transactions", nativeToScVal(transferId)));
-      const transactions = scValToNative(result.result.retval);
-      return transactions;
-    } catch (error) {
-      console.error('Failed to get transactions:', error);
-      return [];
-    }
+    return this.cache.get(`transfer:transactions:${transferId}`, async () => {
+      try {
+        const result = await this.contract.call("get_transactions", nativeToScVal(transferId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get transactions:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -178,6 +185,8 @@ export class TransferClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`transfer:${transferId}`);
+      this.cache.invalidate(`transfer:transactions:${transferId}`);
       const recalledAmount = scValToNative(result.result.retval);
       return `Recalled ${recalledAmount} units from transfer ${transferId}`;
     } else {
@@ -189,14 +198,15 @@ export class TransferClient {
    * List active transfers for a beneficiary
    */
   async listBeneficiaryTransfers(beneficiaryId: string): Promise<ConditionalTransfer[]> {
-    try {
-      const result = await withRetry<any>(() => this.contract.call("list_beneficiary_transfers", nativeToScVal(beneficiaryId)));
-      const transfers = scValToNative(result.result.retval);
-      return transfers;
-    } catch (error) {
-      console.error('Failed to list beneficiary transfers:', error);
-      return [];
-    }
+    return this.cache.get(`transfer:beneficiary:${beneficiaryId}`, async () => {
+      try {
+        const result = await this.contract.call("list_beneficiary_transfers", nativeToScVal(beneficiaryId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to list beneficiary transfers:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -231,6 +241,7 @@ export class TransferClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`transfer:${transferId}`);
       return `Transfer ${transferId} expiry extended to ${new Date(newExpiry).toISOString()}`;
     } else {
       throw new TransactionError(transferId, result.status, { operation: 'extend expiry' });
@@ -509,6 +520,40 @@ export class TransferClient {
     return results;
   }
 
+
+  /**
+   * Build an unsigned transaction for creating a conditional transfer.
+   */
+  async buildOfflineCreateTransfer(
+    sourcePublicKey: string,
+    transferId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    expiresAt: number,
+    spendingRules: any[],
+    purpose: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_transfer',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(transferId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(expiresAt),
+            nativeToScVal(spendingRules), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

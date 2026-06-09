@@ -26,12 +26,14 @@ import {
 export class BeneficiaryClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.beneficiaryManager);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -48,6 +50,7 @@ export class BeneficiaryClient {
     specialNeeds: string[],
     verificationFactors: VerificationFactor[]
   ): Promise<string> {
+    validateAddress(walletAddress, 'walletAddress');
     const registrarKeypair = Keypair.fromSecret(registrarKey);
     const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
@@ -78,6 +81,8 @@ export class BeneficiaryClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
+      this.cache.invalidatePrefix(`beneficiary:disaster:${disasterId}`);
       return `Beneficiary ${beneficiaryId} registered successfully`;
     } else {
       throw new NetworkError('register beneficiary', result.status, { beneficiaryId });
@@ -116,6 +121,7 @@ export class BeneficiaryClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
       return scValToNative(result.result.retval);
     } else {
       throw new NetworkError('verify beneficiary', result.status, { beneficiaryId });
@@ -130,6 +136,7 @@ export class BeneficiaryClient {
     recoveryCode: string,
     newWalletAddress: string
   ): Promise<boolean> {
+    validateAddress(newWalletAddress, 'newWalletAddress');
     try {
       const result = await this.contract.call(
         "restore_access",
@@ -151,28 +158,32 @@ export class BeneficiaryClient {
    * Get beneficiary profile
    */
   async getBeneficiary(beneficiaryId: string): Promise<BeneficiaryProfile | null> {
-    try {
-      const result = await withRetry<any>(() => this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId)));
-      const profile = scValToNative(result.result.retval);
-      return profile;
-    } catch (error) {
-      console.error('Failed to get beneficiary:', error);
-      return null;
-    }
+    return this.cache.get(`beneficiary:${beneficiaryId}`, async () => {
+      try {
+        const result = await this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId));
+        const profile = scValToNative(result.result.retval);
+        return profile;
+      } catch (error) {
+        console.error('Failed to get beneficiary:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * List beneficiaries by disaster
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
-    try {
-      const result = await withRetry<any>(() => this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId)));
-      const beneficiaries = scValToNative(result.result.retval);
-      return beneficiaries;
-    } catch (error) {
-      console.error('Failed to list beneficiaries:', error);
-      return [];
-    }
+    return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
+      try {
+        const result = await this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId));
+        const beneficiaries = scValToNative(result.result.retval);
+        return beneficiaries;
+      } catch (error) {
+        console.error('Failed to list beneficiaries:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -276,6 +287,7 @@ export class BeneficiaryClient {
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
       return `Location updated for beneficiary ${beneficiaryId}`;
     } else {
       throw new NetworkError('update location', result.status, { beneficiaryId });
@@ -536,6 +548,42 @@ export class BeneficiaryClient {
     };
   }
 
+
+  /**
+   * Build an unsigned transaction for registering a beneficiary.
+   */
+  async buildOfflineRegister(
+    sourcePublicKey: string,
+    beneficiaryId: string,
+    name: string,
+    disasterId: string,
+    location: string,
+    walletAddress: string,
+    familySize: number,
+    specialNeeds: string[],
+    verificationFactors: any[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_beneficiary',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(beneficiaryId), nativeToScVal(name), nativeToScVal(disasterId),
+            nativeToScVal(location), new Address(walletAddress).toScVal(),
+            nativeToScVal(familySize), nativeToScVal(specialNeeds),
+            nativeToScVal(verificationFactors),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
