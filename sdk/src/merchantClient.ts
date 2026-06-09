@@ -535,6 +535,14 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const merchantKeypair = Keypair.fromSecret(merchantKey);
+    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
+    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const tx = new TransactionBuilder(merchantAccount, {
     purpose: string
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);

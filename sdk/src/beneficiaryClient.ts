@@ -8,6 +8,10 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
+import { 
+  BeneficiaryProfile, 
+  VerificationFactor, 
 import {
   BeneficiaryProfile,
   VerificationFactor,
