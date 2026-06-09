@@ -4,11 +4,12 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { ErrorMessage, friendlyError } from './ErrorMessage';
 import { useNotifications } from './NotificationSystem';
 import { TransferClient, ConditionalTransfer, SpendingRule, NetworkConfig, TransferTransaction } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 import { ExportButton, conditionalTransferFields, transferTransactionFields } from '../export';
 
 interface TransferCardProps {
   transferClient: TransferClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   creatorKey: string;
 }
 
