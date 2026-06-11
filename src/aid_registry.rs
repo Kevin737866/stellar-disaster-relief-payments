@@ -129,6 +129,19 @@ pub struct SignatureApproval {
     pub approved_at: u64,
 }
 
+#[derive(Clone)]
+pub struct ExpiryNotification {
+    pub id: String,
+    pub fund_id: String,
+    pub fund_name: String,
+    pub expires_at: u64,
+    pub admin_address: Address,
+    pub notification_email: String,
+    pub registered_at: u64,
+    pub last_notified_at: u64,
+    pub is_acknowledged: bool,
+}
+
 #[contractimpl]
 impl AidRegistry {
     /// Create a new emergency fund pool
