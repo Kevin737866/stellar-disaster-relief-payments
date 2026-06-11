@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { withRetry } from './retry';
 
 // Merchant categories
 export const CATEGORY_FOOD = 0;
@@ -173,7 +174,7 @@ export class MerchantNetworkSDK {
     references: string[] // 3 beneficiary references or 1 NGO field worker
   ): Promise<string> {
     const ownerKeypair = Keypair.fromSecret(ownerKey);
-    const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+    const ownerAccount = await withRetry<any>(() => this.server.getAccount(ownerKeypair.publicKey()));
 
     const tx = new TransactionBuilder(ownerAccount, {
       fee: '100',
@@ -200,7 +201,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(ownerKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Merchant ${merchantId} registered successfully.`;
@@ -218,7 +219,7 @@ export class MerchantNetworkSDK {
     voucherType: number // 0 = beneficiary, 1 = ngo
   ): Promise<string> {
     const voucherKeypair = Keypair.fromSecret(voucherKey);
-    const voucherAccount = await this.server.getAccount(voucherKeypair.publicKey());
+    const voucherAccount = await withRetry<any>(() => this.server.getAccount(voucherKeypair.publicKey()));
 
     const tx = new TransactionBuilder(voucherAccount, {
       fee: '100',
@@ -238,7 +239,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(voucherKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Vouch added for merchant ${merchantId}`;
@@ -264,7 +265,7 @@ export class MerchantNetworkSDK {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
     
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const merchantAccount = await withRetry<any>(() => this.server.getAccount(merchantKeypair.publicKey()));
 
     const tx = new TransactionBuilder(merchantAccount, {
       fee: '200',
@@ -290,7 +291,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(merchantKeypair);
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -335,7 +336,7 @@ export class MerchantNetworkSDK {
     offlineTransactionIds: string[]
   ): Promise<number> {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const merchantAccount = await withRetry<any>(() => this.server.getAccount(merchantKeypair.publicKey()));
 
     const tx = new TransactionBuilder(merchantAccount, {
       fee: '200',
@@ -354,7 +355,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(merchantKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -384,7 +385,7 @@ export class MerchantNetworkSDK {
    */
   async settleBalances(adminKey: string): Promise<number> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '200',
@@ -400,7 +401,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -418,7 +419,7 @@ export class MerchantNetworkSDK {
     approve: boolean
   ): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -438,7 +439,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return approve 
@@ -640,7 +641,7 @@ export class MerchantNetworkSDK {
    */
   async getOnboardingQueue(): Promise<string[]> {
     try {
-      const result = await this.contract.call("get_onboarding_queue");
+      const result = await withRetry<any>(() => this.contract.call("get_onboarding_queue"));
       return scValToNative(result.result.retval);
     } catch (error) {
       console.error('Failed to get onboarding queue:', error);
@@ -653,7 +654,7 @@ export class MerchantNetworkSDK {
    */
   async resetDailyVolumes(adminKey: string): Promise<void> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -666,7 +667,7 @@ export class MerchantNetworkSDK {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status !== 'SUCCESS') {
       throw new Error(`Failed to reset daily volumes: ${result.status}`);

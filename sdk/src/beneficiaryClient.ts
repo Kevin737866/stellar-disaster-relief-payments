@@ -1,30 +1,43 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  Server,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { MultiSigManager } from './multiSig';
 import { 
   BeneficiaryProfile, 
   VerificationFactor, 
+import {
+  BeneficiaryProfile,
+  VerificationFactor,
   RecoveryCode,
-  MerchantOnboardingRequest
+  MerchantOnboardingRequest,
+  PaginatedResponse,
+  PaginationOptions,
 } from './types';
 import { createHash } from 'crypto-js';
+import {
+  BeneficiaryNotFoundError,
+  ValidationError,
+  NetworkError,
+} from './errors';
 
 export class BeneficiaryClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.beneficiaryManager);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -41,8 +54,9 @@ export class BeneficiaryClient {
     specialNeeds: string[],
     verificationFactors: VerificationFactor[]
   ): Promise<string> {
+    validateAddress(walletAddress, 'walletAddress');
     const registrarKeypair = Keypair.fromSecret(registrarKey);
-    const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
+    const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
     const tx = new TransactionBuilder(registrarAccount, {
       fee: '100',
@@ -68,12 +82,14 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(registrarKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
+      this.cache.invalidatePrefix(`beneficiary:disaster:${disasterId}`);
       return `Beneficiary ${beneficiaryId} registered successfully`;
     } else {
-      throw new Error(`Failed to register beneficiary: ${result.status}`);
+      throw new NetworkError('register beneficiary', result.status, { beneficiaryId });
     }
   }
 
@@ -86,7 +102,7 @@ export class BeneficiaryClient {
     providedFactors: VerificationFactor[]
   ): Promise<boolean> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -106,12 +122,13 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
       return scValToNative(result.result.retval);
     } else {
-      throw new Error(`Failed to verify beneficiary: ${result.status}`);
+      throw new NetworkError('verify beneficiary', result.status, { beneficiaryId });
     }
   }
 
@@ -123,6 +140,7 @@ export class BeneficiaryClient {
     recoveryCode: string,
     newWalletAddress: string
   ): Promise<boolean> {
+    validateAddress(newWalletAddress, 'newWalletAddress');
     try {
       const result = await this.contract.call(
         "restore_access",
@@ -144,27 +162,100 @@ export class BeneficiaryClient {
    * Get beneficiary profile
    */
   async getBeneficiary(beneficiaryId: string): Promise<BeneficiaryProfile | null> {
-    try {
-      const result = await this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId));
-      const profile = scValToNative(result.result.retval);
-      return profile;
-    } catch (error) {
-      console.error('Failed to get beneficiary:', error);
-      return null;
-    }
+    return this.cache.get(`beneficiary:${beneficiaryId}`, async () => {
+      try {
+        const result = await this.contract.call("get_beneficiary", nativeToScVal(beneficiaryId));
+        const profile = scValToNative(result.result.retval);
+        return profile;
+      } catch (error) {
+        console.error('Failed to get beneficiary:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * List beneficiaries by disaster
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
+    return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
+      try {
+        const result = await this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId));
+        const beneficiaries = scValToNative(result.result.retval);
+        return beneficiaries;
+      } catch (error) {
+        console.error('Failed to list beneficiaries:', error);
+        return [];
+      }
+    });
+  }
+
+  /**
+   * List beneficiaries by disaster with cursor-based pagination.
+   *
+   * The contract takes split cursor params (cursor_ts: u64, cursor_id: String)
+   * to avoid string parsing in the no_std Soroban environment.  This method
+   * encodes/decodes the opaque cursor string "<ts>:<id>" client-side so
+   * callers see a single opaque cursor token.
+   *
+   * Validates that `limit` is between 1 and 100 (inclusive).
+   * Throws on invalid input so callers receive clear feedback.
+   *
+   * @param disasterId - The disaster to query.
+   * @param options    - Optional `cursor` and `limit` (default 20, max 100).
+   * @returns A page of beneficiaries plus a `nextCursor` / `hasMore` flag.
+   */
+  async listBeneficiariesPaginated(
+    disasterId: string,
+    options: PaginationOptions = {}
+  ): Promise<PaginatedResponse<BeneficiaryProfile>> {
+    const { cursor = '', limit = 20 } = options;
+
+    // Input validation
+    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('limit must be an integer between 1 and 100');
+    }
+    if (cursor !== '' && typeof cursor !== 'string') {
+      throw new Error('cursor must be a non-empty string or omitted');
+    }
+
+    // Decode opaque cursor "<ts>:<id>" into the two contract params
+    let cursorTs = 0;
+    let cursorId = '';
+    if (cursor) {
+      const sep = cursor.indexOf(':');
+      if (sep !== -1) {
+        cursorTs = parseInt(cursor.slice(0, sep), 10) || 0;
+        cursorId = cursor.slice(sep + 1);
+      }
+    }
+
     try {
-      const result = await this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId));
-      const beneficiaries = scValToNative(result.result.retval);
-      return beneficiaries;
+      const result = await this.contract.call(
+        'list_beneficiaries_paginated',
+        nativeToScVal(disasterId),
+        nativeToScVal(cursorTs),
+        nativeToScVal(cursorId),
+        nativeToScVal(limit),
+      );
+
+      // Contract returns a tuple (Vec<BeneficiaryProfile>, u64, String)
+      const [beneficiaries, nextTs, nextId]: [BeneficiaryProfile[], number, string] =
+        scValToNative(result.result.retval);
+
+      // Encode next cursor; empty when no more data (nextTs === 0 && nextId === '')
+      const nextCursor = (nextTs === 0 && (!nextId || nextId === ''))
+        ? null
+        : `${nextTs}:${nextId}`;
+
+      return {
+        items: beneficiaries,
+        nextCursor,
+        hasMore: nextCursor !== null,
+      };
     } catch (error) {
-      console.error('Failed to list beneficiaries:', error);
-      return [];
+      console.error('Failed to list beneficiaries (paginated):', error);
+      return { items: [], nextCursor: null, hasMore: false };
     }
   }
 
@@ -177,7 +268,7 @@ export class BeneficiaryClient {
     newLocation: string
   ): Promise<string> {
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const beneficiaryAccount = await this.server.getAccount(beneficiaryKeypair.publicKey());
+    const beneficiaryAccount = await withRetry<any>(() => this.server.getAccount(beneficiaryKeypair.publicKey()));
 
     const tx = new TransactionBuilder(beneficiaryAccount, {
       fee: '100',
@@ -197,12 +288,13 @@ export class BeneficiaryClient {
       .build();
 
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
       return `Location updated for beneficiary ${beneficiaryId}`;
     } else {
-      throw new Error(`Failed to update location: ${result.status}`);
+      throw new NetworkError('update location', result.status, { beneficiaryId });
     }
   }
 
@@ -460,6 +552,42 @@ export class BeneficiaryClient {
     };
   }
 
+
+  /**
+   * Build an unsigned transaction for registering a beneficiary.
+   */
+  async buildOfflineRegister(
+    sourcePublicKey: string,
+    beneficiaryId: string,
+    name: string,
+    disasterId: string,
+    location: string,
+    walletAddress: string,
+    familySize: number,
+    specialNeeds: string[],
+    verificationFactors: any[]
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_beneficiary',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(beneficiaryId), nativeToScVal(name), nativeToScVal(disasterId),
+            nativeToScVal(location), new Address(walletAddress).toScVal(),
+            nativeToScVal(familySize), nativeToScVal(specialNeeds),
+            nativeToScVal(verificationFactors),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
@@ -470,6 +598,130 @@ export class BeneficiaryClient {
         return 'Standalone Network ; February 2017';
       default:
         throw new Error('Unsupported network');
+    }
+  }
+
+  // ─── Search / Filter ────────────────────────────────────────────────────────
+
+  /**
+   * Search and filter beneficiaries with cursor-based pagination.
+   *
+   * Validates all inputs before forwarding to the contract:
+   * - `limit` must be 1–100 (default 20)
+   * - `minTrustScore` must be 0–100
+   * - `search` and `locationFilter` are trimmed; HTML-special chars are stripped
+   *   to prevent injection via display layers.
+   */
+  async searchBeneficiaries(
+    disasterId: string,
+    options: BeneficiarySearchOptions = {}
+  ): Promise<PaginatedResponse<BeneficiaryProfile>> {
+    const {
+      cursor = '',
+      limit = 20,
+      search = '',
+      locationFilter = '',
+      activeOnly = true,
+      minTrustScore = 0,
+    } = options;
+
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('limit must be an integer between 1 and 100');
+    }
+    if (!Number.isInteger(minTrustScore) || minTrustScore < 0 || minTrustScore > 100) {
+      throw new Error('minTrustScore must be an integer between 0 and 100');
+    }
+
+    const sanitize = (s: string) => s.trim().replace(/[<>"'&]/g, '');
+    const cleanSearch = sanitize(search);
+    const cleanLocation = sanitize(locationFilter);
+
+    if (cleanSearch.length > 200) {
+      throw new Error('search must be 200 characters or fewer');
+    }
+
+    // Decode opaque cursor "<ts>:<id>"
+    let cursorTs = 0;
+    let cursorId = '';
+    if (cursor) {
+      const sep = cursor.indexOf(':');
+      if (sep !== -1) {
+        cursorTs = parseInt(cursor.slice(0, sep), 10) || 0;
+        cursorId = cursor.slice(sep + 1);
+      }
+    }
+
+    try {
+      const result = await this.contract.call(
+        'search_beneficiaries_paginated',
+        nativeToScVal(disasterId),
+        nativeToScVal(cleanSearch),
+        nativeToScVal(cleanLocation),
+        nativeToScVal(activeOnly),
+        nativeToScVal(minTrustScore),
+        nativeToScVal(cursorTs),
+        nativeToScVal(cursorId),
+        nativeToScVal(limit),
+      );
+
+      const [beneficiaries, nextTs, nextId]: [BeneficiaryProfile[], number, string] =
+        scValToNative(result.result.retval);
+
+      const nextCursor = (nextTs === 0 && (!nextId || nextId === ''))
+        ? null
+        : `${nextTs}:${nextId}`;
+
+      return { items: beneficiaries, nextCursor, hasMore: nextCursor !== null };
+    } catch (error) {
+      console.error('searchBeneficiaries failed:', error);
+      return { items: [], nextCursor: null, hasMore: false };
+    }
+  }
+
+  /**
+   * Search and filter emergency funds.
+   *
+   * Validates all inputs:
+   * - `search` and `disasterType` are trimmed and sanitized
+   * - `createdAfter` / `createdBefore` must be non-negative; after ≤ before when both set
+   */
+  async searchFunds(options: FundSearchOptions = {}): Promise<EmergencyFund[]> {
+    const {
+      search = '',
+      disasterType = '',
+      activeOnly = false,
+      createdAfter = 0,
+      createdBefore = 0,
+    } = options;
+
+    const sanitize = (s: string) => s.trim().replace(/[<>"'&]/g, '');
+    const cleanSearch = sanitize(search);
+    const cleanType = sanitize(disasterType);
+
+    if (cleanSearch.length > 200) {
+      throw new Error('search must be 200 characters or fewer');
+    }
+    if (createdAfter < 0 || createdBefore < 0) {
+      throw new Error('createdAfter and createdBefore must be non-negative');
+    }
+    if (createdAfter > 0 && createdBefore > 0 && createdAfter > createdBefore) {
+      throw new Error('createdAfter must be less than or equal to createdBefore');
+    }
+
+    try {
+      const result = await this.contract.call(
+        'search_funds',
+        nativeToScVal(cleanSearch),
+        nativeToScVal(cleanType),
+        nativeToScVal(activeOnly),
+        nativeToScVal(createdAfter),
+        nativeToScVal(createdBefore),
+      );
+
+      return scValToNative(result.result.retval) as EmergencyFund[];
+    } catch (error) {
+      console.error('searchFunds failed:', error);
+      return [];
     }
   }
 }

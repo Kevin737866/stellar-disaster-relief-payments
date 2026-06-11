@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { withRetry } from './retry';
 import { createHash, SHA256 } from 'crypto-js';
 import { 
   BeneficiaryIdentity, 
@@ -15,6 +16,7 @@ import {
   GeofenceZone,
   SocialRecoveryRequest 
 } from './types';
+import { validateAddress, validateAddressList } from './validation';
 
 export class BeneficiaryIdentityClient {
   private server: Server;
@@ -42,9 +44,11 @@ export class BeneficiaryIdentityClient {
     if (factors.length < 3) {
       throw new Error('Minimum 3 identity factors required for security');
     }
+    validateAddressList(recoveryContacts, 'recoveryContacts');
+    validateAddress(walletAddress, 'walletAddress');
 
     const registrarKeypair = Keypair.fromSecret(registrarKey);
-    const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
+    const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
     // Hash factors for privacy
     const hashedFactors = factors.map(f => ({
@@ -73,7 +77,7 @@ export class BeneficiaryIdentityClient {
       .build();
 
     tx.sign(registrarKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       const idHash = scValToNative(result.result.retval);
@@ -273,7 +277,7 @@ export class BeneficiaryIdentityClient {
     newWalletAddress: string
   ): Promise<boolean> {
     const contactKeypair = Keypair.fromSecret(approvingContactKey);
-    const contactAccount = await this.server.getAccount(contactKeypair.publicKey());
+    const contactAccount = await withRetry<any>(() => this.server.getAccount(contactKeypair.publicKey()));
 
     const tx = new TransactionBuilder(contactAccount, {
       fee: '100',
@@ -293,7 +297,7 @@ export class BeneficiaryIdentityClient {
       .build();
 
     tx.sign(contactKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -422,7 +426,7 @@ export class BeneficiaryIdentityClient {
     durationMinutes: number = 60
   ): Promise<string> {
     const ownerKeypair = Keypair.fromSecret(ownerKey);
-    const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+    const ownerAccount = await withRetry<any>(() => this.server.getAccount(ownerKeypair.publicKey()));
 
     const durationSeconds = durationMinutes * 60;
 
@@ -445,7 +449,7 @@ export class BeneficiaryIdentityClient {
       .build();
 
     tx.sign(ownerKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
@@ -464,7 +468,7 @@ export class BeneficiaryIdentityClient {
     newGeofence?: GeofenceZone
   ): Promise<void> {
     const ownerKeypair = Keypair.fromSecret(ownerKey);
-    const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+    const ownerAccount = await withRetry<any>(() => this.server.getAccount(ownerKeypair.publicKey()));
 
     const tx = new TransactionBuilder(ownerAccount, {
       fee: '100',
@@ -485,7 +489,7 @@ export class BeneficiaryIdentityClient {
       .build();
 
     tx.sign(ownerKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status !== 'SUCCESS') {
       throw new Error(`Failed to transfer identity: ${result.status}`);
@@ -550,7 +554,7 @@ export class BeneficiaryIdentityClient {
    */
   async getIdentity(idHash: string): Promise<BeneficiaryIdentity | null> {
     try {
-      const result = await this.contract.call("get_identity", nativeToScVal(idHash));
+      const result = await withRetry<any>(() => this.contract.call("get_identity", nativeToScVal(idHash)));
       return scValToNative(result.result.retval);
     } catch (error) {
       console.error('Failed to get identity:', error);

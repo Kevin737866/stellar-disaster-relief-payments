@@ -1,29 +1,36 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  Server,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
-import { 
-  Merchant, 
-  Transaction, 
+import {
+  Merchant,
+  Transaction,
   Location,
-  MerchantOnboardingRequest 
+  MerchantOnboardingRequest
 } from './types';
+import {
+  MerchantNotFoundError,
+  NetworkError,
+  ValidationError,
+} from './errors';
 
 export class MerchantClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.merchantNetwork);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -35,7 +42,7 @@ export class MerchantClient {
     request: MerchantOnboardingRequest
   ): Promise<string> {
     const ownerKeypair = Keypair.fromSecret(ownerKey);
-    const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+    const ownerAccount = await withRetry<any>(() => this.server.getAccount(ownerKeypair.publicKey()));
 
     const tx = new TransactionBuilder(ownerAccount, {
       fee: '100',
@@ -63,12 +70,12 @@ export class MerchantClient {
       .build();
 
     tx.sign(ownerKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Merchant ${merchantId} registered successfully. Awaiting verification.`;
     } else {
-      throw new Error(`Failed to register merchant: ${result.status}`);
+      throw new NetworkError('register merchant', result.status, { merchantId });
     }
   }
 
@@ -82,7 +89,7 @@ export class MerchantClient {
     notes: string
   ): Promise<string> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -103,14 +110,15 @@ export class MerchantClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
       return approved 
         ? `Merchant ${merchantId} verified and activated`
         : `Merchant ${merchantId} verification rejected`;
     } else {
-      throw new Error(`Failed to verify merchant: ${result.status}`);
+      throw new NetworkError('verify merchant', result.status, { merchantId });
     }
   }
 
@@ -129,7 +137,7 @@ export class MerchantClient {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
     
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const merchantAccount = await withRetry<any>(() => this.server.getAccount(merchantKeypair.publicKey()));
 
     const tx = new TransactionBuilder(merchantAccount, {
       fee: '200', // Higher fee for multi-sig
@@ -154,12 +162,14 @@ export class MerchantClient {
 
     tx.sign(merchantKeypair);
     tx.sign(beneficiaryKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
+      this.cache.invalidate(`merchant:txns:${merchantId}`);
       return scValToNative(result.result.retval);
     } else {
-      throw new Error(`Failed to process payment: ${result.status}`);
+      throw new NetworkError('process payment', result.status, { merchantId, beneficiaryKey });
     }
   }
 
@@ -167,14 +177,15 @@ export class MerchantClient {
    * Get merchant details
    */
   async getMerchant(merchantId: string): Promise<Merchant | null> {
-    try {
-      const result = await this.contract.call("get_merchant", nativeToScVal(merchantId));
-      const merchant = scValToNative(result.result.retval);
-      return merchant;
-    } catch (error) {
-      console.error('Failed to get merchant:', error);
-      return null;
-    }
+    return this.cache.get(`merchant:${merchantId}`, async () => {
+      try {
+        const result = await this.contract.call("get_merchant", nativeToScVal(merchantId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get merchant:', error);
+        return null;
+      }
+    });
   }
 
   /**
@@ -204,14 +215,15 @@ export class MerchantClient {
    * Get merchant transaction history
    */
   async getMerchantTransactions(merchantId: string): Promise<Transaction[]> {
-    try {
-      const result = await this.contract.call("get_merchant_transactions", nativeToScVal(merchantId));
-      const transactions = scValToNative(result.result.retval);
-      return transactions;
-    } catch (error) {
-      console.error('Failed to get merchant transactions:', error);
-      return [];
-    }
+    return this.cache.get(`merchant:txns:${merchantId}`, async () => {
+      try {
+        const result = await this.contract.call("get_merchant_transactions", nativeToScVal(merchantId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get merchant transactions:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -223,7 +235,7 @@ export class MerchantClient {
     feedbackScore: number // -10 to +10
   ): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
-    const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
 
     const tx = new TransactionBuilder(adminAccount, {
       fee: '100',
@@ -243,12 +255,13 @@ export class MerchantClient {
       .build();
 
     tx.sign(adminKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`merchant:${merchantId}`);
       return `Reputation updated for merchant ${merchantId}`;
     } else {
-      throw new Error(`Failed to update reputation: ${result.status}`);
+      throw new NetworkError('update reputation', result.status, { merchantId });
     }
   }
 
@@ -257,7 +270,7 @@ export class MerchantClient {
    */
   async getVerificationQueue(): Promise<string[]> {
     try {
-      const result = await this.contract.call("get_verification_queue");
+      const result = await withRetry<any>(() => this.contract.call("get_verification_queue"));
       const queue = scValToNative(result.result.retval);
       return queue;
     } catch (error) {
@@ -402,7 +415,7 @@ export class MerchantClient {
     const merchant = await this.getMerchant(merchantId);
     
     if (!merchant) {
-      throw new Error(`Merchant ${merchantId} not found`);
+      throw new MerchantNotFoundError(merchantId);
     }
 
     const totalTransactions = transactions.length;
@@ -452,6 +465,106 @@ export class MerchantClient {
     return results;
   }
 
+
+  /**
+   * Build an unsigned transaction for registering a merchant.
+   */
+  async buildOfflineRegisterMerchant(
+    sourcePublicKey: string,
+    merchantId: string,
+    request: any
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'register_merchant',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(request.name),
+            nativeToScVal(request.businessType), nativeToScVal(request.location),
+            nativeToScVal(request.contactInfo), nativeToScVal(request.stellarTomlUrl),
+            nativeToScVal(request.acceptedTokens), nativeToScVal(request.dailyLimit),
+            nativeToScVal(request.monthlyLimit), nativeToScVal(request.verificationDocuments),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build an unsigned transaction for approving a merchant.
+   */
+  async buildOfflineApproveMerchant(
+    sourcePublicKey: string,
+    merchantId: string,
+    approved: boolean,
+    notes: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(sourcePublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'verify_merchant',
+          ...[
+            new Address(sourcePublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(approved), nativeToScVal(notes),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
+
+  /**
+   * Build an unsigned transaction for processing a payment.
+   */
+  async buildOfflinePayment(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const merchantKeypair = Keypair.fromSecret(merchantKey);
+    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
+    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+    const tx = new TransactionBuilder(merchantAccount, {
+    purpose: string
+  ): Promise<OfflineEnvelope> {
+    const sourceAccount = await this.server.getAccount(merchantPublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantPublicKey).toScVal(),
+            new Address(beneficiaryPublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return OfflineSigner.serialize(tx);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
