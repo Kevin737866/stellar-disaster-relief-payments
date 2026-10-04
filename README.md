@@ -185,6 +185,47 @@ await sdk.aidClient.deployEmergencyFund(
 );
 ```
 
+### Caching Read Operations
+
+The SDK includes a built-in caching layer that reduces redundant blockchain queries and improves response latency:
+
+```typescript
+import { ReadCache, TESTNET_CONFIG } from './sdk/src/index';
+
+// Create a cache instance with default 30-second TTL
+const cache = new ReadCache(TESTNET_CONFIG);
+
+// Cache a read operation
+const beneficiary = await cache.get(
+  'beneficiary_DP_001', // cache key
+  () => sdk.beneficiaryClient.getBeneficiary('DP_001'), // loader function
+  60000 // optional: override TTL to 60 seconds
+);
+
+// Invalidate specific cache entry after a state-changing operation
+uwait sdk.beneficiaryClient.updateBeneficiary(adminKey, 'DP_001', updates);
+cache.invalidate('beneficiary_DP_001');
+
+// Invalidate all entries with a given prefix
+cache.invalidatePrefix('beneficiary_'); // clears all beneficiary cache entries
+
+// Clear entire cache
+cache.clear();
+```
+
+#### Cache Features:
+- **Automatic TTL expiration**: Entries automatically expire after TTL (default 30s, configurable)
+- **Prefix-based invalidation**: Invalidate multiple related entries efficiently
+- **Lazy loading**: Cache only stores requested data on-demand
+- **Error resilience**: Loader errors propagate normally; storage failures are silent
+- **Per-call TTL override**: Different operations can use different cache durations
+
+#### Best Practices:
+- Cache read-heavy operations (e.g., fetching beneficiary info, checking merchant status)
+- Invalidate cache entries after write operations that modify cached data
+- Use prefix invalidation for related data (e.g., all entries for a disaster)
+- Adjust TTL based on data staleness tolerance and query frequency
+
 ### Beneficiary Registration
 
 ```typescript
@@ -531,6 +572,16 @@ getTransfer(transferId)
 
 // List beneficiary transfers
 listBeneficiaryTransfers(beneficiaryId)
+```
+
+#### Transaction Poller
+
+```typescript
+// Wait for a transaction to reach a terminal completion state
+pollTransactionStatus(hash, { intervalMs, timeoutMs })
+
+// Alias for pollTransaction
+pollTransaction(hash, { intervalMs, timeoutMs })
 ```
 
 #### Merchant Client

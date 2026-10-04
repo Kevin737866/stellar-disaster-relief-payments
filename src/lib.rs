@@ -1,5 +1,23 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, panic_with_error};
+
+pub mod validation {
+    use soroban_sdk::{Address, Env, Vec, panic_with_error};
+
+    /// Panics if the address list is empty.
+    pub fn require_non_empty_address_list(env: &Env, addresses: &Vec<Address>) {
+        if addresses.is_empty() {
+            panic_with_error!(env, "Address list must not be empty");
+        }
+    }
+
+    /// Panics if the address list has fewer entries than `min_count`.
+    pub fn require_min_address_count(env: &Env, addresses: &Vec<Address>, min_count: u32) {
+        if (addresses.len() as u32) < min_count {
+            panic_with_error!(env, "Insufficient addresses provided");
+        }
+    }
+}
 
 mod aid_registry;
 mod beneficiary_manager;

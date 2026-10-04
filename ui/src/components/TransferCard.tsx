@@ -3,7 +3,7 @@ import { TransferClient, ConditionalTransfer, SpendingRule, NetworkConfig } from
 
 interface TransferCardProps {
   transferClient: TransferClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   creatorKey: string;
 }
 

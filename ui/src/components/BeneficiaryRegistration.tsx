@@ -3,7 +3,7 @@ import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfi
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   registrarKey: string;
 }
 
@@ -12,6 +12,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
   config,
   registrarKey
 }) => {
+  const { notify } = useNotifications();
   const [beneficiaries, setBeneficiaries] = useState<BeneficiaryProfile[]>([]);
   const [loading, setLoading] = useState(false);
   const [showRegistrationForm, setShowRegistrationForm] = useState(false);

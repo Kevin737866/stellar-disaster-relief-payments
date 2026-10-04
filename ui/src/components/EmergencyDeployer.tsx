@@ -3,7 +3,7 @@ import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
@@ -12,6 +12,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
   config,
   adminKey
 }) => {
+  const { notify } = useNotifications();
   const [funds, setFunds] = useState<EmergencyFund[]>([]);
   const [loading, setLoading] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -88,6 +89,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         requiredSignatures: '1'
       });
       loadActiveFunds();
+      notify({ type: 'success', title: 'Emergency fund created', message: `Fund "${fundForm.name}" is now active.` });
     } catch (error) {
       console.error('Failed to create fund:', error);
       alert('Failed to create emergency fund');
@@ -134,7 +136,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         setSelectedFund(fund);
       }
     } catch (error) {
-      console.error('Failed to monitor fund:', error);
+      setError(friendlyError(error));
     }
   };
 
@@ -196,6 +198,18 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
             Cleanup Expired
           </button>
         </div>
+
+        <ErrorMessage error={error} onDismiss={() => setError(null)} className="mb-4" />
+
+        <ConfirmDialog
+          isOpen={confirmCleanup}
+          title="Clean up expired funds?"
+          message="This will permanently remove all expired emergency funds. This action cannot be undone."
+          confirmLabel="Yes, clean up"
+          variant="danger"
+          onConfirm={() => { setConfirmCleanup(false); handleCleanupExpired(); }}
+          onCancel={() => setConfirmCleanup(false)}
+        />
 
         {/* Create Fund Form */}
         {showCreateForm && (

@@ -266,6 +266,8 @@ export interface NetworkConfig {
   network: "testnet" | "mainnet" | "standalone";
   rpcUrl: string;
   horizonUrl: string;
+  /** Default TTL in milliseconds for cached read results. Defaults to 30 000. */
+  cacheTtlMs?: number;
   contractIds: {
     platform: string;
     aidRegistry: string;
@@ -275,6 +277,8 @@ export interface NetworkConfig {
     supplyChainTracker: string;
     antiFraud: string;
   };
+  /** Optional logging configuration. Defaults to level='info', destination='console'. */
+  logging?: import('./logger').LoggingConfig;
 }
 
 export interface DeploymentOptions {

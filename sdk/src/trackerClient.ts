@@ -24,12 +24,14 @@ import {
 export class TrackerClient {
   private server: Server;
   private contract: Contract;
-  private config: any;
+  private config: NetworkConfig;
+  readonly cache: ReadCache;
 
-  constructor(config: any) {
+  constructor(config: NetworkConfig) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.supplyChainTracker);
+    this.cache = new ReadCache(config);
   }
 
   /**
@@ -40,7 +42,7 @@ export class TrackerClient {
     request: SupplyChainRequest
   ): Promise<string> {
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
 
     const tx = new TransactionBuilder(donorAccount, {
@@ -69,9 +71,11 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate('tracker:activeShipments');
+      this.cache.invalidatePrefix(`tracker:donor:${request.donorId}`);
       return shipmentId;
     } else {
       throw new NetworkError('create shipment', result.status, { shipmentId });
@@ -92,7 +96,7 @@ export class TrackerClient {
     temperature?: number
   ): Promise<string> {
     const verifierKeypair = Keypair.fromSecret(verifierKey);
-    const verifierAccount = await this.server.getAccount(verifierKeypair.publicKey());
+    const verifierAccount = await withRetry<any>(() => this.server.getAccount(verifierKeypair.publicKey()));
 
     const tx = new TransactionBuilder(verifierAccount, {
       fee: '100',
@@ -117,9 +121,13 @@ export class TrackerClient {
       .build();
 
     tx.sign(verifierKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`tracker:shipment:${shipmentId}`);
+      this.cache.invalidate(`tracker:history:${shipmentId}`);
+      this.cache.invalidate('tracker:activeShipments');
+      this.cache.invalidate('tracker:temperatureAlerts');
       return `Checkpoint added to shipment ${shipmentId}`;
     } else {
       throw new NetworkError('add checkpoint', result.status, { shipmentId });
@@ -134,8 +142,9 @@ export class TrackerClient {
     shipmentId: string,
     transporterAddress: string
   ): Promise<string> {
+    validateAddress(transporterAddress, 'transporterAddress');
     const donorKeypair = Keypair.fromSecret(donorKey);
-    const donorAccount = await this.server.getAccount(donorKeypair.publicKey());
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
 
     const tx = new TransactionBuilder(donorAccount, {
       fee: '100',
@@ -155,7 +164,7 @@ export class TrackerClient {
       .build();
 
     tx.sign(donorKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
       return `Transporter assigned to shipment ${shipmentId}`;
@@ -176,7 +185,7 @@ export class TrackerClient {
     photos: string[]
   ): Promise<string> {
     const recipientKeypair = Keypair.fromSecret(recipientKey);
-    const recipientAccount = await this.server.getAccount(recipientKeypair.publicKey());
+    const recipientAccount = await withRetry<any>(() => this.server.getAccount(recipientKeypair.publicKey()));
 
     const tx = new TransactionBuilder(recipientAccount, {
       fee: '100',
@@ -199,9 +208,12 @@ export class TrackerClient {
       .build();
 
     tx.sign(recipientKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`tracker:shipment:${shipmentId}`);
+      this.cache.invalidate(`tracker:history:${shipmentId}`);
+      this.cache.invalidate('tracker:activeShipments');
       return `Delivery confirmed for shipment ${shipmentId}`;
     } else {
       throw new NetworkError('confirm delivery', result.status, { shipmentId, recipientId });
@@ -212,14 +224,15 @@ export class TrackerClient {
    * Get shipment details
    */
   async getShipment(shipmentId: string): Promise<SupplyShipment | null> {
-    try {
-      const result = await this.contract.call("get_shipment", nativeToScVal(shipmentId));
-      const shipment = scValToNative(result.result.retval);
-      return shipment;
-    } catch (error) {
-      console.error('Failed to get shipment:', error);
-      return null;
-    }
+    return this.cache.get(`tracker:shipment:${shipmentId}`, async () => {
+      try {
+        const result = await this.contract.call("get_shipment", nativeToScVal(shipmentId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get shipment:', error);
+        return null;
+      }
+    });
   }
 
   /**
@@ -229,17 +242,16 @@ export class TrackerClient {
     shipment?: SupplyShipment;
     confirmation?: RecipientConfirmation;
   }> {
-    try {
-      const result = await this.contract.call("get_shipment_history", nativeToScVal(shipmentId));
-      const history = scValToNative(result.result.retval);
-      return {
-        shipment: history[0],
-        confirmation: history[1]
-      };
-    } catch (error) {
-      console.error('Failed to get shipment history:', error);
-      return {};
-    }
+    return this.cache.get(`tracker:history:${shipmentId}`, async () => {
+      try {
+        const result = await this.contract.call("get_shipment_history", nativeToScVal(shipmentId));
+        const history = scValToNative(result.result.retval);
+        return { shipment: history[0], confirmation: history[1] };
+      } catch (error) {
+        console.error('Failed to get shipment history:', error);
+        return {};
+      }
+    });
   }
 
   /**
@@ -269,14 +281,15 @@ export class TrackerClient {
    * Get all active shipments
    */
   async getActiveShipments(): Promise<SupplyShipment[]> {
-    try {
-      const result = await this.contract.call("get_active_shipments");
-      const shipments = scValToNative(result.result.retval);
-      return shipments;
-    } catch (error) {
-      console.error('Failed to get active shipments:', error);
-      return [];
-    }
+    return this.cache.get('tracker:activeShipments', async () => {
+      try {
+        const result = await this.contract.call("get_active_shipments");
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get active shipments:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -288,7 +301,7 @@ export class TrackerClient {
     reason: string
   ): Promise<string> {
     const reporterKeypair = Keypair.fromSecret(reporterKey);
-    const reporterAccount = await this.server.getAccount(reporterKeypair.publicKey());
+    const reporterAccount = await withRetry<any>(() => this.server.getAccount(reporterKeypair.publicKey()));
 
     const tx = new TransactionBuilder(reporterAccount, {
       fee: '100',
@@ -308,9 +321,12 @@ export class TrackerClient {
       .build();
 
     tx.sign(reporterKeypair);
-    const result = await this.server.sendTransaction(tx);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
     
     if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`tracker:shipment:${shipmentId}`);
+      this.cache.invalidate(`tracker:history:${shipmentId}`);
+      this.cache.invalidate('tracker:activeShipments');
       return `Shipment ${shipmentId} reported as lost`;
     } else {
       throw new NetworkError('report lost shipment', result.status, { shipmentId });
@@ -321,28 +337,30 @@ export class TrackerClient {
    * Get shipments by donor
    */
   async getShipmentsByDonor(donorId: string): Promise<SupplyShipment[]> {
-    try {
-      const result = await this.contract.call("get_shipments_by_donor", nativeToScVal(donorId));
-      const shipments = scValToNative(result.result.retval);
-      return shipments;
-    } catch (error) {
-      console.error('Failed to get shipments by donor:', error);
-      return [];
-    }
+    return this.cache.get(`tracker:donor:${donorId}`, async () => {
+      try {
+        const result = await this.contract.call("get_shipments_by_donor", nativeToScVal(donorId));
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get shipments by donor:', error);
+        return [];
+      }
+    });
   }
 
   /**
    * Get temperature alerts for cold chain shipments
    */
   async getTemperatureAlerts(): Promise<Array<{ shipmentId: string; alert: string }>> {
-    try {
-      const result = await this.contract.call("get_temperature_alerts");
-      const alerts = scValToNative(result.result.retval);
-      return alerts;
-    } catch (error) {
-      console.error('Failed to get temperature alerts:', error);
-      return [];
-    }
+    return this.cache.get('tracker:temperatureAlerts', async () => {
+      try {
+        const result = await this.contract.call("get_temperature_alerts");
+        return scValToNative(result.result.retval);
+      } catch (error) {
+        console.error('Failed to get temperature alerts:', error);
+        return [];
+      }
+    });
   }
 
   /**
@@ -562,6 +580,41 @@ export class TrackerClient {
     };
   }
 
+
+  /**
+   * Build a multi-sig transaction for creating a shipment.
+   */
+  async buildMultiSigCreateShipment(
+    sourceKey: string,
+    request: any,
+    authorizedSigners: string[],
+    threshold: number
+  ): Promise<MultiSigManager> {
+    const sourceKeypair = Keypair.fromSecret(sourceKey);
+    const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
+    const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'create_shipment',
+          ...[
+            new Address(sourceKeypair.publicKey()).toScVal(),
+            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
+            nativeToScVal(request.unit), nativeToScVal(request.origin),
+            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
+            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(request.specialHandling),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':

@@ -3,7 +3,7 @@ import { MerchantClient, Merchant, Location, NetworkConfig } from '../../sdk/src
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
-  config: NetworkConfig;
+  config: StellarNetworkConfig | NetworkConfig;
   adminKey: string;
 }
 
@@ -19,6 +19,8 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 40.7128, lng: -74.0060 }); // NYC default
   const [searchRadius, setSearchRadius] = useState(10); // km
+  const [confirmReject, setConfirmReject] = useState<string | null>(null); // merchantId
+  const [confirmBatchApprove, setConfirmBatchApprove] = useState(false);
 
   // Onboarding form state
   const [onboardingForm, setOnboardingForm] = useState({
