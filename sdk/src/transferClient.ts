@@ -8,6 +8,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { ReadCache } from './readCache';
 import {
   ConditionalTransfer,
   SpendingRule,

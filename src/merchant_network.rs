@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::unique_id::*;
 
 // Merchant categories for spending rules (stored as u32)
 pub const CATEGORY_FOOD: u32 = 0;
@@ -310,7 +311,7 @@ impl MerchantNetwork {
         }
         
         // Create transaction record
-        let transaction_id = format!("tx_{}_{}", merchant_id, env.ledger().timestamp());
+        let transaction_id = generate_merchant_txn_id(&env, &merchant_id);
         let transaction = Transaction {
             id: transaction_id.clone(),
             merchant_id: merchant_id.clone(),
@@ -374,7 +375,7 @@ impl MerchantNetwork {
         }
         
         // Create offline transaction
-        let transaction_id = format!("offline_{}_{}", merchant_id, env.ledger().timestamp());
+        let transaction_id = generate_offline_txn_id(&env, &merchant_id);
         let offline_tx = OfflineTransaction {
             id: transaction_id.clone(),
             merchant_id: merchant_id.clone(),
@@ -489,7 +490,7 @@ impl MerchantNetwork {
         let amount_u64: u64 = amount.into();
         if amount_u64 > 5000 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "large"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "large_transaction"),
                 severity: 7,
@@ -518,7 +519,7 @@ impl MerchantNetwork {
         
         if recent_count > 20 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "velocity"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "high_velocity"),
                 severity: 8,
@@ -532,7 +533,7 @@ impl MerchantNetwork {
         // Pattern 3: Round amount transactions (potential testing)
         if amount_u64 % 100 == 0 && amount_u64 > 100 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "round"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "round_amount"),
                 severity: 3,
@@ -546,7 +547,7 @@ impl MerchantNetwork {
         // Pattern 4: New merchant with high volume
         if merchant.status == STATUS_TRIAL && merchant.current_month_volume > U256::from_u64(1000) {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "new_merchant"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "new_merchant_high_volume"),
                 severity: 6,

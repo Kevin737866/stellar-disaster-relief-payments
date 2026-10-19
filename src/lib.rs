@@ -25,6 +25,7 @@ mod merchant_network;
 mod cash_transfer;
 mod supply_chain_tracker;
 mod anti_fraud;
+mod unique_id;
 
 #[cfg(test)]
 mod test;
@@ -35,6 +36,7 @@ pub use merchant_network::*;
 pub use cash_transfer::*;
 pub use supply_chain_tracker::*;
 pub use anti_fraud::*;
+pub use unique_id::*;
 
 #[contract]
 pub struct DisasterReliefPlatform;

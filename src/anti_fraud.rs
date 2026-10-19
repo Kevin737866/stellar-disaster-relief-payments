@@ -1,4 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::unique_id::*;
 
 #[contract]
 pub struct AntiFraud;
@@ -344,7 +345,9 @@ impl AntiFraud {
         entities: Vec<String>,
         confidence_score: u32,
     ) {
-        let alert_id = format!("alert_{}_{}", pattern_type, env.ledger().timestamp());
+        // Use first entity for alert ID, or pattern_type if no entities
+        let entity_id = entities.get(0).unwrap_or(String::from_str(env, "unknown"));
+        let alert_id = generate_fraud_alert_id(env, &entity_id, pattern_type);
         let alert = FraudPattern {
             id: alert_id,
             pattern_type: String::from_str(env, pattern_type),
