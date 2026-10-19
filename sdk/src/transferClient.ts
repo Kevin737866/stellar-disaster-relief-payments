@@ -310,7 +310,20 @@ export class TransferClient {
   }
 
   /**
-   * Generate QR code for conditional transfer
+   * Generate QR code for conditional transfer.
+   *
+   * @privacy WARNING — The returned JSON payload contains `beneficiaryId`,
+   * `amount`, `remainingAmount`, `token`, `purpose`, and spending rule limits
+   * in plaintext.  Anyone who scans this QR code can read the beneficiary's
+   * current balance and transfer purpose.
+   *
+   * Recommended minimisation:
+   * - Omit `remainingAmount` from the payload.  The merchant should query the
+   *   contract after scanning to obtain the current balance, preventing
+   *   real-time balance exposure via the QR image.
+   * - Consider omitting `purpose` if it contains sensitive descriptions.
+   * - The QR already includes `expiresAt` (transfer expiry) which limits
+   *   the useful lifetime of a captured QR image.
    */
   generateTransferQRCode(transferId: string, transfer: ConditionalTransfer): string {
     const qrData = {
@@ -318,6 +331,9 @@ export class TransferClient {
       transferId,
       beneficiaryId: transfer.beneficiaryId,
       amount: transfer.amount,
+      // NOTE: `remainingAmount` exposes the current balance to anyone scanning
+      // the QR.  Consider omitting in production; merchants should query the
+      // contract for the live balance after scanning the transfer ID.
       remainingAmount: transfer.remainingAmount,
       token: transfer.token,
       purpose: transfer.purpose,
@@ -325,7 +341,7 @@ export class TransferClient {
         type: rule.ruleType,
         limit: rule.limit
       })),
-      expiresAt: transfer.expiresAt,
+      expiresAt: transfer.expiresAt, // QR is scoped to transfer expiry
       timestamp: Date.now()
     };
 

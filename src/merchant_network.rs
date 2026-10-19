@@ -25,19 +25,34 @@ pub const PAYMENT_ONLINE: u32 = 4;
 #[contract]
 pub struct MerchantNetwork;
 
+/// On-chain merchant record.
+///
+/// # Privacy model
+/// Merchant data is **intentionally public** to support network discovery
+/// and trust building.  However, operators should be aware of the following:
+///
+/// - `name`, `owner`, `contact_info`: All stored as plain text on-chain and
+///   readable by any ledger observer.  Ensure merchants consent to this.
+/// - `location` (lat/lng): Stored as integers scaled by 1e6.  Consider
+///   rounding to 2 decimal places (~1 km precision) for public-facing QR
+///   codes to avoid exposing precise shop coordinates.
+/// - `verification_documents`: Stored as strings on-chain.  Use opaque
+///   document reference IDs rather than actual document content.
+/// - `vouchers`: Stellar addresses or beneficiary reference IDs stored
+///   on-chain; readable by any ledger observer.
 #[derive(Clone)]
 pub struct Merchant {
     pub id: String,
-    pub name: String,
+    pub name: String,           // Plain text on-chain; ensure merchant consent
     pub owner: Address,
     pub business_type: String,
     pub category: u32, // MerchantCategory enum value
-    pub location: Location,
-    pub contact_info: String,
+    pub location: Location,     // lat/lng rounded to ≤2dp for public QR; consent required
+    pub contact_info: String,   // Plain text on-chain; ensure merchant consent
     pub registration_date: u64,
     pub status: u32, // MerchantStatus enum value
     pub is_verified: bool,
-    pub verification_documents: Vec<String>,
+    pub verification_documents: Vec<String>, // Use document reference IDs, not document content
     // Community vouching
     pub vouchers: Vec<String>, // 3 beneficiary references or 1 NGO field worker
     pub vouching_threshold: u32, // 3 beneficiaries or 1 NGO

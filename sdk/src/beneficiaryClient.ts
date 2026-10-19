@@ -362,19 +362,37 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate QR code for beneficiary identification
+   * Generate QR code for beneficiary identification.
+   *
+   * @privacy WARNING — The returned JSON payload contains `name`, `disasterId`,
+   * `trustScore`, and verification factor metadata in plaintext.  Anyone who
+   * scans this QR code can read these fields.
+   *
+   * Recommended minimisation:
+   * - Omit `name` from the payload.  The scanning party should look up the
+   *   display name on-chain after verifying `beneficiaryId`.
+   * - Add an `expiresAt` field (e.g. `Date.now() + 30 * 60 * 1000` for 30 min)
+   *   to prevent stale QR reuse.
+   * - Use the `offlineAuth.generateQRCode()` method instead for contexts where
+   *   expiry-scoped, signed offline QR codes are required.
    */
   generateBeneficiaryQRCode(beneficiaryId: string, profile: BeneficiaryProfile): string {
     const qrData = {
       type: 'beneficiary_id',
       beneficiaryId,
+      // NOTE: `name` is included here for operator convenience but exposes the
+      // beneficiary's display name to anyone scanning the QR.  Consider omitting
+      // in production and resolving the name on-chain after verifying the ID.
       name: profile.name,
       disasterId: profile.disasterId,
       trustScore: profile.trustScore,
       timestamp: Date.now(),
+      // NOTE: No `expiresAt` field — this QR does not expire.  Add one for
+      // production deployments where stale QR reuse is a concern.
       verificationFactors: profile.verificationFactors.map(f => ({
         type: f.factorType,
         weight: f.weight
+        // Raw factor values are intentionally omitted — never include them here.
       }))
     };
 
