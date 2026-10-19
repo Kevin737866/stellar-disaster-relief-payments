@@ -22,6 +22,16 @@ pub const PAYMENT_NFC: u32 = 2;
 pub const PAYMENT_OFFLINE: u32 = 3;
 pub const PAYMENT_ONLINE: u32 = 4;
 
+// Performance optimization constants
+/// Maximum transactions to scan for fraud velocity check (bounds iteration)
+pub const MAX_FRAUD_VELOCITY_SCAN: u32 = 1000;
+/// Maximum risk profiles to scan for high-risk queries
+pub const MAX_RISK_PROFILE_SCAN: u32 = 500;
+/// Location grid size for spatial indexing (~1km at equator)
+pub const LOCATION_GRID_SIZE: f64 = 0.01;
+/// Maximum merchants to return in location/category queries
+pub const MAX_MERCHANT_RESULTS: u32 = 100;
+
 #[contract]
 pub struct MerchantNetwork;
 
@@ -103,6 +113,17 @@ pub struct OfflineTransaction {
     pub purpose: String,
     pub signature: String,
     pub is_synced: bool,
+}
+
+// Secondary index structures for performance optimization
+#[derive(Clone)]
+pub struct MerchantIndex {
+    /// Merchant IDs by category for O(1) category lookups
+    pub by_category: Map<u32, Vec<String>>,
+    /// Merchant IDs by location grid for spatial queries
+    pub by_location_grid: Map<String, Vec<String>>,
+    /// Active merchant IDs for quick active merchant enumeration
+    pub active_merchants: Vec<String>,
 }
 
 // Fraud detection alert
@@ -203,8 +224,11 @@ impl MerchantNetwork {
             last_settlement_date: current_time,
         };
         
-        merchants.set(merchant_id.clone(), merchant);
+        merchants.set(merchant_id.clone(), merchant.clone());
         env.storage().instance().set(&merchants_key, &merchants);
+        
+        // Add to secondary indexes for fast lookups
+        Self::index_merchant(&env, &merchant_id, &merchant);
         
         // Add to onboarding queue for vouching
         let onboarding_key = Symbol::new(&env, "onboarding_queue");
@@ -249,6 +273,8 @@ impl MerchantNetwork {
                 merchant.status = STATUS_TRIAL;
                 merchant.is_verified = true;
                 merchant.is_active = true;
+                // Update active status in index
+                Self::update_merchant_active_status(&env, &merchant_id, true);
             }
             
             merchants.set(merchant_id, merchant);
@@ -500,19 +526,28 @@ impl MerchantNetwork {
             alerts.push_back(alert);
         }
         
-        // Pattern 2: High velocity (many transactions in short time)
+        // Pattern 2: High velocity (many transactions in short time) - bounded scan
         let transactions_key = Symbol::new(&env, "transactions");
         let transactions: Map<String, Transaction> = env.storage().temporary()
             .get(&transactions_key)
             .unwrap_or(Map::new(&env));
         
         let mut recent_count = 0u32;
+        let mut scanned = 0u32;
         let current_time = env.ledger().timestamp();
         let one_hour_ago = current_time - 3600;
         
         for (_, tx) in transactions.iter() {
+            if scanned >= MAX_FRAUD_VELOCITY_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if tx.merchant_id == merchant_id && tx.timestamp > one_hour_ago {
                 recent_count += 1;
+                if recent_count > 20 {
+                    break; // Early exit when threshold exceeded
+                }
             }
         }
         
@@ -639,6 +674,7 @@ impl MerchantNetwork {
         
         if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
             if merchant.status == STATUS_TRIAL {
+                let was_active = merchant.is_active;
                 if approve {
                     // Graduate: increase limits based on transaction history
                     merchant.status = STATUS_GRADUATED;
@@ -648,6 +684,12 @@ impl MerchantNetwork {
                 } else {
                     // Extend trial or suspend
                     merchant.status = STATUS_SUSPENDED;
+                    merchant.is_active = false;
+                }
+                
+                // Update active status in index if changed
+                if merchant.is_active != was_active {
+                    Self::update_merchant_active_status(&env, &merchant_id, merchant.is_active);
                 }
                 
                 merchants.set(merchant_id, merchant);
@@ -718,7 +760,7 @@ impl MerchantNetwork {
         merchants.get(merchant_id)
     }
     
-    /// Find merchants by location (geographic search)
+    /// Find merchants by location (geographic search) - optimized with spatial grid index
     pub fn find_merchants_by_location(
         env: Env,
         latitude: f64,
@@ -730,17 +772,45 @@ impl MerchantNetwork {
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
         
-        let mut nearby_merchants = Vec::new(&env);
+        let index = Self::get_merchant_index(&env);
         
-        for (_, merchant) in merchants.iter() {
-            if merchant.is_active {
-                let distance = Self::calculate_distance(
-                    latitude, longitude,
-                    merchant.location.latitude, merchant.location.longitude
-                );
+        // Calculate grid range to search
+        // 1 degree lat ~= 111km, 1 degree lon ~= 111km * cos(lat)
+        let lat_delta = radius_km / 111.0;
+        let lon_delta = radius_km / (111.0 * latitude.cos().max(0.1));
+        
+        let grid_lat_start = ((latitude - lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
+        let grid_lat_end = ((latitude + lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
+        let grid_lon_start = ((longitude - lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
+        let grid_lon_end = ((longitude + lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
+        
+        let mut nearby_merchants = Vec::new(&env);
+        let mut count = 0u32;
+        
+        // Iterate over grid cells in range
+        for grid_lat in grid_lat_start..=grid_lat_end {
+            for grid_lon in grid_lon_start..=grid_lon_end {
+                let grid_key = String::from_str(&env, &format!("grid_{}_{}", grid_lat, grid_lon));
                 
-                if distance <= radius_km {
-                    nearby_merchants.push_back(merchant);
+                if let Some(grid_merchant_ids) = index.by_location_grid.get(grid_key) {
+                    for merchant_id in grid_merchant_ids.iter() {
+                        if count >= MAX_MERCHANT_RESULTS {
+                            break;
+                        }
+                        if let Some(merchant) = merchants.get(merchant_id) {
+                            if merchant.is_active {
+                                let distance = Self::calculate_distance(
+                                    latitude, longitude,
+                                    merchant.location.latitude, merchant.location.longitude
+                                );
+                                
+                                if distance <= radius_km {
+                                    nearby_merchants.push_back(merchant);
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -748,7 +818,7 @@ impl MerchantNetwork {
         nearby_merchants
     }
     
-    /// Find merchants by category
+    /// Find merchants by category (optimized with secondary index)
     pub fn find_merchants_by_category(
         env: Env,
         category: u32,
@@ -758,11 +828,23 @@ impl MerchantNetwork {
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
         
-        let mut category_merchants = Vec::new(&env);
+        let index = Self::get_merchant_index(&env);
+        let category_merchant_ids: Vec<String> = index.by_category
+            .get(category)
+            .unwrap_or(Vec::new(&env));
         
-        for (_, merchant) in merchants.iter() {
-            if merchant.is_active && merchant.category == category {
-                category_merchants.push_back(merchant);
+        let mut category_merchants = Vec::new(&env);
+        let mut count = 0u32;
+        
+        for merchant_id in category_merchant_ids.iter() {
+            if count >= MAX_MERCHANT_RESULTS {
+                break;
+            }
+            if let Some(merchant) = merchants.get(merchant_id) {
+                if merchant.is_active {
+                    category_merchants.push_back(merchant);
+                    count += 1;
+                }
             }
         }
         
@@ -779,6 +861,128 @@ impl MerchantNetwork {
                 (dlon / 2.0).sin().powi(2);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         r * c
+    }
+
+    /// Compute location grid key for spatial indexing
+    /// Grid size ~1km at equator (0.01 degrees)
+    fn location_grid_key(latitude: f64, longitude: f64) -> String {
+        let grid_lat = (latitude / LOCATION_GRID_SIZE).floor() as i64;
+        let grid_lon = (longitude / LOCATION_GRID_SIZE).floor() as i64;
+        String::from_str(&env, &format!("grid_{}_{}", grid_lat, grid_lon))
+    }
+
+    /// Get or create merchant index
+    fn get_merchant_index(env: &Env) -> MerchantIndex {
+        let index_key = Symbol::new(env, "merchant_index");
+        env.storage().instance()
+            .get(&index_key)
+            .unwrap_or(MerchantIndex {
+                by_category: Map::new(env),
+                by_location_grid: Map::new(env),
+                active_merchants: Vec::new(env),
+            })
+    }
+
+    /// Save merchant index
+    fn save_merchant_index(env: &Env, index: &MerchantIndex) {
+        let index_key = Symbol::new(env, "merchant_index");
+        env.storage().instance().set(&index_key, index);
+    }
+
+    /// Add merchant to secondary indexes
+    fn index_merchant(env: &Env, merchant_id: &String, merchant: &Merchant) {
+        let mut index = Self::get_merchant_index(env);
+        
+        // Index by category
+        let mut category_vec: Vec<String> = index.by_category
+            .get(merchant.category)
+            .unwrap_or(Vec::new(env));
+        category_vec.push_back(merchant_id.clone());
+        index.by_category.set(merchant.category, category_vec);
+        
+        // Index by location grid
+        let grid_key = Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
+        let mut grid_vec: Vec<String> = index.by_location_grid
+            .get(grid_key.clone())
+            .unwrap_or(Vec::new(env));
+        grid_vec.push_back(merchant_id.clone());
+        index.by_location_grid.set(grid_key, grid_vec);
+        
+        // Track active merchants
+        if merchant.is_active {
+            index.active_merchants.push_back(merchant_id.clone());
+        }
+        
+        Self::save_merchant_index(env, &index);
+    }
+
+    /// Remove merchant from secondary indexes
+    fn unindex_merchant(env: &Env, merchant_id: &String, merchant: &Merchant) {
+        let mut index = Self::get_merchant_index(env);
+        
+        // Remove from category index
+        if let Some(mut category_vec) = index.by_category.get(merchant.category) {
+            let mut new_vec = Vec::new(env);
+            for id in category_vec.iter() {
+                if id != *merchant_id {
+                    new_vec.push_back(id);
+                }
+            }
+            index.by_category.set(merchant.category, new_vec);
+        }
+        
+        // Remove from location grid index
+        let grid_key = Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
+        if let Some(mut grid_vec) = index.by_location_grid.get(grid_key.clone()) {
+            let mut new_vec = Vec::new(env);
+            for id in grid_vec.iter() {
+                if id != *merchant_id {
+                    new_vec.push_back(id);
+                }
+            }
+            index.by_location_grid.set(grid_key, new_vec);
+        }
+        
+        // Remove from active merchants
+        let mut new_active = Vec::new(env);
+        for id in index.active_merchants.iter() {
+            if id != *merchant_id {
+                new_vec.push_back(id);
+            }
+        }
+        index.active_merchants = new_active;
+        
+        Self::save_merchant_index(env, &index);
+    }
+
+    /// Update merchant active status in index
+    fn update_merchant_active_status(env: &Env, merchant_id: &String, is_active: bool) {
+        let mut index = Self::get_merchant_index(env);
+        
+        if is_active {
+            // Add to active if not already present
+            let mut found = false;
+            for id in index.active_merchants.iter() {
+                if id == *merchant_id {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                index.active_merchants.push_back(merchant_id.clone());
+            }
+        } else {
+            // Remove from active
+            let mut new_active = Vec::new(env);
+            for id in index.active_merchants.iter() {
+                if id != *merchant_id {
+                    new_active.push_back(id);
+                }
+            }
+            index.active_merchants = new_active;
+        }
+        
+        Self::save_merchant_index(env, &index);
     }
     
     /// Get merchant transaction history

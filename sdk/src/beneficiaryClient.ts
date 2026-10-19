@@ -9,9 +9,7 @@ import {
   scValToNative
 } from 'stellar-sdk';
 import { MultiSigManager } from './multiSig';
-import { 
-  BeneficiaryProfile, 
-  VerificationFactor, 
+import { ReadCache } from './readCache';
 import {
   BeneficiaryProfile,
   VerificationFactor,
