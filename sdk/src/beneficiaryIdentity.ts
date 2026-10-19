@@ -9,7 +9,7 @@ import {
   scValToNative
 } from 'stellar-sdk';
 import { withRetry } from './retry';
-import { createHash, SHA256 } from 'crypto-js';
+import { SHA256 } from 'crypto-js';
 import { 
   BeneficiaryIdentity, 
   IdentityFactor, 
@@ -563,14 +563,24 @@ export class BeneficiaryIdentityClient {
   }
 
   /**
-   * Hash a factor value for privacy
+   * Hash a factor value for privacy.
+   *
+   * Uses SHA-256 via `crypto-js`, which produces a lowercase hex digest.
+   * This **must** match the algorithm used on-chain in `beneficiary_manager.rs`
+   * (`sha2::Sha256` + `hex::encode`).  Both produce identical lowercase hex
+   * for the same input string.  Do not switch to a different algorithm without
+   * updating the Soroban contract simultaneously.
    */
   private hashFactor(value: string): string {
     return SHA256(value).toString();
   }
 
   /**
-   * Sign QR data for verification
+   * Sign QR data for offline verification.
+   *
+   * Uses SHA-256 via `crypto-js` to create a short-lived signature over the
+   * idHash + expiry + contract address.  Not sent to the contract; used only
+   * for offline QR code validation by the `offlineAuth` module.
    */
   private signQRData(idHash: string, expiresAt: number): string {
     const data = `${idHash}_${expiresAt}_${this.config.contractIds.beneficiaryManager}`;
