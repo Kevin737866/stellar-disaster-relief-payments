@@ -113,25 +113,42 @@ UN_SECRET_KEY=SUN_KEY_HERE
 
 ## 🚀 Deployment Guide
 
+### Toolchain Versions & Requirements
+- **Rust**: 1.76+ (`rustup target add wasm32-unknown-unknown`)
+- **Stellar / Soroban CLI**: v22.0.0+ (Note: `stellar` CLI is the official command name as of v21+, with `soroban` retained as a backward-compatible alias)
+- **Soroban SDK**: v22.0.0
+
 ### 1. Deploy Smart Contracts
 
 ```bash
-# Build contracts
-soroban contract build
+# Build contracts (outputs target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm)
+stellar contract build
+# Or using legacy alias: soroban contract build
+
+# Optional: Optimize WASM for deployment
+stellar contract optimize \
+  --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm
 
 # Deploy to testnet
-soroban contract deploy --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief.wasm --source ADMIN_SECRET_KEY
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm \
+  --source admin \
+  --network testnet
 
-# Initialize contracts
-soroban contract invoke \
-  --id CONTRACT_ID \
-  --source ADMIN_SECRET_KEY \
-  --function initialize \
-  --arg ADMIN_PUBLIC_KEY \
-  --arg NGO_PUBLIC_KEY \
-  --arg GOV_PUBLIC_KEY \
-  --arg UN_PUBLIC_KEY
+# Initialize platform contracts
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source admin \
+  --network testnet \
+  -- initialize \
+  --admin <ADMIN_ADDRESS> \
+  --ngo_signer <NGO_ADDRESS> \
+  --gov_signer <GOV_ADDRESS> \
+  --un_signer <UN_ADDRESS>
 ```
+
+> **Note on CLI version compatibility**: 
+> In Stellar/Soroban CLI v20+, function arguments are passed after `--` using `--<param_name> <value>` syntax instead of legacy positional `--arg` flags. Network configuration can be passed via `--network testnet` or `--rpc-url` and `--network-passphrase`.
 
 ### 2. Configure SDK
 
