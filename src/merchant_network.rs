@@ -290,12 +290,35 @@ impl MerchantNetwork {
         env.storage().instance().set(&onboarding_key, &queue);
     }
     
-    /// Add community vouches for merchant (3 beneficiaries or 1 NGO worker)
+    /// Add community vouches for a merchant to satisfy onboarding verification.
+    ///
+    /// # Policy Semantics: Community Vouching Arithmetic
+    ///
+    /// - **Vouching Threshold**:
+    ///   - Merchants in standard onboarding start with `vouching_threshold = 3` and `current_vouches = 0`.
+    ///   - Initial status is `STATUS_PENDING` (0) and `is_active = false`.
+    ///
+    /// - **Weighted Voucher Arithmetic**:
+    ///   - **NGO Field Worker** (`voucher_type == 1`): Carries a weight of **3 points**. A single NGO vouch
+    ///     immediately satisfies the threshold (`current_vouches += 3`), enabling 1-step activation.
+    ///   - **Beneficiary Reference** (`voucher_type == 0`): Carries a weight of **1 point** (`current_vouches += 1`).
+    ///     Requires 3 independent beneficiary vouches to meet threshold.
+    ///
+    /// - **State Transition**:
+    ///   - When `merchant.current_vouches >= merchant.vouching_threshold` and status is `STATUS_PENDING`:
+    ///     - Status transitions to `STATUS_TRIAL` (1).
+    ///     - `is_verified` becomes `true`.
+    ///     - `is_active` becomes `true`.
+    ///   - Once in trial, the merchant is subjected to `trial_daily_limit` ($100/day) until graduation.
+    ///
+    /// - **Fast-Track Exemption**:
+    ///   - Merchants registered with `emergency_fast_track: true` bypass the vouching queue completely,
+    ///     entering directly as `STATUS_ACTIVE` (2) with standard volume limits.
     pub fn add_vouch(
         env: Env,
         voucher: Address,
         merchant_id: String,
-        voucher_type: u32, // 0 = beneficiary, 1 = ngo
+        voucher_type: u32, // 0 = beneficiary (weight: 1), 1 = ngo (weight: 3)
     ) {
         voucher.require_auth();
         
@@ -660,7 +683,33 @@ impl MerchantNetwork {
         merchant_alerts
     }
     
-    /// Daily automatic settlement to merchant wallets
+    /// Settle outstanding merchant balances and record settlement history.
+    ///
+    /// # Policy Semantics: Settlement & Settlement Token
+    ///
+    /// - **Settlement Token**:
+    ///   - The settlement currency is standardized as `"USDC"` (Soroban token string representation).
+    ///   - All settlement records created by this function explicitly designate `"USDC"` as their settlement token.
+    ///
+    /// - **Pending Balance Accrual**:
+    ///   - Every approved payment (via `process_payment` online or reconciled offline payment via `sync_offline_transactions`)
+    ///     increments `merchant.pending_settlement` by the transaction amount.
+    ///
+    /// - **Batch Settlement Execution**:
+    ///   - Invocation requires Admin authorization (`admin.require_auth()`).
+    ///   - Iterates across all registered merchants in storage.
+    ///   - For every merchant where `pending_settlement > 0`:
+    ///     1. Mints a unique `Settlement` record (`id: "settle_{merchant_id}_{timestamp}"`).
+    ///     2. Assigns `amount = merchant.pending_settlement`, `token = "USDC"`.
+    ///     3. Stores the record in the `"settlements"` storage map.
+    ///     4. Resets `merchant.pending_settlement` to 0.
+    ///     5. Updates `merchant.last_settlement_date` to current ledger timestamp.
+    ///   - Returns the total count of settled merchants.
+    ///
+    /// # Edge Cases
+    /// - Zero pending balances: Merchants with `pending_settlement == 0` are skipped; no settlement record created.
+    /// - Partial/unsettled transactions: Offline transactions must be synced via `sync_offline_transactions`
+    ///   before they appear in `pending_settlement`.
     pub fn settle_balances(env: Env, admin: Address) -> u32 {
         admin.require_auth();
         
