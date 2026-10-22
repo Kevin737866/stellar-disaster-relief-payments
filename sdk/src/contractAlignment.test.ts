@@ -329,6 +329,22 @@ describe('SDK <-> contract shape alignment', () => {
     expectShape('buildOfflineRegisterMerchant', method, args.length);
   });
 
+  test('MerchantClient.verifyMerchant -> review_trial_merchant', async () => {
+    const client = new MerchantClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.verifyMerchant(signer.secret(), 'mer_1', true, 'verified')
+    );
+    expectShape('verifyMerchant', method, args.length);
+  });
+
+  test('MerchantClient.buildOfflineApproveMerchant -> review_trial_merchant', async () => {
+    const client = new MerchantClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.buildOfflineApproveMerchant(signer.publicKey(), 'mer_1', true, 'verified')
+    );
+    expectShape('buildOfflineApproveMerchant', method, args.length);
+  });
+
   test('TransferClient.createTransfer -> create_transfer', async () => {
     const client = new TransferClient(CONFIG) as any;
     const { method, args } = await captureCall(client, () =>
