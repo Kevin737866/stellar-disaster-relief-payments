@@ -633,12 +633,19 @@ export class TrackerClient {
   }
 
   /**
-   * Get shipment statistics
+   * Get shipment statistics.
+   *
+   * Returns a rich summary including quantity-loss analytics. When final
+   * checkpoint data is incomplete (missing `quantityVerified`) or
+   * `initialQuantity` is zero, `quantityLoss` is reported as `null` and
+   * `quantityLossUncertain` is set to `true` rather than throwing or
+   * returning a misleading number (Issue #183).
    */
   async getShipmentStatistics(shipmentId: string): Promise<{
     totalCheckpoints: number;
     averageTimeBetweenCheckpoints: number;
-    quantityLoss: number;
+    quantityLoss: number | null;
+    quantityLossUncertain: boolean;
     deliveryStatus: string;
     onTimeDelivery: boolean;
     temperatureCompliance: boolean;
@@ -662,12 +669,43 @@ export class TrackerClient {
       averageTime = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
     }
 
-    // Calculate quantity loss
-    const initialQuantity = BigInt(shipment.quantity);
-    const finalQuantity = totalCheckpoints > 0 
-      ? BigInt(shipment.checkpoints[totalCheckpoints - 1].quantityVerified)
-      : initialQuantity;
-    const quantityLoss = Number((initialQuantity - finalQuantity) * BigInt(100) / initialQuantity);
+    // Calculate quantity loss with uncertainty guards (Issue #183):
+    // 1. If initialQuantity is 0, division by zero → uncertain.
+    // 2. If the last checkpoint exists but quantityVerified is missing/null/empty
+    //    → BigInt() would throw → return uncertain instead.
+    let quantityLoss: number | null = null;
+    let quantityLossUncertain = false;
+
+    const rawInitial = shipment.quantity;
+    if (rawInitial == null || rawInitial === '' || rawInitial === '0') {
+      // Zero or missing initial quantity — loss percentage is undefined
+      quantityLossUncertain = true;
+    } else {
+      const initialQuantity = BigInt(rawInitial);
+      if (initialQuantity === BigInt(0)) {
+        quantityLossUncertain = true;
+      } else if (totalCheckpoints === 0) {
+        // No checkpoints yet — treat as 0% loss (nothing has been verified missing)
+        quantityLoss = 0;
+      } else {
+        const lastCheckpoint = shipment.checkpoints[totalCheckpoints - 1];
+        const rawFinal = lastCheckpoint.quantityVerified;
+        if (rawFinal == null || rawFinal === '') {
+          // Checkpoint exists but quantityVerified was not recorded
+          quantityLossUncertain = true;
+        } else {
+          try {
+            const finalQuantity = BigInt(rawFinal);
+            quantityLoss = Number(
+              (initialQuantity - finalQuantity) * BigInt(100) / initialQuantity
+            );
+          } catch {
+            // BigInt conversion failed for an unexpected value
+            quantityLossUncertain = true;
+          }
+        }
+      }
+    }
 
     // Check on-time delivery
     const onTimeDelivery = shipment.currentStatus === 'delivered' && 
@@ -692,6 +730,7 @@ export class TrackerClient {
       totalCheckpoints,
       averageTimeBetweenCheckpoints: averageTime,
       quantityLoss,
+      quantityLossUncertain,
       deliveryStatus: shipment.currentStatus,
       onTimeDelivery,
       temperatureCompliance
