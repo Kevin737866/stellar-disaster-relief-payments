@@ -447,10 +447,23 @@ export interface SupplyChainRequest {
   supplyType: string;
   quantity: string;
   unit: string;
-  origin: Location;
-  destination: Location;
+  /** Origin coordinates as "lat,lng" string, e.g. "18.4861,-69.9312". */
+  originLatLng: string;
+  originAddress: string;
+  originFacility: string;
+  originContact: string;
+  /** Destination coordinates as "lat,lng" string. */
+  destinationLatLng: string;
+  destinationAddress: string;
+  destinationFacility: string;
+  destinationContact: string;
   estimatedArrival: number;
-  temperatureRequirements?: TemperatureRequirements;
+  /**
+   * Temperature requirements for cold-chain shipments.
+   * Pass `null` or `undefined` when not required; the SDK serialises it to
+   * the Soroban `Option::None` / `Option::Some(...)` shape accordingly.
+   */
+  temperatureRequirements?: TemperatureRequirements | null;
   specialHandling: string[];
 }
 

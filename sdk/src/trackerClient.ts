@@ -44,7 +44,20 @@ export class TrackerClient {
   }
 
   /**
-   * Create a new supply shipment
+   * Create a new supply shipment.
+   *
+   * Parameter order matches the Rust `create_shipment` contract function
+   * (excluding `env`):
+   * donor, shipment_id, donor_id, supply_type, quantity, unit,
+   * origin_lat_lng, origin_address, origin_facility, origin_contact,
+   * destination_lat_lng, destination_address, destination_facility,
+   * destination_contact, estimated_arrival,
+   * temperature_requirements (Option<TemperatureRequirements>),
+   * special_handling (Vec<String>).
+   *
+   * `temperatureRequirements` is serialised as an Option:
+   *   - null / undefined  →  nativeToScVal(null)  (None)
+   *   - object            →  nativeToScVal(value)  (Some)
    */
   async createShipment(
     donorKey: string,
@@ -53,6 +66,11 @@ export class TrackerClient {
     const donorKeypair = Keypair.fromSecret(donorKey);
     const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+
+    // Serialise Option<TemperatureRequirements>: null/undefined → None, object → Some
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
 
     const tx = new TransactionBuilder(donorAccount, {
       fee: '100',
@@ -68,11 +86,17 @@ export class TrackerClient {
             nativeToScVal(request.supplyType),
             nativeToScVal(request.quantity),
             nativeToScVal(request.unit),
-            nativeToScVal(request.origin),
-            nativeToScVal(request.destination),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
             nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
-            nativeToScVal(request.specialHandling)
+            tempReqScVal,
+            nativeToScVal(request.specialHandling),
           ]
         )
       )
@@ -453,17 +477,39 @@ export class TrackerClient {
   }
 
   /**
-   * Create supply chain request template
+   * Create supply chain request with flat location strings.
+   *
+   * @param donorId             Donor identifier.
+   * @param supplyType          Supply type description.
+   * @param quantity            Quantity as a string-encoded number.
+   * @param unit                Unit of measure.
+   * @param originLatLng        Origin coordinates as "lat,lng" string.
+   * @param originAddress       Origin street address.
+   * @param originFacility      Origin facility name.
+   * @param originContact       Origin contact person.
+   * @param destinationLatLng   Destination coordinates as "lat,lng" string.
+   * @param destinationAddress  Destination street address.
+   * @param destinationFacility Destination facility name.
+   * @param destinationContact  Destination contact person.
+   * @param estimatedArrival    Estimated arrival timestamp (ms since epoch).
+   * @param temperatureRequirements  Cold-chain requirements, or null/undefined if none.
+   * @param specialHandling     Special handling instructions.
    */
   createSupplyChainRequest(
     donorId: string,
     supplyType: string,
     quantity: string,
     unit: string,
-    origin: Location,
-    destination: Location,
+    originLatLng: string,
+    originAddress: string,
+    originFacility: string,
+    originContact: string,
+    destinationLatLng: string,
+    destinationAddress: string,
+    destinationFacility: string,
+    destinationContact: string,
     estimatedArrival: number,
-    temperatureRequirements?: TemperatureRequirements,
+    temperatureRequirements?: TemperatureRequirements | null,
     specialHandling: string[] = []
   ): SupplyChainRequest {
     return {
@@ -471,11 +517,17 @@ export class TrackerClient {
       supplyType,
       quantity,
       unit,
-      origin,
-      destination,
+      originLatLng,
+      originAddress,
+      originFacility,
+      originContact,
+      destinationLatLng,
+      destinationAddress,
+      destinationFacility,
+      destinationContact,
       estimatedArrival,
       temperatureRequirements,
-      specialHandling
+      specialHandling,
     };
   }
 
@@ -652,13 +704,16 @@ export class TrackerClient {
    */
   async buildMultiSigCreateShipment(
     sourceKey: string,
-    request: any,
+    request: SupplyChainRequest,
     authorizedSigners: string[],
     threshold: number
   ): Promise<MultiSigManager> {
     const sourceKeypair = Keypair.fromSecret(sourceKey);
     const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -668,11 +723,21 @@ export class TrackerClient {
           'create_shipment',
           ...[
             new Address(sourceKeypair.publicKey()).toScVal(),
-            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
-            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
-            nativeToScVal(request.unit), nativeToScVal(request.origin),
-            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(shipmentId),
+            nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType),
+            nativeToScVal(request.quantity),
+            nativeToScVal(request.unit),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
+            nativeToScVal(request.estimatedArrival),
+            tempReqScVal,
             nativeToScVal(request.specialHandling),
           ]
         )
@@ -686,10 +751,13 @@ export class TrackerClient {
    */
   async buildOfflineCreateShipment(
     sourcePublicKey: string,
-    request: any
+    request: SupplyChainRequest
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -699,11 +767,21 @@ export class TrackerClient {
           'create_shipment',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
-            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
-            nativeToScVal(request.unit), nativeToScVal(request.origin),
-            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(shipmentId),
+            nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType),
+            nativeToScVal(request.quantity),
+            nativeToScVal(request.unit),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
+            nativeToScVal(request.estimatedArrival),
+            tempReqScVal,
             nativeToScVal(request.specialHandling),
           ]
         )
