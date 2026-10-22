@@ -55,6 +55,7 @@ export function buildFilename(prefix: string, format: ExportFormat): string {
 /** Trigger a browser file download. No-op in non-browser environments. */
 export function triggerDownload(content: string, filename: string, format: ExportFormat): void {
   if (typeof document === 'undefined') return;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return;
   const mime = format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json';
   const blob = new Blob(['\uFEFF' + content], { type: mime }); // BOM for Excel UTF-8
   const url = URL.createObjectURL(blob);

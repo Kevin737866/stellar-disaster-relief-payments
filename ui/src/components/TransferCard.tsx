@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { TransferClient, ConditionalTransfer, SpendingRule, NetworkConfig } from '../../sdk/src/types';
+import { TransferClient } from '../../sdk/src/transferClient';
+import { ConditionalTransfer, SpendingRule, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 
 interface TransferCardProps {
   transferClient: TransferClient;

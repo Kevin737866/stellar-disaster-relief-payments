@@ -17,6 +17,13 @@ pub const FUND_STATUS_ARCHIVED: &str = "archived";
 
 const SECONDS_PER_MONTH: u64 = 2_592_000; // 30 days
 
+/// Maximum number of entries accepted by `submit_batch_disbursement`.
+///
+/// Keeps a single invocation within Soroban CPU/memory and ledger-entry
+/// limits. Clients must split larger requests into several transactions; every
+/// batch is atomic, so a partial batch is never persisted.
+pub const MAX_BATCH_SIZE: u32 = 100;
+
 /// Maximum age of oracle data accepted at submission time (1 hour).
 pub const ORACLE_STALENESS_SECS: u64 = 3_600;
 
@@ -34,6 +41,57 @@ const ORACLE_VALUE_MAX_LEN: u32 = 32;
 
 /// Maximum location string length.
 const ORACLE_LOCATION_MAX_LEN: u32 = 128;
+
+// ── #239: Incident pause control ───────────────────────────────────────────────
+//
+// Expiry and recall stop a fund when it reaches a natural end. They are not an
+// emergency brake: a wrong disbursement, a compromised key, or a fraudulent
+// release has to stop *now*. `set_paused` is that brake.
+//
+// Two design decisions are load-bearing and are explained in
+// `docs/operational-resilience.md` §4:
+//
+// 1. Pause is keyed off ledger time only for *reporting* (`paused_at`), never
+//    for enforcement. Enforcement must keep working during a ledger stall, so
+//    `require_not_paused` reads a stored bool and nothing else.
+// 2. Pause does not block `recall_unused_funds`. Pausing must never trap money
+//    in the contract; recall is the safe direction.
+
+const KEY_PAUSED: &str = "paused";
+const KEY_PAUSE_ADMIN: &str = "pause_admin";
+const KEY_PAUSE_REASON: &str = "pause_reason";
+const KEY_PAUSED_AT: &str = "paused_at";
+const KEY_PAUSE_LIFTED_AT: &str = "pause_lifted_at";
+
+// ── #241: two-phase multi-sig release ─────────────────────────────────────────
+//
+// The flow these constants govern, and why it replaces the single-transaction
+// one.
+//
+// `execute_multi_sig_release` originally called `require_auth()` on every
+// approver inside one transaction. On Soroban that means every approver must
+// sign the *same* transaction, which requires assembling every signature
+// off-chain before anything can be submitted. For a 2-of-3 controlled by an
+// NGO, a government signatory and a UN signatory, that is impractical: the
+// transaction cannot be built until the slowest party has acted, and no
+// partially-approved state can be persisted.
+//
+// The replacement is the standard two-phase pattern:
+//
+//   Phase 1 — `approve_disbursement`      each approver signs their OWN
+//                                          transaction, recording one approval
+//   Phase 2 — `execute_approved_disbursement`  anyone submits once the
+//                                          threshold is met; approvals are
+//                                          consumed on execution
+//
+// Signatures are now independent and may arrive hours apart.
+
+/// How long an approval stays valid before it must be re-signed: 24 hours.
+///
+/// Bounds how long a partially-approved release can sit in storage, and stops
+/// an approval given during one incident being replayed into a different one
+/// weeks later.
+pub const MULTISIG_APPROVAL_TTL_SECS: u64 = 86_400;
 
 #[contract]
 pub struct AidRegistry;
@@ -210,6 +268,12 @@ impl AidRegistry {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = Map::new(&env);
         env.storage().instance().set(&disbursement_key, &disbursements);
+
+        // Emit fund created event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_created")),
+            (fund_id, total_amount),
+        );
     }
 
     /// Get fund details
@@ -318,6 +382,9 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         requester.require_auth();
+
+        // #239 — no value leaves a fund while the platform is paused.
+        require_not_paused(&env);
         
         // Validate approvers list
         require_non_empty_address_list(&env, &approvers);
@@ -346,9 +413,23 @@ impl AidRegistry {
         
         // Verify all approvers are authorized
         for approver in approvers.iter() {
-            if !fund.release_triggers.contains(approver) {
+            if !fund.release_triggers.contains(approver.clone()) {
                 panic_with_error!(&env, "Unauthorized approver");
             }
+
+            // #241 — this call was missing. Checking that a supplied address is
+            // a member of `release_triggers` proves only that the address is
+            // *eligible* to approve; without `require_auth` it proves nothing
+            // about whether that approver actually consented. Any requester
+            // could name N authorized addresses and release funds with no
+            // signature from any of them.
+            //
+            // `require_auth` makes this a genuine single-transaction multi-sig,
+            // which is correct but requires every approver to co-sign the same
+            // transaction. For distributed signers, prefer
+            // `approve_disbursement` + `execute_approved_disbursement`, where
+            // each approver signs independently.
+            approver.require_auth();
         }
         
         // Prevent duplicate disbursements: same beneficiary + same purpose in this fund
@@ -386,8 +467,14 @@ impl AidRegistry {
         
         // Update fund released amount
         fund.released_amount += amount;
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
     }
 
     /// Get disbursement history for a fund with pagination
@@ -422,6 +509,23 @@ impl AidRegistry {
             total_count,
             has_more,
         }
+    }
+
+    /// Return the canonical disbursement purpose taxonomy.
+    ///
+    /// Clients can use this list for dropdowns and reporting buckets. The
+    /// on-chain `purpose` string remains free text for auditability.
+    pub fn get_purpose_taxonomy(env: Env) -> Vec<String> {
+        let mut categories = Vec::new(&env);
+        for category in DISBURSEMENT_PURPOSE_CATEGORIES.iter() {
+            categories.push_back(String::from_str(&env, *category));
+        }
+        categories
+    }
+
+    /// Classify a free-text purpose into a canonical reporting category.
+    pub fn classify_disbursement_purpose(env: Env, purpose: String) -> String {
+        String::from_str(&env, categorize_purpose(&purpose))
     }
 
     /// Deactivate expired funds
@@ -705,12 +809,52 @@ impl AidRegistry {
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Execute automated trigger release (called when oracle conditions met)
+    /// Execute automated trigger release when oracle verification criteria are met.
+    ///
+    /// # Policy Semantics: Automated Release
+    ///
+    /// - **Preconditions**:
+    ///   - Contract must NOT be paused (`require_not_paused`). Pausing acts as an emergency stop
+    ///     that blocks all automated releases.
+    ///   - Fund must exist and have status `"active"` (`FUND_STATUS_ACTIVE`) with `is_active == true`.
+    ///   - Trigger must exist and have `is_active == true`.
+    ///
+    /// - **Oracle Confirmation Criteria**:
+    ///   - Confirms that at least `trigger.min_oracle_confirmations` valid oracle records exist.
+    ///   - A record is valid if:
+    ///     1. Recency: `record.timestamp > ledger_now - ORACLE_STALENESS_SECS` (within 1 hour / 3,600s).
+    ///     2. Quality: `record.confidence >= ORACLE_MIN_CONFIDENCE` (minimum 80% confidence).
+    ///   - [INERT / PLACEHOLDER LOGIC]: Automated trigger execution strictly counts valid oracle
+    ///     confirmations. On-chain evaluation of `trigger.threshold` strings against `record.value`
+    ///     and geospatial distance checks against `geofence_latitude`/`geofence_longitude`
+    ///     are not computed on-chain.
+    ///
+    /// - **Fund Balance Arithmetic**:
+    ///   - Available balance is strictly computed as:
+    ///     `available = fund.total_amount - fund.released_amount - fund.reserved_for_recall`
+    ///   - If `trigger.auto_release_amount > available`, invocation panics with "Insufficient available funds".
+    ///   - Funds already reserved for donor recall cannot be touched by auto-release.
+    ///
+    /// - **State Transitions**:
+    ///   - `fund.released_amount` is incremented by `trigger.auto_release_amount`.
+    ///   - `fund.current_status` transitions to `"triggered"`.
+    ///   - `trigger.last_triggered` is updated to current ledger timestamp.
+    ///   - `trigger.trigger_count` is incremented by 1.
+    ///   - Summary record stored under `"auto_release_{fund_id}_{timestamp}"`.
+    ///
+    /// # Edge Cases
+    /// - Partially released funds: Auto-release succeeds as long as unreleased & unreserved balance covers `auto_release_amount`.
+    /// - Stale oracle records: Oracle entries older than 3,600s are ignored; if total fresh entries < `min_oracle_confirmations`, release fails.
+    /// - Recalled funds: If `reserved_for_recall` covers remaining funds, `available` is 0 and trigger release panics.
     pub fn execute_trigger(
         env: Env,
         fund_id: String,
         trigger_id: String,
     ) -> U256 {
+        // #239 — automated releases are paused too. An incident brake that a
+        // trigger can drive straight through is not a brake.
+        require_not_paused(&env);
+
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -787,7 +931,9 @@ impl AidRegistry {
     /// Submit multiple disbursements atomically in a single transaction.
     ///
     /// All entries must pass validation; if any entry fails the entire
-    /// transaction is reverted (Soroban panic semantics).
+    /// transaction is reverted (Soroban panic semantics). A batch may contain
+    /// at most [`MAX_BATCH_SIZE`] entries; larger workloads must be split into
+    /// multiple atomic batches by the caller.
     ///
     /// # Parameters
     /// - `requester`  – address that must be authorised to submit
@@ -806,9 +952,18 @@ impl AidRegistry {
     ) -> Vec<String> {
         requester.require_auth();
 
+        // #239 — batch disbursement moves value out of the pool, so it is
+        // gated by the incident pause.
+        require_not_paused(&env);
+
         // ── Validate batch is non-empty ──────────────────────────────────────
         if entries.is_empty() {
             panic_with_error!(&env, "Batch must contain at least one entry");
+        }
+
+        // ── Enforce the maximum batch size ──────────────────────────────────
+        if entries.len() > MAX_BATCH_SIZE {
+            panic_with_error!(&env, "Batch exceeds maximum of 100 entries");
         }
 
         // ── Load fund ────────────────────────────────────────────────────────
@@ -833,14 +988,18 @@ impl AidRegistry {
             if !fund.release_triggers.contains(approver.clone()) {
                 panic_with_error!(&env, "Unauthorized approver");
             }
+            // #241 — same missing-auth defect as `submit_disbursement`: the
+            // membership check above never proved consent. See the note there.
+            approver.require_auth();
         }
 
         // ── Validate each entry and compute total ────────────────────────────
         let mut total = U256::from_u64(0);
-        for (_, amount, _) in entries.iter() {
+        for (_, amount, purpose) in entries.iter() {
             if amount == U256::from_u64(0) {
                 panic_with_error!(&env, "Amount must be greater than zero");
             }
+            validate_purpose(&env, &purpose);
             total = total + amount;
         }
 
@@ -897,6 +1056,12 @@ impl AidRegistry {
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
 
+        // Emit batch disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "batch_disbursed")),
+            (fund_id, total, ids.len() as u32),
+        );
+
         ids
     }
 
@@ -911,6 +1076,9 @@ impl AidRegistry {
     ) -> bool {
         // Validate approvers list before loading fund
         require_non_empty_address_list(&env, &approvers);
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
 
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
@@ -972,10 +1140,287 @@ impl AidRegistry {
         env.storage().instance().set(&disbursement_key, &disbursements);
         
         // Update fund
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
         
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
+
         true
+    }
+
+    /// Archive a fund (e.g. after mission completion or cancellation).
+    pub fn archive_fund(env: Env, admin: Address, fund_id: String, reason: String) {
+        admin.require_auth();
+        
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+        fund.is_active = false;
+        fund.current_status = String::from_str(&env, FUND_STATUS_ARCHIVED);
+        funds.set(fund_id.clone(), fund);
+        env.storage().instance().set(&fund_key, &funds);
+
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_archived")),
+            (fund_id, reason),
+        );
+    }
+
+    // ── #241: two-phase multi-sig release ──────────────────────────────────
+
+    /// Phase 1 of a distributed multi-sig release: record one approver's
+    /// approval of `request_id`.
+    ///
+    /// Each approver calls this in their own transaction, so signatures do not
+    /// have to be assembled off-chain and approvers need not be online at the
+    /// same time. The approver is whoever signs this call — `approver` must be
+    /// that address or the transaction fails.
+    ///
+    /// `request_id` is chosen by whoever initiates the release (a UUID is
+    /// fine) and shared with the other approvers. It is the coordination key:
+    /// approvals for the same id accumulate, approvals for different ids do
+    /// not interfere.
+    ///
+    /// Re-approving the same `request_id` is a no-op rather than a panic, so a
+    /// retrying signer script cannot wedge itself.
+    ///
+    /// Approvals older than {@link MULTISIG_APPROVAL_TTL_SECS} are ignored and
+    /// must be re-signed.
+    ///
+    /// @returns the number of distinct valid approvals after this call.
+    pub fn approve_disbursement(
+        env: Env,
+        approver: Address,
+        fund_id: String,
+        request_id: String,
+    ) -> u32 {
+        require_not_paused(&env);
+        approver.require_auth();
+
+        let fund = Self::load_fund(&env, &fund_id);
+
+        if !fund.is_active {
+            panic_with_error!(&env, "Fund is not active");
+        }
+        if !fund.release_triggers.contains(approver.clone()) {
+            panic_with_error!(&env, "Unauthorized approver");
+        }
+
+        let mut approvals = Self::load_approvals(&env, &fund_id, &request_id);
+
+        if !approvals.contains(&approver) {
+            approvals.push_back(approver);
+        }
+
+        // Stamp the first approval; the whole request expires together.
+        if Self::approval_started_at(&env, &fund_id, &request_id).is_none() {
+            let started_key = Symbol::new(
+                &env,
+                &format!("approval_started_{}_{}", fund_id, request_id),
+            );
+            env.storage()
+                .instance()
+                .set(&started_key, &env.ledger().timestamp());
+        }
+
+        let count = Self::store_approvals(&env, &fund_id, &request_id, &approvals);
+
+        log!(&env, "Approval recorded for request {} on fund {}", request_id, fund_id);
+        count
+    }
+
+    /// Withdraw an approval. Only the approver that gave it may withdraw it.
+    pub fn cancel_approval(env: Env, approver: Address, fund_id: String, request_id: String) {
+        approver.require_auth();
+
+        let mut approvals = Self::load_approvals(&env, &fund_id, &request_id);
+
+        if let Some(index) = approvals.iter().position(|a| a == approver) {
+            approvals.remove(index);
+            Self::store_approvals(&env, &fund_id, &request_id, &approvals);
+        }
+    }
+
+    /// Approvers recorded against `request_id`, excluding the whole set if it
+    /// has aged past {@link MULTISIG_APPROVAL_TTL_SECS}. Read-only; safe for
+    /// monitoring.
+    ///
+    /// An expired set reads as empty rather than erroring, so monitoring shows
+    /// the request as simply needing re-signing instead of raising.
+    pub fn get_approvals(env: Env, fund_id: String, request_id: String) -> Vec<Address> {
+        let started = match Self::approval_started_at(&env, &fund_id, &request_id) {
+            Some(started) => started,
+            // No start stamp: nothing was ever approved for this id.
+            None => return Vec::new(&env),
+        };
+
+        if env.ledger().timestamp() > started.saturating_add(MULTISIG_APPROVAL_TTL_SECS) {
+            // Stale. The stored entries are left in place so the signing
+            // history is not destroyed; they are simply not counted.
+            return Vec::new(&env);
+        }
+
+        Self::load_approvals(&env, &fund_id, &request_id)
+    }
+
+    /// Phase 2: execute a release whose approval threshold has been met.
+    ///
+    /// Anyone may submit this — it does not need to be an approver — because
+    /// the authority has already been exercised in phase 1. Requires that
+    /// `required_signatures` distinct, unexpired approvals exist.
+    ///
+    /// Approvals are **consumed** on execution, so the same threshold cannot
+    /// authorise two releases.
+    ///
+    /// @returns the new disbursement id.
+    pub fn execute_approved_disbursement(
+        env: Env,
+        requester: Address,
+        fund_id: String,
+        request_id: String,
+        beneficiary: Address,
+        amount: U256,
+        purpose: String,
+    ) -> String {
+        require_not_paused(&env);
+        requester.require_auth();
+
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+
+        if !fund.is_active {
+            panic_with_error!(&env, "Fund is not active");
+        }
+
+        let approvals = Self::get_approvals(env.clone(), fund_id.clone(), request_id.clone());
+
+        if approvals.len() < fund.required_signatures as usize {
+            panic_with_error!(&env, "Insufficient approvals for this request");
+        }
+
+        let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
+        if amount > available {
+            panic_with_error!(&env, "Insufficient available funds");
+        }
+
+        // ── Duplicate check: same beneficiary + purpose must not repeat ──────
+        let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
+        let mut disbursements: Map<String, DisbursementRecord> = env.storage().instance()
+            .get(&disbursement_key)
+            .unwrap_or(Map::new(&env));
+
+        for (_, record) in disbursements.iter() {
+            if record.beneficiary == beneficiary && record.purpose == purpose {
+                panic_with_error!(&env, "Duplicate disbursement: beneficiary already received funds for this purpose");
+            }
+        }
+
+        let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
+        let record = DisbursementRecord {
+            id: disbursement_id.clone(),
+            fund_id: fund_id.clone(),
+            beneficiary,
+            amount,
+            timestamp: env.ledger().timestamp(),
+            purpose,
+            approved_by: approvals.clone(),
+            transaction_hash: String::from_str(&env, ""),
+            trigger_id: None,
+            is_auto_released: false,
+        };
+
+        disbursements.set(disbursement_id.clone(), record);
+        env.storage()
+            .instance()
+            .set(&disbursement_key, &disbursements);
+
+        fund.released_amount += amount;
+        funds.set(fund_id.clone(), fund);
+        env.storage().instance().set(&fund_key, &funds);
+
+        // Consume the approvals so this threshold cannot be replayed.
+        Self::clear_approvals(&env, &fund_id, &request_id);
+
+        log!(&env, "Executed approved disbursement {}", disbursement_id);
+        disbursement_id
+    }
+
+    // ── Two-phase approval helpers ───────────────────────────────────────────
+
+    fn load_fund(env: &Env, fund_id: &String) -> EmergencyFund {
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, "fund"))
+            .unwrap_or(Map::new(env));
+
+        funds.get(fund_id.clone()).unwrap_or_panic_with(env)
+    }
+
+    /// Approvals recorded for a request, with expired entries dropped.
+    fn load_approvals(env: &Env, fund_id: &String, request_id: &String) -> Vec<Address> {
+        let key = Symbol::new(env, &format!("approvals_{}_{}", fund_id, request_id));
+
+        let approvals: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&key)
+            .unwrap_or(Vec::new(env));
+
+        // An approval set with no start stamp predates this logic; treat it as
+        // empty rather than trusting it.
+        if Self::approval_started_at(env, fund_id, request_id).is_none() {
+            return Vec::new(env);
+        }
+
+        approvals
+    }
+
+    fn store_approvals(
+        env: &Env,
+        fund_id: &String,
+        request_id: &String,
+        approvals: &Vec<Address>,
+    ) -> u32 {
+        let key = Symbol::new(env, &format!("approvals_{}_{}", fund_id, request_id));
+        env.storage().instance().set(&key, approvals);
+        approvals.len() as u32
+    }
+
+    fn approval_started_at(env: &Env, fund_id: &String, request_id: &String) -> Option<u64> {
+        let key = Symbol::new(
+            env,
+            &format!("approval_started_{}_{}", fund_id, request_id),
+        );
+
+        env.storage().instance().get(&key)
+    }
+
+    /// Drop the approval set and its start stamp.
+    fn clear_approvals(env: &Env, fund_id: &String, request_id: &String) {
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(
+                env,
+                &format!("approvals_{}_{}", fund_id, request_id),
+            ));
+        env.storage()
+            .instance()
+            .remove(&Symbol::new(
+                env,
+                &format!("approval_started_{}_{}", fund_id, request_id),
+            ));
     }
 
     /// Allocate funds to sectors and beneficiaries with proof of need
@@ -991,7 +1436,10 @@ impl AidRegistry {
         max_amount: U256,
     ) {
         admin.require_auth();
-        
+
+        // #239 — allocation commits funds to a sector, so it is gated.
+        require_not_paused(&env);
+
         // Validate amount is within min/max bounds
         if amount < min_amount {
             panic_with_error!(&env, "Allocation amount is below minimum threshold");
@@ -1043,7 +1491,37 @@ impl AidRegistry {
         fund.fund_allocation
     }
 
-    /// Recall unused funds after 12 months
+    /// Recall unused/unreleased funds to donor reservation after recall eligibility period.
+    ///
+    /// # Policy Semantics: Fund Recall
+    ///
+    /// - **Authorization & Activation**:
+    ///   - Donor calling `recall_unused_funds` must authenticate (`donor.require_auth()`).
+    ///   - `fund.recall_enabled` must be true. Initialized as false; requires admin authorization
+    ///     via `enable_recall(admin, fund_id)`.
+    ///
+    /// - **Eligibility Time Arithmetic**:
+    ///   - Age calculation: `age_seconds = env.ledger().timestamp() - fund.created_at`.
+    ///   - Threshold: `recall_threshold = fund.recall_after_months * SECONDS_PER_MONTH`
+    ///     where `SECONDS_PER_MONTH = 2_592_000` (30 days). Default threshold is 12 months (360 days).
+    ///   - If `age_seconds < recall_threshold`, invocation panics with "Fund is not yet eligible for recall".
+    ///
+    /// - **Balance Arithmetic & State Transitions**:
+    ///   - `unused = fund.total_amount - fund.released_amount`.
+    ///   - Disbursed funds are permanent and cannot be recalled.
+    ///   - If `unused > 0`:
+    ///     - `fund.reserved_for_recall = unused`.
+    ///     - `fund.current_status` transitions to `"recalled"` (`FUND_STATUS_RECALLED`).
+    ///     - Reserved funds are deducted from `available` in all subsequent checks.
+    ///
+    /// - **Emergency Pause Independence**:
+    ///   - Pausing does NOT block `recall_unused_funds`. Pausing prevents outbound spending; recall
+    ///     is the safe return path and remains operational.
+    ///
+    /// # Edge Cases
+    /// - Fully disbursed fund: If `released_amount == total_amount`, `unused` is 0; status is unaffected.
+    /// - Disabled recall: Invoking when `recall_enabled == false` panics regardless of fund age.
+    /// - Premature call: Invoking even one second before `recall_threshold` panics.
     pub fn recall_unused_funds(
         env: Env,
         donor: Address,
@@ -1106,7 +1584,11 @@ impl AidRegistry {
         )
     }
 
-    /// Enable recall for a fund
+    /// Enable recall for a fund.
+    ///
+    /// Requires Admin authentication (`admin.require_auth()`). Sets `fund.recall_enabled = true`.
+    /// Does not trigger recall itself, but permits donors to invoke `recall_unused_funds` once
+    /// the time eligibility threshold (`recall_after_months`) has elapsed.
     pub fn enable_recall(
         env: Env,
         admin: Address,
@@ -1191,7 +1673,10 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         admin.require_auth();
-        
+
+        // Validate the free-text purpose (non-empty, bounded length).
+        validate_purpose(&env, &purpose);
+
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
         
@@ -1253,6 +1738,120 @@ impl AidRegistry {
         }
         
         beneficiary_records
+    }
+
+    // ── #239: Incident pause control ────────────────────────────────────────
+    //
+    // Authorization is deliberately single-key (the admin) rather than
+    // multi-sig. A pause gated behind a 2-of-3 threshold is a pause that fails
+    // to apply exactly when it is needed. The blast radius of a malicious
+    // pause is bounded — no value moves — while the blast radius of being
+    // unable to pause is unbounded.
+
+    /// Read-only pause check, safe to call from monitoring.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSED))
+            .unwrap_or(false)
+    }
+
+    /// Full pause state, including who paused it and why.
+    /// Returns `(is_paused, admin, reason, paused_at, lifted_at)`.
+    ///
+    /// `paused_at` is `0` when the platform has never been paused. Both
+    /// timestamps are recorded for operator forensics only — nothing enforces
+    /// behaviour from them.
+    pub fn get_pause_state(
+        env: Env,
+    ) -> (bool, Address, String, u64, u64) {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSED))
+            .unwrap_or(false);
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSE_ADMIN))
+            .unwrap_or(env.current_contract_address());
+
+        let reason: String = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSE_REASON))
+            .unwrap_or(String::from_str(&env, ""));
+
+        let paused_at: u64 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSED_AT))
+            .unwrap_or(0);
+
+        let lifted_at: u64 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, KEY_PAUSE_LIFTED_AT))
+            .unwrap_or(0);
+
+        (paused, admin, reason, paused_at, lifted_at)
+    }
+
+    /// Raise or clear the incident pause. Admin-only.
+    ///
+    /// `reason` is stored verbatim and surfaced by `get_pause_state` so a
+    /// monitoring alert carries operator context. It is not validated as
+    /// non-empty, because refusing to pause over a missing reason during an
+    /// active incident is the wrong trade.
+    ///
+    /// Calling this with `paused = true` when already paused is a no-op that
+    /// still re-records `paused_at`; it does not panic, so a retrying operator
+    /// script cannot wedge itself.
+    pub fn set_paused(env: Env, admin: Address, paused: bool, reason: String) {
+        admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, KEY_PAUSE_ADMIN), &admin);
+
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, KEY_PAUSE_REASON), &reason);
+
+        if paused {
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, KEY_PAUSED), &true);
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, KEY_PAUSED_AT), &env.ledger().timestamp());
+        } else {
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, KEY_PAUSED), &false);
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, KEY_PAUSE_LIFTED_AT), &env.ledger().timestamp());
+        }
+
+        log!(&env, "Incident pause set to {} by {}", paused, admin);
+    }
+}
+
+// Defined outside `impl AidRegistry` deliberately: `#[contractimpl]` requires
+// every `pub fn` inside the impl block to be a valid contract entrypoint with
+// `Env` as its first parameter, and this helper takes `&Env`. It is a plain
+// guard shared with `cash_transfer.rs`, not an entrypoint.
+pub fn require_not_paused(env: &Env) {
+    let paused: bool = env
+        .storage()
+        .instance()
+        .get(&Symbol::new(env, KEY_PAUSED))
+        .unwrap_or(false);
+
+    if paused {
+        panic_with_error!(env, "Contract is paused");
     }
 }
 

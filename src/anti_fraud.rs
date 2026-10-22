@@ -100,6 +100,9 @@ impl AntiFraud {
     }
 
     /// Calculate registration risk score
+    ///
+    /// Evaluates device fingerprint patterns and checks against existing profiles.
+    /// Note: Factors similarity and location clustering contain inert/placeholder heuristics as noted below.
     fn calculate_registration_risk(
         env: &Env,
         beneficiary_id: &String,
@@ -117,19 +120,21 @@ impl AntiFraud {
         
         for (_, existing_profile) in profiles.iter() {
             if existing_profile.entity_type == String::from_str(env, "beneficiary") {
-                // Simple similarity check (in production, use more sophisticated algorithms)
+                // [INERT / PLACEHOLDER HEURISTIC]: calculate_similarity is called with an empty
+                // slice (&[]), always returning 0. Full factor comparison is not yet implemented.
                 if Self::calculate_similarity(verification_factors, &[]) > 80 {
                     risk_score += 40;
                 }
                 
-                // Check location clustering (multiple registrations from same location)
+                // [INERT / PLACEHOLDER HEURISTIC]: location_similarity returns a static 50 score
+                // for any non-empty location; coordinate-based geospatial proximity is not computed.
                 if Self::location_similarity(location, &existing_profile.entity_id) > 90 {
                     risk_score += 20;
                 }
             }
         }
         
-        // Check device fingerprint patterns
+        // Check device fingerprint patterns (active heuristic)
         if Self::is_suspicious_device(device_fingerprint) {
             risk_score += 30;
         }
@@ -137,7 +142,8 @@ impl AntiFraud {
         risk_score.min(100)
     }
 
-    /// Simple similarity calculation (placeholder for more sophisticated ML)
+    /// [INERT / PLACEHOLDER HEURISTIC]: Simple similarity calculation (placeholder for more sophisticated ML)
+    /// Always returns 0 when factors2 is empty. Verification factor vector comparison is not yet functional.
     fn calculate_similarity(factors1: &[String], factors2: &[String]) -> u32 {
         if factors2.is_empty() {
             return 0;
@@ -156,7 +162,8 @@ impl AntiFraud {
         (matches * 100) / factors1.len() as u32
     }
 
-    /// Location similarity check
+    /// [INERT / PLACEHOLDER HEURISTIC]: Location similarity check
+    /// Returns fixed placeholder score (50 if location non-empty, else 0); geospatial distance calculation is not implemented.
     fn location_similarity(location1: &str, entity_id: &str) -> u32 {
         // Simple string similarity (in production, use geospatial analysis)
         if location1.len() > 0 {
@@ -241,7 +248,8 @@ impl AntiFraud {
         (true, risk_factors)
     }
 
-    /// Check for velocity breaches
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for velocity breaches
+    /// Queries the "transaction_history" storage map, which is currently not populated by standard transactions.
     fn is_velocity_breach(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if more than 10 transactions in last hour
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -259,7 +267,8 @@ impl AntiFraud {
         recent_count > 10
     }
 
-    /// Check for amount anomalies
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for amount anomalies
+    /// Queries the "transaction_history" storage map, which is currently not populated by standard transactions.
     fn is_amount_anomaly(env: &Env, beneficiary_id: &String, amount: U256) -> bool {
         // Check if amount is significantly different from average
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -285,7 +294,8 @@ impl AntiFraud {
         amount > average * 3 || amount < average / 10
     }
 
-    /// Check for suspicious merchant interaction patterns
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for suspicious merchant interaction patterns
+    /// Queries the "interaction_patterns" storage map, which is currently not populated by standard payments.
     fn is_suspicious_pattern(env: &Env, beneficiary_id: &String, merchant_id: &String) -> bool {
         // Check if beneficiary always transacts with same merchant
         let patterns_key = Symbol::new(env, "interaction_patterns");
@@ -313,7 +323,8 @@ impl AntiFraud {
         false
     }
 
-    /// Check for geographic anomalies
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for geographic anomalies
+    /// Returns false unconditionally because transaction GPS/location telemetry is not currently captured on-chain.
     fn is_geographic_anomaly(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if transactions are happening in impossible locations
         // This would require location data from transactions

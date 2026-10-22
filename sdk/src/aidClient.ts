@@ -1,25 +1,40 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  SorobanRpc,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
-import { 
-  EmergencyFund, 
-  DisbursementRecord, 
+import {
+  EmergencyFund,
+  DisbursementRecord,
   DeploymentOptions,
-  NetworkConfig 
+  NetworkConfig,
+  BATCH_MAX_SIZE,
 } from './types';
 import { ReadCache } from './readCache';
+import { validateAddress, validateAddressList } from './validation';
+import { withRetry } from './retry';
+
+/**
+ * Maximum number of entries accepted by the on-chain batch disbursement
+ * contract. Keep this in sync with `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export const MAX_BATCH_SIZE = BATCH_MAX_SIZE;
+
+/** A batch must contain at least one entry. */
+export const MIN_BATCH_SIZE = 1;
 
 export class AidClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -75,7 +90,7 @@ export class AidClient {
 
     tx.sign(adminKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       this.cache.invalidate('aid:listActiveFunds');
       return fundId;
@@ -122,7 +137,7 @@ export class AidClient {
 
     tx.sign(requesterKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`aid:fund:${fundId}`);
       this.cache.invalidate(`aid:disbursements:${fundId}`);
@@ -136,6 +151,9 @@ export class AidClient {
    * Submit multiple disbursements atomically in a single transaction.
    * All entries succeed or all fail — no partial state.
    *
+   * Batches are limited to `MAX_BATCH_SIZE` (100) entries, matching the
+   * on-chain limit. Split larger requests into multiple atomic batches.
+   *
    * @param requesterKey  Secret key of the requester
    * @param fundId        Fund to draw from
    * @param entries       Array of { beneficiary, amount, purpose }
@@ -148,8 +166,14 @@ export class AidClient {
     entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
     approvers: string[]
   ): Promise<string[]> {
-    if (entries.length === 0) {
+    if (entries.length < MIN_BATCH_SIZE) {
       throw new Error('Batch must contain at least one entry');
+    }
+    if (entries.length > MAX_BATCH_SIZE) {
+      throw new Error(
+        `Batch contains ${entries.length} entries; the maximum is ${MAX_BATCH_SIZE}. ` +
+          'Split the request into smaller batches.'
+      );
     }
 
     const requesterKeypair = Keypair.fromSecret(requesterKey);
@@ -279,7 +303,7 @@ export class AidClient {
 
     tx.sign(adminKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return 'Expired funds cleaned up successfully';
     } else {
@@ -308,7 +332,7 @@ export class AidClient {
     for (const category of fundCategories) {
       const fundId = `${disasterId}_${category.name.toLowerCase().replace(/\s+/g, '_')}`;
       const amount = (BigInt(totalBudget) * BigInt(category.percentage) / BigInt(100)).toString();
-      
+
       try {
         await this.deployEmergencyFund(
           adminKey,
@@ -351,10 +375,10 @@ export class AidClient {
   /**
    * Validate fund QR code
    */
-  validateFundQRCode(qrCodeData: string): boolean {
+  async validateFundQRCode(qrCodeData: string): Promise<boolean> {
     try {
       const data = JSON.parse(qrCodeData);
-      
+
       if (data.type !== 'emergency_fund') {
         return false;
       }
@@ -365,7 +389,7 @@ export class AidClient {
       }
 
       // Verify fund exists on chain
-      return this.getFund(data.fundId).then(fund => fund !== null);
+      return (await this.getFund(data.fundId)) !== null;
     } catch (error) {
       return false;
     }
@@ -383,12 +407,12 @@ export class AidClient {
   }> {
     const disbursements = await this.getDisbursements(fundId);
     const beneficiaries = new Set(disbursements.map(d => d.beneficiary));
-    
-    const totalAmount = disbursements.reduce((sum, d) => 
+
+    const totalAmount = disbursements.reduce((sum, d) =>
       sum + BigInt(d.amount), BigInt(0)
     );
 
-    const averageDisbursement = disbursements.length > 0 
+    const averageDisbursement = disbursements.length > 0
       ? (totalAmount / BigInt(disbursements.length)).toString()
       : '0';
 
