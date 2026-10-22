@@ -11,7 +11,6 @@ const { Server } = SorobanRpc;
 type Server = SorobanRpc.Server;
 
 import { MultiSigManager } from './multiSig';
-import { ReadCache } from './readCache';
 import {
   BeneficiaryProfile,
   VerificationFactor,
@@ -24,8 +23,7 @@ import {
   BeneficiarySearchOptions,
   FundSearchOptions,
 } from './types';
-import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
-import { createHash } from 'crypto';
+import { SHA256 } from 'crypto-js';
 import {
   BeneficiaryNotFoundError,
   ValidationError,
@@ -350,7 +348,9 @@ export class BeneficiaryClient {
 
   private generateRecoveryCode(beneficiaryId: string, index: number): string {
     const data = `${beneficiaryId}_${index}_${Date.now()}`;
-    return createHash('sha256').update(data).toString();
+    // SHA-256 via crypto-js — aligns with Rust sha2::Sha256 used on-chain for
+    // RecoveryCode.code_hash.  Both produce lowercase hex for identical input.
+    return SHA256(data).toString();
   }
 
   /**
@@ -640,7 +640,9 @@ export class BeneficiaryClient {
   }
 
   private generateSessionId(phoneNumber: string): string {
-    return createHash('sha256').update(`${phoneNumber}_${Date.now()}`).toString().substring(0, 16);
+    // SHA-256 via crypto-js — truncated to 16 hex chars for session ID length.
+    // Not sent to the contract; for local session tracking only.
+    return SHA256(`${phoneNumber}_${Date.now()}`).toString().substring(0, 16);
   }
 
   /**
