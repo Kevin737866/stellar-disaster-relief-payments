@@ -16,6 +16,8 @@ import {
   Location,
   MerchantOnboardingRequest,
   NetworkConfig,
+  MerchantPaginationOptions,
+  PaginatedMerchants,
 } from './types';
 import {
   MerchantNotFoundError,
@@ -40,6 +42,12 @@ export const PAYMENT_USSD = 1;
 export const PAYMENT_NFC = 2;
 export const PAYMENT_OFFLINE = 3;
 export const PAYMENT_ONLINE = 4;
+
+/** Default page size for merchant listing endpoints. */
+export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the merchant contract. */
+export const MAX_MERCHANT_PAGE_SIZE = 100;
 
 export class MerchantClient {
   private server: any;
@@ -586,6 +594,32 @@ export class MerchantClient {
   }
 
   /**
+   * Parse a contract-supplied amount into a non-negative BigInt.
+   *
+   * Contract storage can hand back strings, numbers or BigInts, and a
+   * malformed limit must not make the whole statistics call throw (#180).
+   * Invalid, negative or non-integer values are treated as zero so callers
+   * always receive well-defined statistics.
+   */
+  private toNonNegativeBigInt(value: unknown): bigint {
+    if (typeof value === 'bigint') {
+      return value >= BigInt(0) ? value : BigInt(0);
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value >= 0
+        ? BigInt(Math.trunc(value))
+        : BigInt(0);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^\d+$/.test(trimmed)) {
+        return BigInt(trimmed);
+      }
+    }
+    return BigInt(0);
+  }
+
+  /**
    * Get merchant statistics
    */
   async getMerchantStatistics(merchantId: string): Promise<{
@@ -611,9 +645,9 @@ export class MerchantClient {
       ? (totalVolume / BigInt(totalTransactions)).toString()
       : '0';
 
-    const monthlyLimit = BigInt(merchant.monthlyLimit);
-    const currentVolume = BigInt(merchant.currentMonthVolume);
-    const monthlyUtilization = monthlyLimit > 0 
+    const monthlyLimit = this.toNonNegativeBigInt(merchant.monthlyLimit);
+    const currentVolume = this.toNonNegativeBigInt(merchant.currentMonthVolume);
+    const monthlyUtilization = monthlyLimit > BigInt(0)
       ? Number((currentVolume * BigInt(100)) / monthlyLimit)
       : 0;
 

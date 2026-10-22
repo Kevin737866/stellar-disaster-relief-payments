@@ -358,9 +358,6 @@ export interface NetworkConfig {
 /** Contract slots that can be targeted by batch/upgrade clients. */
 export type ContractTarget = keyof NetworkConfig['contractIds'];
 
-/** Maximum number of contract calls that can be packed into one Stellar transaction. */
-export const BATCH_MAX_SIZE = 100;
-
 /** A single contract invocation within a batch. */
 export interface BatchContractCall {
   contractTarget: ContractTarget;
