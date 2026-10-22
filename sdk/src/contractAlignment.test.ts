@@ -101,11 +101,6 @@ const KNOWN_DIVERGENCES: Record<string, { contract: number; sdk: number; reason:
     sdk: 10,
     reason: 'SDK facade does not expose the optional metadata map yet',
   },
-  register_merchant: {
-    contract: 10,
-    sdk: 11,
-    reason: 'SDK still sends the legacy onboarding fields (toml/daily/monthly/documents)',
-  },
 };
 
 function contractId(seed: number): string {
@@ -274,13 +269,16 @@ describe('SDK <-> contract shape alignment', () => {
       client.registerMerchant(signer.secret(), 'mer_1', {
         name: 'Shop',
         businessType: 'food',
-        location: 'Camp',
+        category: 0,
+        locationLatLng: '18.4861,-69.9312',
+        locationAddress: '123 Main St',
+        locationCity: 'Santo Domingo',
+        locationCountry: 'Dominican Republic',
+        locationPostalCode: '10100',
         contactInfo: '123',
-        stellarTomlUrl: '',
         acceptedTokens: ['XLM'],
-        dailyLimit: '100',
-        monthlyLimit: '1000',
-        verificationDocuments: [],
+        vouchers: [],
+        emergencyFastTrack: false,
       })
     );
     expectShape('registerMerchant', method, args.length);
@@ -316,16 +314,35 @@ describe('SDK <-> contract shape alignment', () => {
       client.buildOfflineRegisterMerchant(signer.publicKey(), 'mer_1', {
         name: 'Shop',
         businessType: 'food',
-        location: 'Camp',
+        category: 0,
+        locationLatLng: '18.4861,-69.9312',
+        locationAddress: '123 Main St',
+        locationCity: 'Santo Domingo',
+        locationCountry: 'Dominican Republic',
+        locationPostalCode: '10100',
         contactInfo: '123',
-        stellarTomlUrl: '',
         acceptedTokens: ['XLM'],
-        dailyLimit: '100',
-        monthlyLimit: '1000',
-        verificationDocuments: [],
+        vouchers: [],
+        emergencyFastTrack: false,
       })
     );
     expectShape('buildOfflineRegisterMerchant', method, args.length);
+  });
+
+  test('MerchantClient.verifyMerchant -> review_trial_merchant', async () => {
+    const client = new MerchantClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.verifyMerchant(signer.secret(), 'mer_1', true, 'verified')
+    );
+    expectShape('verifyMerchant', method, args.length);
+  });
+
+  test('MerchantClient.buildOfflineApproveMerchant -> review_trial_merchant', async () => {
+    const client = new MerchantClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.buildOfflineApproveMerchant(signer.publicKey(), 'mer_1', true, 'verified')
+    );
+    expectShape('buildOfflineApproveMerchant', method, args.length);
   });
 
   test('TransferClient.createTransfer -> create_transfer', async () => {
@@ -347,8 +364,14 @@ describe('SDK <-> contract shape alignment', () => {
         supplyType: 'water',
         quantity: '100',
         unit: 'liters',
-        origin: 'A',
-        destination: 'B',
+        originLatLng: '18.4861,-69.9312',
+        originAddress: '1 Warehouse Rd',
+        originFacility: 'Main Depot',
+        originContact: 'John',
+        destinationLatLng: '18.5000,-70.0000',
+        destinationAddress: '5 Camp Rd',
+        destinationFacility: 'Relief Camp A',
+        destinationContact: 'Maria',
         estimatedArrival: Date.now() + 60_000,
         temperatureRequirements: null,
         specialHandling: [],

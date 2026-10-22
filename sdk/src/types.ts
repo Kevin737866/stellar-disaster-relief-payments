@@ -358,9 +358,6 @@ export interface NetworkConfig {
 /** Contract slots that can be targeted by batch/upgrade clients. */
 export type ContractTarget = keyof NetworkConfig['contractIds'];
 
-/** Maximum number of contract calls that can be packed into one Stellar transaction. */
-export const BATCH_MAX_SIZE = 100;
-
 /** A single contract invocation within a batch. */
 export interface BatchContractCall {
   contractTarget: ContractTarget;
@@ -433,13 +430,26 @@ export interface VerificationRequest {
 export interface MerchantOnboardingRequest {
   name: string;
   businessType: string;
-  location: Location;
+  /** Merchant category numeric code (e.g. 0 = food, 1 = water, 2 = shelter, 3 = medical). */
+  category: number;
+  /** Geographic coordinates as a "lat,lng" string, e.g. "18.4861,-69.9312". */
+  locationLatLng: string;
+  locationAddress: string;
+  locationCity: string;
+  locationCountry: string;
+  locationPostalCode: string;
   contactInfo: string;
-  stellarTomlUrl: string;
   acceptedTokens: string[];
-  dailyLimit: string;
-  monthlyLimit: string;
-  verificationDocuments: string[];
+  /**
+   * Community vouching references: three beneficiary IDs or one NGO field-worker ID.
+   * Required for standard onboarding; can be empty for emergency fast-track.
+   */
+  vouchers: string[];
+  /**
+   * When true the merchant is pre-approved from an existing network and
+   * receives immediate STATUS_ACTIVE with a higher daily limit.
+   */
+  emergencyFastTrack: boolean;
 }
 
 export interface SupplyChainRequest {
@@ -447,10 +457,23 @@ export interface SupplyChainRequest {
   supplyType: string;
   quantity: string;
   unit: string;
-  origin: Location;
-  destination: Location;
+  /** Origin coordinates as "lat,lng" string, e.g. "18.4861,-69.9312". */
+  originLatLng: string;
+  originAddress: string;
+  originFacility: string;
+  originContact: string;
+  /** Destination coordinates as "lat,lng" string. */
+  destinationLatLng: string;
+  destinationAddress: string;
+  destinationFacility: string;
+  destinationContact: string;
   estimatedArrival: number;
-  temperatureRequirements?: TemperatureRequirements;
+  /**
+   * Temperature requirements for cold-chain shipments.
+   * Pass `null` or `undefined` when not required; the SDK serialises it to
+   * the Soroban `Option::None` / `Option::Some(...)` shape accordingly.
+   */
+  temperatureRequirements?: TemperatureRequirements | null;
   specialHandling: string[];
 }
 

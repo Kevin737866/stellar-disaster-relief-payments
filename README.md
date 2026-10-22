@@ -135,11 +135,21 @@ UN_SECRET_KEY=<PLACEHOLDER_UN_SECRET_KEY_STARTS_WITH_S>
 
 ## 🚀 Deployment Guide
 
+### Toolchain Versions & Requirements
+- **Rust**: 1.76+ (`rustup target add wasm32-unknown-unknown`)
+- **Stellar / Soroban CLI**: v22.0.0+ (Note: `stellar` CLI is the official command name as of v21+, with `soroban` retained as a backward-compatible alias)
+- **Soroban SDK**: v22.0.0
+
 ### 1. Deploy Smart Contracts
 
 ```bash
-# Build contracts
-soroban contract build
+# Build contracts (outputs target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm)
+stellar contract build
+# Or using legacy alias: soroban contract build
+
+# Optional: Optimize WASM for deployment
+stellar contract optimize \
+  --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm
 
 # Deploy to testnet (Replace <PLACEHOLDER_ADMIN_SECRET_KEY> with your funded key)
 soroban contract deploy \
@@ -157,6 +167,9 @@ soroban contract invoke \
   --arg <PLACEHOLDER_GOV_PUBLIC_KEY_STARTS_WITH_G> \
   --arg <PLACEHOLDER_UN_PUBLIC_KEY_STARTS_WITH_G>
 ```
+
+> **Note on CLI version compatibility**: 
+> In Stellar/Soroban CLI v20+, function arguments are passed after `--` using `--<param_name> <value>` syntax instead of legacy positional `--arg` flags. Network configuration can be passed via `--network testnet` or `--rpc-url` and `--network-passphrase`.
 
 ### 2. Configure SDK
 

@@ -267,6 +267,12 @@ impl AidRegistry {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = Map::new(&env);
         env.storage().instance().set(&disbursement_key, &disbursements);
+
+        // Emit fund created event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_created")),
+            (fund_id, total_amount),
+        );
     }
 
     /// Get fund details
@@ -460,8 +466,14 @@ impl AidRegistry {
         
         // Update fund released amount
         fund.released_amount += amount;
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
     }
 
     /// Get disbursement history for a fund with pagination
@@ -1046,6 +1058,12 @@ impl AidRegistry {
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
 
+        // Emit batch disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "batch_disbursed")),
+            (fund_id, total, ids.len() as u32),
+        );
+
         ids
     }
 
@@ -1124,10 +1142,37 @@ impl AidRegistry {
         env.storage().instance().set(&disbursement_key, &disbursements);
         
         // Update fund
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
         
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
+
         true
+    }
+
+    /// Archive a fund (e.g. after mission completion or cancellation).
+    pub fn archive_fund(env: Env, admin: Address, fund_id: String, reason: String) {
+        admin.require_auth();
+        
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+        fund.is_active = false;
+        fund.current_status = String::from_str(&env, FUND_STATUS_ARCHIVED);
+        funds.set(fund_id.clone(), fund);
+        env.storage().instance().set(&fund_key, &funds);
+
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_archived")),
+            (fund_id, reason),
+        );
     }
 
     // ── #241: two-phase multi-sig release ──────────────────────────────────

@@ -19,6 +19,7 @@ pub mod validation {
     }
 }
 
+pub mod rbac;
 mod aid_registry;
 mod beneficiary_manager;
 mod merchant_network;
@@ -30,7 +31,10 @@ mod geo;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tests;
 
+pub use rbac::*;
 pub use aid_registry::*;
 pub use beneficiary_manager::*;
 pub use merchant_network::*;

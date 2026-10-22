@@ -7,6 +7,9 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { MultiSigManager } from './multiSig';
 import { ReadCache } from './readCache';
 import {
@@ -22,17 +25,14 @@ import {
   FundSearchOptions,
 } from './types';
 import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
-import { ReadCache } from './readCache';
 import { createHash } from 'crypto';
 import {
   BeneficiaryNotFoundError,
   ValidationError,
   NetworkError,
 } from './errors';
-import { ReadCache } from './readCache';
 import { withRetry } from './retry';
 import { validateAddress } from './validation';
-import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
 
 /**
  * Default page size for paginated beneficiary listings.
