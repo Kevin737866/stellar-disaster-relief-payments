@@ -15,7 +15,7 @@ export const FieldError: React.FC<FieldErrorProps> = ({ error, id }) => {
     <p
       id={id}
       role="alert"
-      aria-live="polite"
+      aria-atomic="true"
       className="mt-1 text-sm text-red-600"
     >
       {error}

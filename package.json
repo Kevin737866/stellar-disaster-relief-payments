@@ -8,9 +8,11 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:sdk": "jest --selectProjects sdk",
+    "test:ui": "jest --selectProjects ui",
+    "test:integration": "jest --selectProjects integration",
+    "test:performance": "jest --selectProjects performance",
     "test:coverage": "jest --coverage",
-    "test:integration": "jest tests/integration",
-    "test:performance": "jest tests/performance",
     "lint": "eslint src/**/*.ts",
     "prepare": "npm run build"
   },
@@ -51,11 +53,5 @@
   "files": [
     "dist/**/*",
     "README.md"
-  ],
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "roots": ["<rootDir>/sdk/src"],
-    "testMatch": ["**/*.test.ts"]
-  }
+  ]
 }

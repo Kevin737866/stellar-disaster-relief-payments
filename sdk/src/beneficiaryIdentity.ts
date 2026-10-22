@@ -1,26 +1,29 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  SorobanRpc,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { withRetry } from './retry';
 import { createHash, SHA256 } from 'crypto-js';
-import { 
-  BeneficiaryIdentity, 
-  IdentityFactor, 
+import {
+  BeneficiaryIdentity,
+  IdentityFactor,
   GeofenceZone,
-  SocialRecoveryRequest 
+  SocialRecoveryRequest
 } from './types';
 import { validateAddress, validateAddressList } from './validation';
 
 export class BeneficiaryIdentityClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: any;
 
   constructor(config: any) {
@@ -78,7 +81,7 @@ export class BeneficiaryIdentityClient {
 
     tx.sign(registrarKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       const idHash = scValToNative(result.result.retval);
       return idHash;
@@ -95,21 +98,21 @@ export class BeneficiaryIdentityClient {
     pin?: string;
     mothersMaidenName?: string;
     birthCity?: string;
-    
+
     // Possession factors (what they have)
     phoneNumber?: string;
     simCardId?: string;
     aidRationCard?: string;
     nfcWristband?: string;
-    
+
     // Social factors (who vouches for them)
     communityVouchers?: string[]; // Addresses of community members
-    
+
     // Behavioral factors (patterns)
     deviceFingerprint?: string;
     typingPattern?: string;
     locationHistory?: string[];
-    
+
     // Institutional factors
     ngoAttestation?: string;
     campRegistrationId?: string;
@@ -298,7 +301,7 @@ export class BeneficiaryIdentityClient {
 
     tx.sign(contactKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
@@ -326,7 +329,7 @@ export class BeneficiaryIdentityClient {
 
       for (const storedFactor of identity.creationFactors) {
         totalWeight += storedFactor.weight;
-        
+
         for (const challengeFactor of challengeFactors) {
           if (storedFactor.factorType === challengeFactor.factorType) {
             const challengeHash = this.hashFactor(challengeFactor.value);
@@ -378,7 +381,7 @@ export class BeneficiaryIdentityClient {
     validityMinutes: number = 30
   ): string {
     const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
-    
+
     const qrData = {
       type: 'identity_verification',
       idHash,
@@ -398,7 +401,7 @@ export class BeneficiaryIdentityClient {
   validateQRAccess(qrCodeData: string): boolean {
     try {
       const data = JSON.parse(qrCodeData);
-      
+
       if (data.type !== 'identity_verification') {
         return false;
       }
@@ -450,7 +453,7 @@ export class BeneficiaryIdentityClient {
 
     tx.sign(ownerKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
@@ -490,7 +493,7 @@ export class BeneficiaryIdentityClient {
 
     tx.sign(ownerKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status !== 'SUCCESS') {
       throw new Error(`Failed to transfer identity: ${result.status}`);
     }
