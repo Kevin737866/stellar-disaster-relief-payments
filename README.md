@@ -62,6 +62,13 @@ The Stellar Disaster Relief Platform leverages Stellar's fast, low-cost blockcha
 - Stellar CLI tools
 - Docker (for local testing)
 
+> **Dependency note:** The TypeScript SDK uses `stellar-sdk@12.x` which bundles
+> `@stellar/stellar-base@12.x` internally. The `stellar-base` package (legacy
+> unscoped) is **not** a direct dependency and should not be added separately —
+> doing so creates a version mismatch with `stellar-sdk`'s internal XDR codec.
+> See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the full compatibility
+> matrix and upgrade checklist.
+
 ### 1. Clone Repository
 
 ```bash

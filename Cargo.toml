@@ -10,8 +10,14 @@ license = "MIT"
 crate-type = ["cdylib"]
 
 [dependencies]
+# IMPORTANT: soroban-sdk version must match the Soroban CLI and RPC node version
+# used in deployment. A mismatch causes XDR serialisation incompatibilities.
+# See docs/COMPATIBILITY.md for the full compatibility matrix.
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
 soroban-token-sdk = "22.0.0"
+# sha2 provides SHA-256 for all on-chain hashing (identity factors, recovery codes,
+# duress PIN, device credential). Algorithm must match crypto-js SHA-256 in the
+# TypeScript SDK — both produce lowercase hex output for identical inputs.
 sha2 = "0.10.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
