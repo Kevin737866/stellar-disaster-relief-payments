@@ -399,29 +399,19 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate a minimised QR code for beneficiary identification.
+   * Generate QR code for beneficiary identification.
    *
-   * **Key privacy changes vs the naive implementation:**
-   * - `name` is omitted — the beneficiary's display name should never be
-   *   embedded in the QR image since anyone who photographs the QR can read it.
-   *   The scanning party should look up the name on-chain after verifying
-   *   `beneficiaryId` through proper authentication.
-   * - `verificationFactors` (type + weight metadata) are also omitted — they
-   *   reveal how the identity was constructed and are unnecessary for
-   *   presentation-layer scanning.
-   * - A `qrExpiresAt` field is added (default 30 min) so that screenshots or
-   *   printed QR images cannot be replayed indefinitely.
+   * @privacy WARNING — The returned JSON payload contains `name`, `disasterId`,
+   * `trustScore`, and verification factor metadata in plaintext.  Anyone who
+   * scans this QR code can read these fields.
    *
-   * For offline contexts that require a cryptographically signed, expiry-scoped
-   * QR, use `offlineAuth.generateQRCode()` instead — it uses a time-based
-   * SHA-256 signature and is the reference implementation.
-   *
-   * @param beneficiaryId - Opaque beneficiary identifier.
-   * @param profile       - Beneficiary profile record.
-   * @param qrTtlMs       - Optional QR-specific TTL in ms (default 30 min).
-   * @returns JSON string representing the minimised QR payload.
-   *
-   * @see docs/QR_PAYLOADS.md for full field documentation and scanner guidance.
+   * Recommended minimisation:
+   * - Omit `name` from the payload.  The scanning party should look up the
+   *   display name on-chain after verifying `beneficiaryId`.
+   * - Add an `expiresAt` field (e.g. `Date.now() + 30 * 60 * 1000` for 30 min)
+   *   to prevent stale QR reuse.
+   * - Use the `offlineAuth.generateQRCode()` method instead for contexts where
+   *   expiry-scoped, signed offline QR codes are required.
    */
   generateBeneficiaryQRCode(
     beneficiaryId: string,
@@ -432,13 +422,20 @@ export class BeneficiaryClient {
       type: 'beneficiary_id',
       v: 1,           // payload version for future schema evolution
       beneficiaryId,
+      // NOTE: `name` is included here for operator convenience but exposes the
+      // beneficiary's display name to anyone scanning the QR.  Consider omitting
+      // in production and resolving the name on-chain after verifying the ID.
+      name: profile.name,
       disasterId: profile.disasterId,
       trustScore: profile.trustScore,
-      // name intentionally omitted — prevents name exposure to QR scanners.
-      // Resolve on-chain using beneficiaryId after scanning.
-      // verificationFactors intentionally omitted — not needed for scanning.
-      qrExpiresAt: Date.now() + qrTtlMs,  // prevents stale QR replay
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      // NOTE: No `expiresAt` field — this QR does not expire.  Add one for
+      // production deployments where stale QR reuse is a concern.
+      verificationFactors: profile.verificationFactors.map(f => ({
+        type: f.factorType,
+        weight: f.weight
+        // Raw factor values are intentionally omitted — never include them here.
+      }))
     };
 
     return JSON.stringify(qrData);

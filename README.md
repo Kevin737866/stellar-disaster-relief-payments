@@ -517,6 +517,124 @@ Volume counters (`current_day_volume` and `current_month_volume`) are updated on
 - **Time-based** transfer expiry
 - **Multi-factor** authentication for sensitive operations
 
+## 🔒 Privacy Model
+
+This section documents exactly what data is stored on-chain, what is kept off-chain or minimised, who can read each data element, and how the UI export layer handles sensitive fields. Operators and integrators **must** read this before deploying to production.
+
+### Data Classification
+
+| Data Element | Storage Location | Readable By | Notes |
+|---|---|---|---|
+| Beneficiary ID (opaque string) | On-chain (ledger key) | Any ledger reader | Never contains real name; app-defined opaque token |
+| Beneficiary display name | On-chain (`BeneficiaryProfile.name`) | Any ledger reader | Consider using pseudonym or family-unit code in production |
+| Disaster ID | On-chain | Any ledger reader | Non-identifying programme identifier |
+| Location (camp / city) | On-chain (`BeneficiaryProfile.location`) | Any ledger reader | Use camp-level granularity; avoid precise coordinates |
+| Wallet address | On-chain | Any ledger reader | Stellar public key — pseudonymous but linkable |
+| Family size | On-chain | Any ledger reader | Aggregated statistic; not personally identifying alone |
+| Special needs tags | On-chain | Any ledger reader | Use category codes (e.g. `medical`, `elderly`) not free text |
+| Trust score (0–100) | On-chain | Any ledger reader | Computed from behavioural patterns; no raw behaviour stored |
+| Verification factor **types & weights** | On-chain (`VerificationFactor`) | Any ledger reader | Only factor type (`possession`, `behavioral`, `social`) and weight |
+| Verification factor **raw values** | **Off-chain only** | Registrar / NGO worker | Never stored on-chain; hashed before contract call |
+| Identity factor **hash** (`BytesN<32>`) | On-chain (`IdentityFactor.factor_hash`) | Any ledger reader | SHA-256 hash via `sha2` crate; not reversible |
+| `id_hash` (`BytesN<32>`) | On-chain (`BeneficiaryIdentity`) | Any ledger reader | SHA-256 of a stable identifier; pseudonymous |
+| `duress_pin_hash` | On-chain (optional) | Any ledger reader | SHA-256 hash; raw PIN never stored |
+| `device_fingerprint` | On-chain (`TemporaryCredential`) | Any ledger reader | String identifying a shared device; rotate regularly |
+| Recovery codes (raw) | **Off-chain only** | Beneficiary | Generated client-side via `crypto-js` SHA-256; only the hash is sent on-chain |
+| Recovery code hash | On-chain (`RecoveryCode.code_hash`) | Any ledger reader | SHA-256; expires after use or TTL |
+| Merchant name, business type, contact | On-chain (`Merchant`) | Any ledger reader | Merchant data is intentionally public for network discovery |
+| Merchant location (lat/lng) | On-chain (`Merchant.location`) | Any ledger reader | Precision stored as integer × 1e6; consider rounding for privacy |
+| Transfer ID, amount, token | On-chain (`ConditionalTransfer`) | Any ledger reader | Transfer IDs should be opaque; amounts are public |
+| Spending rules (category limits) | On-chain | Any ledger reader | Category codes only; not free-text descriptions |
+| Transaction history (per transfer) | On-chain | Any ledger reader | Merchant ID + amount + category are permanently visible |
+| Donor name / email (tax receipts) | **Off-chain only** | `DonorTransparencyClient` caller | Never submitted on-chain; stored by caller in local state |
+| IPFS media hash (`ProofOfImpact`) | On-chain reference | Any IPFS gateway | Ensure media does not contain identifying images of beneficiaries |
+| Export CSV / JSON (UI) | Client-side only | Operator browser session | See Export Privacy section below |
+
+### On-Chain Hashing Algorithms
+
+The following table describes every hashing operation in the stack and the algorithm used:
+
+| Location | Operation | Algorithm | Implementation |
+|---|---|---|---|
+| `beneficiary_manager.rs` | `IdentityFactor.factor_hash` | SHA-256 | Rust `sha2` crate (`sha2::Sha256`) |
+| `beneficiary_manager.rs` | `BeneficiaryIdentity.id_hash` | SHA-256 | Rust `sha2` crate |
+| `beneficiary_manager.rs` | `duress_pin_hash` | SHA-256 | Rust `sha2` crate |
+| `beneficiary_manager.rs` | `RecoveryCode.code_hash` | SHA-256 | Rust `sha2` crate |
+| `sdk/src/beneficiaryClient.ts` | `generateRecoveryCode()` | SHA-256 | `crypto-js` `createHash('sha256')` |
+| `sdk/src/beneficiaryClient.ts` | `generateSessionId()` | SHA-256 (truncated) | `crypto-js` `createHash('sha256')` |
+| `sdk/src/beneficiaryIdentity.ts` | `hashFactor(value)` | SHA-256 | `crypto-js` `SHA256` |
+| `sdk/src/offlineAuth.ts` | QR time-based signature | SHA-256 | `crypto-js` `SHA256` |
+| `sdk/src/offlineAuth.ts` | Paper backup code | SHA-256 | `crypto-js` `SHA256` |
+
+> **Alignment note:** All client-side hashing uses SHA-256 via `crypto-js`, matching the SHA-256 algorithm used in the Soroban contracts via the `sha2` crate. Both produce the same digest for identical inputs when encoding is consistent (hex string). No MD5 is used for any security-sensitive operation (only `offlineAuth` imports it but it is not used in live code paths).
+
+### Beneficiary Name Privacy
+
+The `BeneficiaryProfile.name` field is stored as plain text on-chain and is readable by any ledger observer. Operators **should**:
+
+1. Use a family-unit code (e.g. `FAM-DR-0042`) instead of a real full name where local law or programme policy requires it.
+2. Store the real name mapping in an off-chain encrypted registry linked to the beneficiary ID.
+3. Instruct field agents never to enter birth dates, national ID numbers, or biometric descriptions in the `name` or `location` fields.
+
+The contract's `BeneficiaryIdentity.id_hash` field (`BytesN<32>`) is the pseudonymous on-chain anchor. The raw identifier that was hashed is **never** stored on-chain.
+
+### Device Fingerprint Privacy
+
+`TemporaryCredential.device_fingerprint` is a freeform string stored on-chain and is readable by any ledger observer. Operators **must**:
+
+1. Use a non-identifying device token (e.g. a randomly generated UUID assigned at registration) rather than any hardware serial number, IMEI, or user-agent string.
+2. Rotate the device fingerprint when a credential expires or a device is shared.
+3. Never include user location, IP address, or browser details in this field.
+
+### QR Payload Privacy
+
+Three distinct QR payload types exist in this codebase. The table below documents what each reveals:
+
+| QR Type | Generator | Fields in Payload | Expiry | Reveals to Scanner |
+|---|---|---|---|---|
+| **Beneficiary ID QR** (`beneficiaryClient.generateBeneficiaryQRCode`) | `BeneficiaryClient` | `beneficiaryId`, `name`, `disasterId`, `trustScore`, factor types/weights, `timestamp` | None (no expiry field) | Name + trust score readable by anyone with the QR |
+| **Offline Auth QR** (`offlineAuth.generateQRCode`) | `OfflineAuthClient` | Shortened `idHash` (16 chars), `timestamp`, `expiresAt`, `trustScore`, `campLocation`, truncated SHA-256 signature | Configurable (default 30 min) | Trust score + camp location; idHash is pseudonymous |
+| **Fund QR** (`aidClient.generateFundQRCode`) | `AidClient` | `fundId`, fund `name`, `totalAmount`, `disasterType`, `expiresAt`, `timestamp` | Inherits fund expiry | Fund financial details readable by anyone |
+| **Transfer QR** (`transferClient.generateTransferQRCode`) | `TransferClient` | `transferId`, `beneficiaryId`, `amount`, `remainingAmount`, `token`, `purpose`, spending rule types/limits, `expiresAt`, `timestamp` | Transfer expiry | Remaining balance + beneficiary ID visible to scanner |
+| **Merchant static QR** (`merchantNetwork.generateQRCode`) | `MerchantNetworkSDK` | `merchantId`, `category`, `latitude`, `longitude`, `name` | None | Merchant location + identity; intentionally public |
+| **Transaction QR** (`merchantNetwork.generateTransactionQR`) | `MerchantNetworkSDK` | `merchantId`, `amount`, `transferCode`, `timestamp` | Short-lived (use immediately) | Payment amount visible to anyone scanning |
+
+**Recommended minimisation actions:**
+- `generateBeneficiaryQRCode`: Remove `name` from the payload; the scanner should look up the name on-chain after verifying the beneficiary ID. Add a short expiry (`expiresAt`) to prevent stale QR reuse.
+- `generateTransferQRCode`: Remove `remainingAmount` from the payload; it exposes current balance. The merchant should query the contract after scanning.
+- `offlineAuth.generateQRCode`: Already minimised and expiry-scoped — this is the reference implementation.
+
+### Export Privacy
+
+The UI export layer (`ui/src/export/`) writes data to CSV or JSON files downloaded to the operator's browser. The following fields in exported datasets contain sensitive information:
+
+| Export Dataset | Sensitive Fields | Risk | Recommendation |
+|---|---|---|---|
+| `conditionalTransferFields` | `beneficiaryId`, `amount`, `remainingAmount` | Links individual to balance | Restrict export to authorised NGO staff only; log all export events |
+| `transferTransactionFields` | `merchantId`, `beneficiaryId`, `amount`, `location` | Full spending history per person | Treat as PII under GDPR/humanitarian data standards |
+| `disbursementFields` | `beneficiary`, `amount`, `approvedBy` | Identifies who received what | Same as above |
+| `merchantFields` | `latitude`, `longitude`, `contactInfo`, `owner` | Precise merchant location | Round lat/lng to 2 decimal places for public exports |
+| `emergencyFundFields` | `totalAmount`, `releasedAmount` | Fund depletion timing | Low risk; suitable for donor reports |
+
+Operators **must** ensure export files are:
+1. Transmitted only over encrypted channels (TLS 1.2+).
+2. Stored in access-controlled systems with audit logging.
+3. Deleted after the retention period required by applicable humanitarian data standards (e.g. ICRC Data Protection Rules, OCHA Data Responsibility Guidelines).
+4. Never published publicly or shared with unauthorised third parties.
+
+### Off-Chain Data Responsibilities
+
+The following data is explicitly **not** stored on-chain and must be managed by the operator in a secure off-chain system:
+
+- Real names mapped to beneficiary IDs
+- Raw verification factor values (possession items, social voucher identities)
+- Donor names, emails, and tax receipt details
+- Field worker credentials and login sessions
+- Media files referenced by IPFS hashes in `ProofOfImpact`
+- SMS phone numbers used for USSD sessions
+
+---
+
 ## 🌍 Humanitarian Principles
 
 This platform is designed with core humanitarian principles:

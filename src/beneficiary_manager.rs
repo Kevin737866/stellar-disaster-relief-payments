@@ -11,21 +11,35 @@ use crate::rbac::{self, ROLE_NGO, ROLE_ADMIN};
 #[contract]
 pub struct BeneficiaryManager;
 
-/// Single source of truth for beneficiary identity.
-/// This is the authoritative record containing all identity-related data.
-/// All other structures reference this via id_hash.
+/// On-chain pseudonymous identity record for a displaced person.
+///
+/// # Privacy model
+/// - `id_hash`: SHA-256 hash of an operator-defined stable identifier.
+///   The raw identifier is **never** stored on-chain.  Readable by any
+///   ledger observer, but not reversible to a real name.
+/// - `creation_factors`: Each factor stores only a SHA-256 `factor_hash`
+///   and metadata (type, weight, verifier).  Raw factor values (possession
+///   items, behavioural patterns) are **never** stored on-chain.
+/// - `camp_location`: Use camp-level granularity (e.g. "Camp Alpha, Zone 3").
+///   Never store GPS coordinates or street addresses here.
+/// - `duress_pin_hash`: SHA-256 hash of a decoy PIN for safety.  Raw PIN
+///   is **never** stored on-chain.
+/// - `temporary_credentials`: Each credential stores a `credential_hash` and
+///   a `device_fingerprint` string.  Use a randomly generated device token
+///   (not IMEI, hardware serial, or user-agent) as the fingerprint value.
+///   Rotate on credential expiry.
 #[derive(Clone)]
 pub struct BeneficiaryIdentity {
-    pub id_hash: BytesN<32>, // Pseudonymous identifier (never real name)
+    pub id_hash: BytesN<32>, // SHA-256 pseudonymous identifier — raw value never stored on-chain
     pub creation_factors: Vec<IdentityFactor>,
     pub recovery_contacts: Vec<Address>,
-    pub trust_score: u32, // 0-100 based on behavioral patterns
-    pub camp_location: String,
+    pub trust_score: u32, // 0–100 computed from behavioural patterns; no raw behaviour stored
+    pub camp_location: String, // Use camp-level granularity only; no precise GPS coordinates
     pub created_at: u64,
     pub last_verified: u64,
     pub wallet_address: Address,
     pub is_active: bool,
-    pub duress_pin_hash: Option<BytesN<32>>, // Fake PIN for safety
+    pub duress_pin_hash: Option<BytesN<32>>, // SHA-256 hash of decoy PIN; raw PIN never stored
     pub geofence_zones: Vec<GeofenceZone>,
     pub temporary_credentials: Vec<TemporaryCredential>,
     // Disbursement/transfer linkage - track associated records
@@ -33,41 +47,57 @@ pub struct BeneficiaryIdentity {
     pub transfer_ids: Vec<String>,
 }
 
-/// Lightweight profile view - references identity via id_hash.
-/// Does NOT duplicate wallet_address, trust_score, or verification factors.
-/// Use get_identity(id_hash) for full identity data.
+/// Public-facing beneficiary profile stored on-chain.
+///
+/// # Privacy model
+/// - `name`: Stored as plain text on-chain; readable by any ledger observer.
+///   Operators should use a family-unit code (e.g. "FAM-DR-0042") rather
+///   than a real full name.  Real-name mappings must be kept off-chain.
+/// - `location`: Use camp-level granularity.  Do not store precise GPS
+///   coordinates, street addresses, or personally identifying location data.
+/// - `wallet_address`: Stellar public key — pseudonymous but linkable across
+///   transactions.
+/// - `verification_factors`: Only factor type and weight are stored on-chain.
+///   Raw factor values are **never** stored on-chain.
+/// - `trust_score`: 0–100 aggregate score derived from behavioural patterns.
+///   No raw behavioural data is stored on-chain.
+/// - `identity`: When present, links to the pseudonymous `BeneficiaryIdentity`
+///   record which stores hashed factors only.
 #[derive(Clone)]
 pub struct BeneficiaryProfile {
-    pub id: String,                  // Human-readable ID (e.g., "BEN-001")
-    pub name: String,
+    pub id: String,
+    pub name: String,       // Use family-unit code in production; real name kept off-chain
     pub disaster_id: String,
-    pub location: String,
+    pub location: String,   // Camp-level granularity only; no precise GPS/street data
     pub registration_date: u64,
     pub last_verified: u64,
-    /// Reference to the canonical identity (Some if identity created, None if not yet)
-    pub identity_hash: Option<BytesN<32>>,
-    /// Only operational factors for spending/transfers (not full identity factors)
-    pub verification_factors: Vec<VerificationFactor>,
+    pub verification_factors: Vec<VerificationFactor>, // Type + weight only; raw values off-chain
+    pub wallet_address: Address,
     pub is_active: bool,
     pub family_size: u32,
-    pub special_needs: Vec<String>,
-    /// DEPRECATED: Use identity.trust_score via identity_hash
-    /// Kept for backward compatibility during migration
-    #[deprecated(note = "Use identity.trust_score via get_identity(identity_hash)")]
-    pub trust_score: u32,
-    /// DEPRECATED: Use identity.wallet_address via identity_hash
-    /// Kept for backward compatibility during migration
-    #[deprecated(note = "Use identity.wallet_address via get_identity(identity_hash)")]
-    pub wallet_address: Address,
+    pub special_needs: Vec<String>, // Use category codes (e.g. "medical"); no free-text PII
+    pub trust_score: u32,           // 0–100 aggregate; no raw behavioural data on-chain
+    pub identity: Option<BeneficiaryIdentity>, // Links to hashed-factor identity record
 }
 
+/// An individual identity factor stored on-chain.
+///
+/// # Privacy model
+/// - `factor_hash`: SHA-256 (via `sha2` crate) of the raw factor value.
+///   The raw value (e.g. a possession item description, a social voucher
+///   identifier) is **never** stored on-chain.
+/// - `factor_type`: Plain string label — use defined codes only:
+///   `"knowledge"`, `"possession"`, `"social"`, `"behavioral"`, `"institutional"`.
+///   Do not use free-text descriptions that could identify the beneficiary.
+/// - `verifier`: Optional Stellar address of the NGO worker or community
+///   member who verified this factor.  Readable by any ledger observer.
 #[derive(Clone)]
 pub struct IdentityFactor {
-    pub factor_type: String, // "knowledge", "possession", "social", "behavioral", "institutional"
-    pub factor_hash: BytesN<32>, // Hashed value for privacy
+    pub factor_type: String, // Code: "knowledge" | "possession" | "social" | "behavioral" | "institutional"
+    pub factor_hash: BytesN<32>, // SHA-256 of raw value — raw value never stored on-chain
     pub weight: u32,
     pub verified_at: u64,
-    pub verifier: Option<Address>, // NGO worker or community member
+    pub verifier: Option<Address>, // NGO worker or community member; readable by ledger observers
 }
 
 #[derive(Clone)]
@@ -87,12 +117,21 @@ pub struct RecoveryCode {
     pub is_used: bool,
 }
 
+/// A short-lived credential tied to a shared device.
+///
+/// # Privacy model
+/// - `credential_hash`: SHA-256 hash; raw credential value never stored.
+/// - `device_fingerprint`: MUST be a randomly generated opaque token (e.g.
+///   UUID assigned at registration time).  Never use IMEI, hardware serial
+///   numbers, MAC addresses, IP addresses, or browser user-agent strings.
+///   Rotate this value whenever the credential expires or the device changes
+///   hands.
 #[derive(Clone)]
 pub struct TemporaryCredential {
     pub credential_hash: BytesN<32>,
     pub created_at: u64,
     pub expires_at: u64,
-    pub device_fingerprint: String, // For shared device tracking
+    pub device_fingerprint: String, // Opaque token (e.g. UUID) — never hardware IDs or PII
     pub is_active: bool,
 }
 
