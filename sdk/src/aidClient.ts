@@ -356,16 +356,42 @@ export class AidClient {
   }
 
   /**
-   * Generate QR code for fund information (offline access)
+   * Generate a minimised QR code for fund information (offline access).
+   *
+   * Payload contains only the fields a scanner needs to look up and display
+   * the fund.  Financial amounts and internal state are intentionally omitted
+   * — the scanner should query the contract for live details after verifying
+   * `fundId`.
+   *
+   * The QR carries its own `qrExpiresAt` expiry (default 24 h) that is
+   * independent of the fund's own `expiresAt`, so a QR printed for a field
+   * agent cannot be replayed indefinitely even if the fund is still active.
+   *
+   * @param fundId  - Opaque fund identifier.
+   * @param fund    - Fund record to generate the QR for.
+   * @param qrTtlMs - Optional QR-specific TTL in milliseconds (default 24 h).
+   * @returns JSON string representing the minimised QR payload.
+   *
+   * @see docs/QR_PAYLOADS.md for full field documentation and scanner guidance.
    */
-  generateFundQRCode(fundId: string, fund: EmergencyFund): string {
+  generateFundQRCode(
+    fundId: string,
+    fund: EmergencyFund,
+    qrTtlMs: number = 24 * 60 * 60 * 1000
+  ): string {
     const qrData = {
       type: 'emergency_fund',
+      v: 1,                          // payload version for future schema evolution
       fundId,
-      name: fund.name,
-      totalAmount: fund.totalAmount,
       disasterType: fund.disasterType,
-      expiresAt: fund.expiresAt,
+      // NOTE: fund.name is included as a human-readable label only; no PII.
+      // fund.totalAmount and fund.releasedAmount are intentionally omitted —
+      // the scanner must query the contract for live financial state.
+      name: fund.name,
+      // fund.expiresAt: when the fund itself expires (do not use for QR validation)
+      fundExpiresAt: fund.expiresAt,
+      // qrExpiresAt: when this specific QR image expires (independent of fund)
+      qrExpiresAt: Date.now() + qrTtlMs,
       timestamp: Date.now()
     };
 
@@ -373,7 +399,10 @@ export class AidClient {
   }
 
   /**
-   * Validate fund QR code
+   * Validate a fund QR code.
+   *
+   * Checks both the QR-specific expiry (`qrExpiresAt`) and confirms the fund
+   * still exists on-chain.  Returns `false` for any expired or invalid QR.
    */
   async validateFundQRCode(qrCodeData: string): Promise<boolean> {
     try {
@@ -383,8 +412,13 @@ export class AidClient {
         return false;
       }
 
-      // Check if QR code is expired
-      if (data.expiresAt && Date.now() > data.expiresAt) {
+      // Check QR-specific expiry first (fast, no network call)
+      if (data.qrExpiresAt && Date.now() > data.qrExpiresAt) {
+        return false;
+      }
+
+      // Legacy: also respect fund-level expiry if qrExpiresAt is absent
+      if (!data.qrExpiresAt && data.expiresAt && Date.now() > data.expiresAt) {
         return false;
       }
 

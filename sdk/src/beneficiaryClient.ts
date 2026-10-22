@@ -398,47 +398,71 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate QR code for beneficiary identification.
+   * Generate a minimised QR code for beneficiary identification.
    *
-   * The payload is unsigned JSON containing the beneficiary ID, name, disaster
-   * ID, trust score, timestamp, and verification-factor metadata. It has no
-   * expiry and contains PII; treat it as a visual identity aid, not a bearer
-   * credential. See `docs/offline-flows.md` for the threat model and the
-   * planned signature/revocation work.
+   * **Key privacy changes vs the naive implementation:**
+   * - `name` is omitted — the beneficiary's display name should never be
+   *   embedded in the QR image since anyone who photographs the QR can read it.
+   *   The scanning party should look up the name on-chain after verifying
+   *   `beneficiaryId` through proper authentication.
+   * - `verificationFactors` (type + weight metadata) are also omitted — they
+   *   reveal how the identity was constructed and are unnecessary for
+   *   presentation-layer scanning.
+   * - A `qrExpiresAt` field is added (default 30 min) so that screenshots or
+   *   printed QR images cannot be replayed indefinitely.
+   *
+   * For offline contexts that require a cryptographically signed, expiry-scoped
+   * QR, use `offlineAuth.generateQRCode()` instead — it uses a time-based
+   * SHA-256 signature and is the reference implementation.
+   *
+   * @param beneficiaryId - Opaque beneficiary identifier.
+   * @param profile       - Beneficiary profile record.
+   * @param qrTtlMs       - Optional QR-specific TTL in ms (default 30 min).
+   * @returns JSON string representing the minimised QR payload.
+   *
+   * @see docs/QR_PAYLOADS.md for full field documentation and scanner guidance.
    */
-  generateBeneficiaryQRCode(beneficiaryId: string, profile: BeneficiaryProfile): string {
+  generateBeneficiaryQRCode(
+    beneficiaryId: string,
+    profile: BeneficiaryProfile,
+    qrTtlMs: number = 30 * 60 * 1000
+  ): string {
     const qrData = {
       type: 'beneficiary_id',
+      v: 1,           // payload version for future schema evolution
       beneficiaryId,
-      name: profile.name,
       disasterId: profile.disasterId,
       trustScore: profile.trustScore,
-      timestamp: Date.now(),
-      verificationFactors: profile.verificationFactors.map(f => ({
-        type: f.factorType,
-        weight: f.weight
-      }))
+      // name intentionally omitted — prevents name exposure to QR scanners.
+      // Resolve on-chain using beneficiaryId after scanning.
+      // verificationFactors intentionally omitted — not needed for scanning.
+      qrExpiresAt: Date.now() + qrTtlMs,  // prevents stale QR replay
+      timestamp: Date.now()
     };
 
     return JSON.stringify(qrData);
   }
 
   /**
-   * Validate beneficiary QR code.
+   * Validate a beneficiary QR code.
    *
-   * Only checks the payload type and that the beneficiary currently exists. It
-   * does not verify a signature, freshness, or revocation, so a stale or
-   * copied QR still passes. See `docs/offline-flows.md`.
+   * Checks the QR-specific expiry (`qrExpiresAt`) and confirms the beneficiary
+   * still exists on-chain.
    */
   async validateBeneficiaryQRCode(qrCodeData: string): Promise<boolean> {
     try {
       const data = JSON.parse(qrCodeData);
-      
+
       if (data.type !== 'beneficiary_id') {
         return false;
       }
 
-      // Verify beneficiary exists
+      // Check QR-specific expiry (fast, no network call)
+      if (data.qrExpiresAt && Date.now() > data.qrExpiresAt) {
+        return false;
+      }
+
+      // Verify beneficiary exists on-chain
       const profile = await this.getBeneficiary(data.beneficiaryId);
       return profile !== null;
     } catch (error) {

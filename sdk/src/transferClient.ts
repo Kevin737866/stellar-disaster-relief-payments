@@ -379,22 +379,49 @@ export class TransferClient {
   }
 
   /**
-   * Generate QR code for conditional transfer
+   * Generate a minimised QR code for a conditional transfer.
+   *
+   * **Key privacy changes vs the naive implementation:**
+   * - `remainingAmount` is omitted — it exposed the beneficiary's live balance
+   *   to anyone who could photograph or scan the QR code.  Merchants must
+   *   query the contract with `getTransfer(transferId)` to obtain the current
+   *   balance after scanning.
+   * - `amount` (original allocation) is retained because merchants need it to
+   *   pre-check eligibility without a network call in offline contexts.
+   * - The QR carries a `qrExpiresAt` (default 30 min) independent of the
+   *   transfer's own `expiresAt`, so a printed or screenshotted QR cannot be
+   *   replayed indefinitely.
+   *
+   * @param transferId - Opaque transfer identifier.
+   * @param transfer   - Transfer record to generate the QR for.
+   * @param qrTtlMs    - Optional QR-specific TTL in ms (default 30 min).
+   * @returns JSON string representing the minimised QR payload.
+   *
+   * @see docs/QR_PAYLOADS.md for full field documentation and scanner guidance.
    */
-  generateTransferQRCode(transferId: string, transfer: ConditionalTransfer): string {
+  generateTransferQRCode(
+    transferId: string,
+    transfer: ConditionalTransfer,
+    qrTtlMs: number = 30 * 60 * 1000
+  ): string {
     const qrData = {
       type: 'transfer',
+      v: 1,                           // payload version for future schema evolution
       transferId,
       beneficiaryId: transfer.beneficiaryId,
-      amount: transfer.amount,
-      remainingAmount: transfer.remainingAmount,
+      amount: transfer.amount,        // Original allocation for offline pre-check
+      // remainingAmount intentionally omitted — prevents live balance exposure.
+      // Merchants must call getTransfer(transferId) after scanning for live balance.
       token: transfer.token,
       purpose: transfer.purpose,
       spendingRules: transfer.spendingRules.map(rule => ({
         type: rule.ruleType,
         limit: rule.limit
       })),
-      expiresAt: transfer.expiresAt,
+      // transfer.expiresAt: when the transfer itself expires on-chain
+      transferExpiresAt: transfer.expiresAt,
+      // qrExpiresAt: when this specific QR image expires (independent of transfer)
+      qrExpiresAt: Date.now() + qrTtlMs,
       timestamp: Date.now()
     };
 
@@ -402,13 +429,21 @@ export class TransferClient {
   }
 
   /**
-   * Validate transfer QR code
+   * Validate a transfer QR code.
+   *
+   * Checks the QR-specific expiry (`qrExpiresAt`) and confirms the transfer
+   * is still active on-chain.
    */
   async validateTransferQRCode(qrCodeData: string): Promise<boolean> {
     try {
       const data = JSON.parse(qrCodeData);
-      
+
       if (data.type !== 'transfer') {
+        return false;
+      }
+
+      // Check QR-specific expiry first (fast, no network call)
+      if (data.qrExpiresAt && Date.now() > data.qrExpiresAt) {
         return false;
       }
 

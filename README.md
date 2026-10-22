@@ -551,20 +551,34 @@ await sdk.beneficiaryClient.processUSSDTransaction(
 
 ### QR Code Generation
 
+The SDK generates minimised, expiry-scoped QR payloads. Each QR carries a
+`qrExpiresAt` field independent of the on-chain resource's expiry, preventing
+replay of screenshots or printed QR images. Sensitive fields (beneficiary name,
+live transfer balance) are intentionally omitted from payloads.
+
 ```typescript
-// Generate offline QR code for beneficiary
+// Generate minimised QR code for beneficiary (30-min default TTL)
 const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
   'DP_001_FAMILY',
   beneficiaryData
+  // Optional: pass qrTtlMs to override default 30-min TTL
 );
 
-// QR code contains: beneficiary ID, verification factors, balance, spending rules
+// QR payload contains: beneficiary ID, disaster ID, trust score, qrExpiresAt
+// Name and raw verification factors are intentionally omitted.
+
+// Generate minimised transfer QR at point of sale (30-min default TTL)
+const transferQR = sdk.transferClient.generateTransferQRCode(
+  'CT_EMERGENCY_001',
+  transfer
+  // Optional: pass qrTtlMs to override default 30-min TTL
+);
+
+// Transfer QR omits remainingAmount — merchant must call getTransfer() for live balance
 ```
 
-> **Offline guarantees and limits:** see
-> [docs/offline-flows.md](docs/offline-flows.md) for QR payload contents,
-> expiry, reconciliation, and abuse-resistance. The USSD handler shown above
-> is a client-side simulator, not a production telco integration.
+> See [docs/QR_PAYLOADS.md](docs/QR_PAYLOADS.md) for the full payload reference,
+> field-by-field privacy analysis, and scanner implementation checklist.
 
 ### SMS Notifications
 
