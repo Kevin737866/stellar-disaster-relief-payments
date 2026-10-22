@@ -109,13 +109,16 @@ describe('offline envelope builders', () => {
       {
         name: 'Shop',
         businessType: 'food',
-        location: 'Camp',
+        category: 0,
+        locationLatLng: '18.4861,-69.9312',
+        locationAddress: '123 Main St',
+        locationCity: 'Santo Domingo',
+        locationCountry: 'Dominican Republic',
+        locationPostalCode: '10100',
         contactInfo: '123',
-        stellarTomlUrl: '',
         acceptedTokens: ['XLM'],
-        dailyLimit: '100',
-        monthlyLimit: '1000',
-        verificationDocuments: [],
+        vouchers: [],
+        emergencyFastTrack: false,
       }
     );
 

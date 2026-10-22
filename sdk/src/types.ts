@@ -433,13 +433,26 @@ export interface VerificationRequest {
 export interface MerchantOnboardingRequest {
   name: string;
   businessType: string;
-  location: Location;
+  /** Merchant category numeric code (e.g. 0 = food, 1 = water, 2 = shelter, 3 = medical). */
+  category: number;
+  /** Geographic coordinates as a "lat,lng" string, e.g. "18.4861,-69.9312". */
+  locationLatLng: string;
+  locationAddress: string;
+  locationCity: string;
+  locationCountry: string;
+  locationPostalCode: string;
   contactInfo: string;
-  stellarTomlUrl: string;
   acceptedTokens: string[];
-  dailyLimit: string;
-  monthlyLimit: string;
-  verificationDocuments: string[];
+  /**
+   * Community vouching references: three beneficiary IDs or one NGO field-worker ID.
+   * Required for standard onboarding; can be empty for emergency fast-track.
+   */
+  vouchers: string[];
+  /**
+   * When true the merchant is pre-approved from an existing network and
+   * receives immediate STATUS_ACTIVE with a higher daily limit.
+   */
+  emergencyFastTrack: boolean;
 }
 
 export interface SupplyChainRequest {

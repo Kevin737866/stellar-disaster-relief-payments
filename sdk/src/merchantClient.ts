@@ -73,7 +73,12 @@ export class MerchantClient {
   }
 
   /**
-   * Register local merchant for relief network
+   * Register local merchant for relief network.
+   *
+   * Parameter order matches the Rust `register_merchant` contract function:
+   * owner, merchant_id, name, business_type, category, location_lat_lng,
+   * location_address, location_city, location_country, location_postal_code,
+   * contact_info, accepted_tokens, vouchers, emergency_fast_track.
    */
   async registerMerchant(
     ownerKey: string,
@@ -95,13 +100,16 @@ export class MerchantClient {
             nativeToScVal(merchantId),
             nativeToScVal(request.name),
             nativeToScVal(request.businessType),
-            nativeToScVal(request.location),
+            nativeToScVal(request.category),
+            nativeToScVal(request.locationLatLng),
+            nativeToScVal(request.locationAddress),
+            nativeToScVal(request.locationCity),
+            nativeToScVal(request.locationCountry),
+            nativeToScVal(request.locationPostalCode),
             nativeToScVal(request.contactInfo),
-            nativeToScVal(request.stellarTomlUrl),
             nativeToScVal(request.acceptedTokens),
-            nativeToScVal(request.dailyLimit),
-            nativeToScVal(request.monthlyLimit),
-            nativeToScVal(request.verificationDocuments)
+            nativeToScVal(request.vouchers),
+            nativeToScVal(request.emergencyFastTrack),
           ]
         )
       )
@@ -563,25 +571,46 @@ export class MerchantClient {
   }
 
   /**
-   * Create merchant onboarding request template
+   * Create merchant onboarding request template.
+   *
+   * @param name              Human-readable merchant name.
+   * @param businessType      Free-text business type description.
+   * @param category          Numeric category code (0=food,1=water,2=shelter,3=medical,4=clothing,5=fuel).
+   * @param locationLatLng    Coordinates as "lat,lng" string, e.g. "18.4861,-69.9312".
+   * @param locationAddress   Street address.
+   * @param locationCity      City name.
+   * @param locationCountry   Country name.
+   * @param locationPostalCode Postal / ZIP code.
+   * @param contactInfo       Contact details (phone, email, etc.).
+   * @param vouchers          Community vouching references (3 beneficiary IDs or 1 NGO worker ID).
+   * @param emergencyFastTrack Pre-approved from existing network (skips trial period).
    */
   createOnboardingRequest(
     name: string,
     businessType: string,
-    location: Location,
+    category: number,
+    locationLatLng: string,
+    locationAddress: string,
+    locationCity: string,
+    locationCountry: string,
+    locationPostalCode: string,
     contactInfo: string,
-    stellarAddress: string
+    vouchers: string[] = [],
+    emergencyFastTrack: boolean = false
   ): MerchantOnboardingRequest {
     return {
       name,
       businessType,
-      location,
+      category,
+      locationLatLng,
+      locationAddress,
+      locationCity,
+      locationCountry,
+      locationPostalCode,
       contactInfo,
-      stellarTomlUrl: `https://stellar.expert/explorer/testnet/account/${stellarAddress}`,
-      acceptedTokens: ['XLM'], // Default to XLM
-      dailyLimit: '1000', // Default limits
-      monthlyLimit: '10000',
-      verificationDocuments: [] // Will be uploaded separately
+      acceptedTokens: ['XLM'],
+      vouchers,
+      emergencyFastTrack,
     };
   }
 
@@ -656,7 +685,7 @@ export class MerchantClient {
   async buildOfflineRegisterMerchant(
     sourcePublicKey: string,
     merchantId: string,
-    request: any
+    request: MerchantOnboardingRequest
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
@@ -668,11 +697,19 @@ export class MerchantClient {
           'register_merchant',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(request.name),
-            nativeToScVal(request.businessType), nativeToScVal(request.location),
-            nativeToScVal(request.contactInfo), nativeToScVal(request.stellarTomlUrl),
-            nativeToScVal(request.acceptedTokens), nativeToScVal(request.dailyLimit),
-            nativeToScVal(request.monthlyLimit), nativeToScVal(request.verificationDocuments),
+            nativeToScVal(merchantId),
+            nativeToScVal(request.name),
+            nativeToScVal(request.businessType),
+            nativeToScVal(request.category),
+            nativeToScVal(request.locationLatLng),
+            nativeToScVal(request.locationAddress),
+            nativeToScVal(request.locationCity),
+            nativeToScVal(request.locationCountry),
+            nativeToScVal(request.locationPostalCode),
+            nativeToScVal(request.contactInfo),
+            nativeToScVal(request.acceptedTokens),
+            nativeToScVal(request.vouchers),
+            nativeToScVal(request.emergencyFastTrack),
           ]
         )
       )
