@@ -480,12 +480,54 @@ export class TrackerClient {
   }
 
   /**
-   * Calculate estimated arrival time
+   * Calculate estimated arrival time.
+   *
+   * ⚠️ LIMITATIONS: This method uses a simplified great-circle distance heuristic
+   * with fixed average speeds and does NOT account for real-world humanitarian
+   * logistics constraints such as:
+   * - Port/customs/border clearance delays (often 24–72+ hours)
+   * - Weather disruptions (storms, monsoon, winter conditions)
+   * - Security checkpoints and conflict zone routing
+   * - Infrastructure damage (roads, bridges, runways)
+   * - Transshipment and multi-modal handoffs
+   * - Regulatory paperwork and documentation delays
+   * - Local curfews or movement restrictions
+   *
+   * For production disaster logistics, use a dedicated routing engine
+   * (e.g., OSRM, GraphHopper, or commercial APIs) and calibrate with
+   * historical lane data. This method is provided as a rough baseline only.
+   *
+   * @param origin - Origin location with latitude/longitude
+   * @param destination - Destination location with latitude/longitude
+   * @param transportMethod - Transport mode: 'air', 'ground', or 'sea'
+   * @param options - Optional configuration to improve estimate realism:
+   *   - customSpeeds: Override default speeds (km/h) per transport method
+   *   - delayFactors: Additive delay hours for common humanitarian constraints:
+   *     * portCustomsHours: Port/customs clearance (default: 0)
+   *     * weatherBufferHours: Weather contingency (default: 0)
+   *     * securityCheckpointHours: Security/border delays (default: 0)
+   *     * infrastructureBufferHours: Infrastructure damage buffer (default: 0)
+   *     * transshipmentHours: Multi-modal handoff time (default: 0)
+   *     * documentationHours: Paperwork/regulatory delays (default: 0)
+   *   - customEstimator: Fully custom estimation function (distanceKm, transportMethod) => hours
+   * @returns Unix timestamp (milliseconds) of estimated arrival
    */
   calculateEstimatedArrival(
     origin: Location,
     destination: Location,
-    transportMethod: 'air' | 'ground' | 'sea'
+    transportMethod: 'air' | 'ground' | 'sea',
+    options?: {
+      customSpeeds?: Partial<Record<'air' | 'ground' | 'sea', number>>;
+      delayFactors?: {
+        portCustomsHours?: number;
+        weatherBufferHours?: number;
+        securityCheckpointHours?: number;
+        infrastructureBufferHours?: number;
+        transshipmentHours?: number;
+        documentationHours?: number;
+      };
+      customEstimator?: (distanceKm: number, transportMethod: 'air' | 'ground' | 'sea') => number;
+    }
   ): number {
     // Simple distance calculation (in production, use routing APIs)
     const distance = this.calculateDistance(
@@ -493,23 +535,38 @@ export class TrackerClient {
       destination.latitude, destination.longitude
     );
 
-    // Estimate travel time based on transport method
-    let speedKmh: number;
-    switch (transportMethod) {
-      case 'air':
-        speedKmh = 800; // Average aircraft speed
-        break;
-      case 'ground':
-        speedKmh = 60; // Average truck speed
-        break;
-      case 'sea':
-        speedKmh = 30; // Average ship speed
-        break;
+    // If a fully custom estimator is provided, use it and return
+    if (options?.customEstimator) {
+      const travelHours = options.customEstimator(distance, transportMethod);
+      return Date.now() + (travelHours * 60 * 60 * 1000);
     }
 
+    // Default speeds (km/h) — can be overridden via options.customSpeeds
+    const defaultSpeeds: Record<'air' | 'ground' | 'sea', number> = {
+      air: 800,   // Average aircraft speed
+      ground: 60, // Average truck speed
+      sea: 30,    // Average ship speed
+    };
+    const speeds = { ...defaultSpeeds, ...options?.customSpeeds };
+    const speedKmh = speeds[transportMethod];
+
     const travelHours = distance / speedKmh;
-    const processingHours = 24; // Add 24 hours for processing
-    return Date.now() + ((travelHours + processingHours) * 60 * 60 * 1000);
+
+    // Base processing time (handling, loading/unloading)
+    const processingHours = 24;
+
+    // Additional humanitarian logistics delay factors
+    const delays = options?.delayFactors ?? {};
+    const additionalDelayHours =
+      (delays.portCustomsHours ?? 0) +
+      (delays.weatherBufferHours ?? 0) +
+      (delays.securityCheckpointHours ?? 0) +
+      (delays.infrastructureBufferHours ?? 0) +
+      (delays.transshipmentHours ?? 0) +
+      (delays.documentationHours ?? 0);
+
+    const totalHours = travelHours + processingHours + additionalDelayHours;
+    return Date.now() + (totalHours * 60 * 60 * 1000);
   }
 
   private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {

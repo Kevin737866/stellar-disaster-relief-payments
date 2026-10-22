@@ -1363,10 +1363,27 @@ createSupplyChainRequest(
 ): SupplyChainRequest
 
 // Estimate arrival time based on transport method
+// ⚠️ LIMITATIONS: Uses simplified great-circle distance with fixed average speeds.
+// Does NOT account for real-world humanitarian logistics constraints such as:
+// port/customs delays, weather, security checkpoints, infrastructure damage,
+// transshipment handoffs, or regulatory paperwork.
+// For production use, provide custom speeds, delay factors, or a custom estimator.
 calculateEstimatedArrival(
   origin: Location,
   destination: Location,
-  transportMethod: 'air' | 'ground' | 'sea'
+  transportMethod: 'air' | 'ground' | 'sea',
+  options?: {
+    customSpeeds?: Partial<Record<'air' | 'ground' | 'sea', number>>;
+    delayFactors?: {
+      portCustomsHours?: number;
+      weatherBufferHours?: number;
+      securityCheckpointHours?: number;
+      infrastructureBufferHours?: number;
+      transshipmentHours?: number;
+      documentationHours?: number;
+    };
+    customEstimator?: (distanceKm: number, transportMethod: 'air' | 'ground' | 'sea') => number;
+  }
 ): number  // Unix timestamp (ms)
 ```
 
