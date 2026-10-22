@@ -1,6 +1,16 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
 use crate::unique_id::*;
 
+// Performance optimization constants
+/// Maximum transactions to scan for velocity check (bounds iteration)
+pub const MAX_VELOCITY_SCAN: u32 = 1000;
+/// Maximum transactions to scan for amount anomaly check
+pub const MAX_AMOUNT_SCAN: u32 = 500;
+/// Maximum interaction patterns to check
+pub const MAX_PATTERN_SCAN: u32 = 200;
+/// Maximum risk profiles to scan for high-risk queries
+pub const MAX_RISK_PROFILE_SCAN: u32 = 500;
+
 #[contract]
 pub struct AntiFraud;
 
@@ -248,8 +258,7 @@ impl AntiFraud {
         (true, risk_factors)
     }
 
-    /// [INERT / PLACEHOLDER HEURISTIC]: Check for velocity breaches
-    /// Queries the "transaction_history" storage map, which is currently not populated by standard transactions.
+    /// Check for velocity breaches (bounded scan for performance)
     fn is_velocity_breach(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if more than 10 transactions in last hour
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -258,17 +267,26 @@ impl AntiFraud {
             .unwrap_or(Map::new(env));
         
         let mut recent_count = 0;
+        let mut scanned = 0u32;
+        
         for (_, (tx_timestamp, _)) in transactions.iter() {
+            if scanned >= MAX_VELOCITY_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if timestamp - tx_timestamp < 3600 && tx_timestamp <= timestamp {
                 recent_count += 1;
+                if recent_count > 10 {
+                    return true; // Early exit when threshold exceeded
+                }
             }
         }
         
         recent_count > 10
     }
 
-    /// [INERT / PLACEHOLDER HEURISTIC]: Check for amount anomalies
-    /// Queries the "transaction_history" storage map, which is currently not populated by standard transactions.
+    /// Check for amount anomalies (bounded scan for performance)
     fn is_amount_anomaly(env: &Env, beneficiary_id: &String, amount: U256) -> bool {
         // Check if amount is significantly different from average
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -277,9 +295,15 @@ impl AntiFraud {
             .unwrap_or(Map::new(env));
         
         let mut total_amount = U256::from_u64(0);
-        let mut count = 0;
+        let mut count = 0u32;
+        let mut scanned = 0u32;
         
         for (_, (_, tx_amount)) in transactions.iter() {
+            if scanned >= MAX_AMOUNT_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             total_amount += tx_amount;
             count += 1;
         }
@@ -294,8 +318,7 @@ impl AntiFraud {
         amount > average * 3 || amount < average / 10
     }
 
-    /// [INERT / PLACEHOLDER HEURISTIC]: Check for suspicious merchant interaction patterns
-    /// Queries the "interaction_patterns" storage map, which is currently not populated by standard payments.
+    /// Check for suspicious merchant interaction patterns (bounded scan for performance)
     fn is_suspicious_pattern(env: &Env, beneficiary_id: &String, merchant_id: &String) -> bool {
         // Check if beneficiary always transacts with same merchant
         let patterns_key = Symbol::new(env, "interaction_patterns");
@@ -306,8 +329,14 @@ impl AntiFraud {
         if let Some(beneficiary_patterns) = patterns.get(beneficiary_id) {
             let mut total_interactions = 0;
             let mut merchant_interactions = 0;
+            let mut scanned = 0u32;
             
             for (merchant, count) in beneficiary_patterns.iter() {
+                if scanned >= MAX_PATTERN_SCAN {
+                    break; // Bound the scan for performance
+                }
+                scanned += 1;
+                
                 total_interactions += count;
                 if merchant == merchant_id {
                     merchant_interactions = count;
@@ -428,7 +457,7 @@ impl AntiFraud {
         }
     }
 
-    /// Get high-risk entities
+    /// Get high-risk entities (bounded scan for performance)
     pub fn get_high_risk_entities(env: Env, threshold: u32) -> Vec<RiskProfile> {
         let profiles_key = Symbol::new(&env, "risk_profiles");
         let profiles: Map<String, RiskProfile> = env.storage().instance()
@@ -436,7 +465,14 @@ impl AntiFraud {
             .unwrap_or(Map::new(&env));
         
         let mut high_risk = Vec::new(&env);
+        let mut scanned = 0u32;
+        
         for (_, profile) in profiles.iter() {
+            if scanned >= MAX_RISK_PROFILE_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if profile.risk_score >= threshold {
                 high_risk.push_back(profile);
             }

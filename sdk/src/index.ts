@@ -24,6 +24,7 @@ export {
 } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
+export { ReadCache } from './readCache';
 
 import { AidClient } from './aidClient';
 import { FeeBumpClient } from './feeBumpClient';

@@ -11,6 +11,7 @@ const { Server } = SorobanRpc;
 type Server = SorobanRpc.Server;
 
 import { MultiSigManager } from './multiSig';
+import { ReadCache } from './readCache';
 import {
   BeneficiaryProfile,
   VerificationFactor,
