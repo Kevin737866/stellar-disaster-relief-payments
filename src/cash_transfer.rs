@@ -1,5 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
-use crate::aid_registry::require_not_paused;
+use crate::unique_id::*;
 
 #[contract]
 pub struct CashTransfer;
@@ -56,6 +56,7 @@ impl CashTransfer {
         purpose: String,
     ) {
         creator.require_auth();
+        rbac::require_role(&env, &creator, ROLE_NGO);
 
         // #239 — gated by the shared incident pause so a paused platform stops
         // taking on new transfer obligations, not just new disbursements.
@@ -94,6 +95,12 @@ impl CashTransfer {
         let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
         let transactions: Map<String, Transaction> = Map::new(&env);
         env.storage().instance().set(&transactions_key, &transactions);
+
+        // Emit transfer created event
+        env.events().publish(
+            (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "transfer_created")),
+            (transfer_id, beneficiary_id, amount),
+        );
     }
 
     /// Attempt to spend from conditional transfer
@@ -135,7 +142,7 @@ impl CashTransfer {
         let (is_approved, rejection_reason) = Self::validate_spending_rules(&env, &transfer, amount, &category, &location);
         
         // Create transaction record
-        let transaction_id = format!("txn_{}_{}", transfer_id, env.ledger().timestamp());
+        let transaction_id = generate_cash_transfer_txn_id(&env, &transfer_id);
         let transaction = Transaction {
             id: transaction_id.clone(),
             transfer_id: transfer_id.clone(),
@@ -173,9 +180,14 @@ impl CashTransfer {
                 }
             }
             
-            transfers.set(transfer_id, transfer);
+            transfers.set(transfer_id.clone(), transfer);
             env.storage().instance().set(&transfers_key, &transfers);
             
+            env.events().publish(
+                (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "transfer_spent")),
+                (transfer_id, merchant_id, amount),
+            );
+
             true
         } else {
             false
@@ -269,6 +281,10 @@ impl CashTransfer {
             None => return U256::from_u64(0),
         };
         
+        if transfer.creator != creator {
+            panic!("Unauthorized: caller is not the transfer creator");
+        }
+        
         // Check if transfer is expired
         if env.ledger().timestamp() <= transfer.expires_at {
             return U256::from_u64(0);
@@ -278,9 +294,14 @@ impl CashTransfer {
         
         // Deactivate transfer
         transfer.is_active = false;
-        transfers.set(transfer_id, transfer);
+        transfers.set(transfer_id.clone(), transfer);
         env.storage().instance().set(&transfers_key, &transfers);
         
+        env.events().publish(
+            (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "funds_recalled")),
+            (transfer_id, creator, recall_amount),
+        );
+
         recall_amount
     }
 
@@ -328,7 +349,10 @@ impl CashTransfer {
     }
 
     /// Cleanup expired transfers
-    pub fn cleanup_expired_transfers(env: Env) {
+    pub fn cleanup_expired_transfers(env: Env, caller: Address) {
+        caller.require_auth();
+        rbac::require_role(&env, &caller, ROLE_OPERATOR);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)

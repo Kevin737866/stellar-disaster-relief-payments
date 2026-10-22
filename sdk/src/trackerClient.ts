@@ -44,7 +44,20 @@ export class TrackerClient {
   }
 
   /**
-   * Create a new supply shipment
+   * Create a new supply shipment.
+   *
+   * Parameter order matches the Rust `create_shipment` contract function
+   * (excluding `env`):
+   * donor, shipment_id, donor_id, supply_type, quantity, unit,
+   * origin_lat_lng, origin_address, origin_facility, origin_contact,
+   * destination_lat_lng, destination_address, destination_facility,
+   * destination_contact, estimated_arrival,
+   * temperature_requirements (Option<TemperatureRequirements>),
+   * special_handling (Vec<String>).
+   *
+   * `temperatureRequirements` is serialised as an Option:
+   *   - null / undefined  →  nativeToScVal(null)  (None)
+   *   - object            →  nativeToScVal(value)  (Some)
    */
   async createShipment(
     donorKey: string,
@@ -53,6 +66,11 @@ export class TrackerClient {
     const donorKeypair = Keypair.fromSecret(donorKey);
     const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+
+    // Serialise Option<TemperatureRequirements>: null/undefined → None, object → Some
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
 
     const tx = new TransactionBuilder(donorAccount, {
       fee: '100',
@@ -68,11 +86,17 @@ export class TrackerClient {
             nativeToScVal(request.supplyType),
             nativeToScVal(request.quantity),
             nativeToScVal(request.unit),
-            nativeToScVal(request.origin),
-            nativeToScVal(request.destination),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
             nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
-            nativeToScVal(request.specialHandling)
+            tempReqScVal,
+            nativeToScVal(request.specialHandling),
           ]
         )
       )
@@ -453,17 +477,39 @@ export class TrackerClient {
   }
 
   /**
-   * Create supply chain request template
+   * Create supply chain request with flat location strings.
+   *
+   * @param donorId             Donor identifier.
+   * @param supplyType          Supply type description.
+   * @param quantity            Quantity as a string-encoded number.
+   * @param unit                Unit of measure.
+   * @param originLatLng        Origin coordinates as "lat,lng" string.
+   * @param originAddress       Origin street address.
+   * @param originFacility      Origin facility name.
+   * @param originContact       Origin contact person.
+   * @param destinationLatLng   Destination coordinates as "lat,lng" string.
+   * @param destinationAddress  Destination street address.
+   * @param destinationFacility Destination facility name.
+   * @param destinationContact  Destination contact person.
+   * @param estimatedArrival    Estimated arrival timestamp (ms since epoch).
+   * @param temperatureRequirements  Cold-chain requirements, or null/undefined if none.
+   * @param specialHandling     Special handling instructions.
    */
   createSupplyChainRequest(
     donorId: string,
     supplyType: string,
     quantity: string,
     unit: string,
-    origin: Location,
-    destination: Location,
+    originLatLng: string,
+    originAddress: string,
+    originFacility: string,
+    originContact: string,
+    destinationLatLng: string,
+    destinationAddress: string,
+    destinationFacility: string,
+    destinationContact: string,
     estimatedArrival: number,
-    temperatureRequirements?: TemperatureRequirements,
+    temperatureRequirements?: TemperatureRequirements | null,
     specialHandling: string[] = []
   ): SupplyChainRequest {
     return {
@@ -471,21 +517,69 @@ export class TrackerClient {
       supplyType,
       quantity,
       unit,
-      origin,
-      destination,
+      originLatLng,
+      originAddress,
+      originFacility,
+      originContact,
+      destinationLatLng,
+      destinationAddress,
+      destinationFacility,
+      destinationContact,
       estimatedArrival,
       temperatureRequirements,
-      specialHandling
+      specialHandling,
     };
   }
 
   /**
-   * Calculate estimated arrival time
+   * Calculate estimated arrival time.
+   *
+   * ⚠️ LIMITATIONS: This method uses a simplified great-circle distance heuristic
+   * with fixed average speeds and does NOT account for real-world humanitarian
+   * logistics constraints such as:
+   * - Port/customs/border clearance delays (often 24–72+ hours)
+   * - Weather disruptions (storms, monsoon, winter conditions)
+   * - Security checkpoints and conflict zone routing
+   * - Infrastructure damage (roads, bridges, runways)
+   * - Transshipment and multi-modal handoffs
+   * - Regulatory paperwork and documentation delays
+   * - Local curfews or movement restrictions
+   *
+   * For production disaster logistics, use a dedicated routing engine
+   * (e.g., OSRM, GraphHopper, or commercial APIs) and calibrate with
+   * historical lane data. This method is provided as a rough baseline only.
+   *
+   * @param origin - Origin location with latitude/longitude
+   * @param destination - Destination location with latitude/longitude
+   * @param transportMethod - Transport mode: 'air', 'ground', or 'sea'
+   * @param options - Optional configuration to improve estimate realism:
+   *   - customSpeeds: Override default speeds (km/h) per transport method
+   *   - delayFactors: Additive delay hours for common humanitarian constraints:
+   *     * portCustomsHours: Port/customs clearance (default: 0)
+   *     * weatherBufferHours: Weather contingency (default: 0)
+   *     * securityCheckpointHours: Security/border delays (default: 0)
+   *     * infrastructureBufferHours: Infrastructure damage buffer (default: 0)
+   *     * transshipmentHours: Multi-modal handoff time (default: 0)
+   *     * documentationHours: Paperwork/regulatory delays (default: 0)
+   *   - customEstimator: Fully custom estimation function (distanceKm, transportMethod) => hours
+   * @returns Unix timestamp (milliseconds) of estimated arrival
    */
   calculateEstimatedArrival(
     origin: Location,
     destination: Location,
-    transportMethod: 'air' | 'ground' | 'sea'
+    transportMethod: 'air' | 'ground' | 'sea',
+    options?: {
+      customSpeeds?: Partial<Record<'air' | 'ground' | 'sea', number>>;
+      delayFactors?: {
+        portCustomsHours?: number;
+        weatherBufferHours?: number;
+        securityCheckpointHours?: number;
+        infrastructureBufferHours?: number;
+        transshipmentHours?: number;
+        documentationHours?: number;
+      };
+      customEstimator?: (distanceKm: number, transportMethod: 'air' | 'ground' | 'sea') => number;
+    }
   ): number {
     // Simple distance calculation (in production, use routing APIs)
     const distance = this.calculateDistance(
@@ -493,23 +587,38 @@ export class TrackerClient {
       destination.latitude, destination.longitude
     );
 
-    // Estimate travel time based on transport method
-    let speedKmh: number;
-    switch (transportMethod) {
-      case 'air':
-        speedKmh = 800; // Average aircraft speed
-        break;
-      case 'ground':
-        speedKmh = 60; // Average truck speed
-        break;
-      case 'sea':
-        speedKmh = 30; // Average ship speed
-        break;
+    // If a fully custom estimator is provided, use it and return
+    if (options?.customEstimator) {
+      const travelHours = options.customEstimator(distance, transportMethod);
+      return Date.now() + (travelHours * 60 * 60 * 1000);
     }
 
+    // Default speeds (km/h) — can be overridden via options.customSpeeds
+    const defaultSpeeds: Record<'air' | 'ground' | 'sea', number> = {
+      air: 800,   // Average aircraft speed
+      ground: 60, // Average truck speed
+      sea: 30,    // Average ship speed
+    };
+    const speeds = { ...defaultSpeeds, ...options?.customSpeeds };
+    const speedKmh = speeds[transportMethod];
+
     const travelHours = distance / speedKmh;
-    const processingHours = 24; // Add 24 hours for processing
-    return Date.now() + ((travelHours + processingHours) * 60 * 60 * 1000);
+
+    // Base processing time (handling, loading/unloading)
+    const processingHours = 24;
+
+    // Additional humanitarian logistics delay factors
+    const delays = options?.delayFactors ?? {};
+    const additionalDelayHours =
+      (delays.portCustomsHours ?? 0) +
+      (delays.weatherBufferHours ?? 0) +
+      (delays.securityCheckpointHours ?? 0) +
+      (delays.infrastructureBufferHours ?? 0) +
+      (delays.transshipmentHours ?? 0) +
+      (delays.documentationHours ?? 0);
+
+    const totalHours = travelHours + processingHours + additionalDelayHours;
+    return Date.now() + (totalHours * 60 * 60 * 1000);
   }
 
   private calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -524,12 +633,19 @@ export class TrackerClient {
   }
 
   /**
-   * Get shipment statistics
+   * Get shipment statistics.
+   *
+   * Returns a rich summary including quantity-loss analytics. When final
+   * checkpoint data is incomplete (missing `quantityVerified`) or
+   * `initialQuantity` is zero, `quantityLoss` is reported as `null` and
+   * `quantityLossUncertain` is set to `true` rather than throwing or
+   * returning a misleading number (Issue #183).
    */
   async getShipmentStatistics(shipmentId: string): Promise<{
     totalCheckpoints: number;
     averageTimeBetweenCheckpoints: number;
-    quantityLoss: number;
+    quantityLoss: number | null;
+    quantityLossUncertain: boolean;
     deliveryStatus: string;
     onTimeDelivery: boolean;
     temperatureCompliance: boolean;
@@ -553,12 +669,43 @@ export class TrackerClient {
       averageTime = intervals.reduce((sum, interval) => sum + interval, 0) / intervals.length;
     }
 
-    // Calculate quantity loss
-    const initialQuantity = BigInt(shipment.quantity);
-    const finalQuantity = totalCheckpoints > 0 
-      ? BigInt(shipment.checkpoints[totalCheckpoints - 1].quantityVerified)
-      : initialQuantity;
-    const quantityLoss = Number((initialQuantity - finalQuantity) * BigInt(100) / initialQuantity);
+    // Calculate quantity loss with uncertainty guards (Issue #183):
+    // 1. If initialQuantity is 0, division by zero → uncertain.
+    // 2. If the last checkpoint exists but quantityVerified is missing/null/empty
+    //    → BigInt() would throw → return uncertain instead.
+    let quantityLoss: number | null = null;
+    let quantityLossUncertain = false;
+
+    const rawInitial = shipment.quantity;
+    if (rawInitial == null || rawInitial === '' || rawInitial === '0') {
+      // Zero or missing initial quantity — loss percentage is undefined
+      quantityLossUncertain = true;
+    } else {
+      const initialQuantity = BigInt(rawInitial);
+      if (initialQuantity === BigInt(0)) {
+        quantityLossUncertain = true;
+      } else if (totalCheckpoints === 0) {
+        // No checkpoints yet — treat as 0% loss (nothing has been verified missing)
+        quantityLoss = 0;
+      } else {
+        const lastCheckpoint = shipment.checkpoints[totalCheckpoints - 1];
+        const rawFinal = lastCheckpoint.quantityVerified;
+        if (rawFinal == null || rawFinal === '') {
+          // Checkpoint exists but quantityVerified was not recorded
+          quantityLossUncertain = true;
+        } else {
+          try {
+            const finalQuantity = BigInt(rawFinal);
+            quantityLoss = Number(
+              (initialQuantity - finalQuantity) * BigInt(100) / initialQuantity
+            );
+          } catch {
+            // BigInt conversion failed for an unexpected value
+            quantityLossUncertain = true;
+          }
+        }
+      }
+    }
 
     // Check on-time delivery
     const onTimeDelivery = shipment.currentStatus === 'delivered' && 
@@ -583,6 +730,7 @@ export class TrackerClient {
       totalCheckpoints,
       averageTimeBetweenCheckpoints: averageTime,
       quantityLoss,
+      quantityLossUncertain,
       deliveryStatus: shipment.currentStatus,
       onTimeDelivery,
       temperatureCompliance
@@ -595,13 +743,16 @@ export class TrackerClient {
    */
   async buildMultiSigCreateShipment(
     sourceKey: string,
-    request: any,
+    request: SupplyChainRequest,
     authorizedSigners: string[],
     threshold: number
   ): Promise<MultiSigManager> {
     const sourceKeypair = Keypair.fromSecret(sourceKey);
     const sourceAccount = await this.server.getAccount(sourceKeypair.publicKey());
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -611,11 +762,21 @@ export class TrackerClient {
           'create_shipment',
           ...[
             new Address(sourceKeypair.publicKey()).toScVal(),
-            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
-            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
-            nativeToScVal(request.unit), nativeToScVal(request.origin),
-            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(shipmentId),
+            nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType),
+            nativeToScVal(request.quantity),
+            nativeToScVal(request.unit),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
+            nativeToScVal(request.estimatedArrival),
+            tempReqScVal,
             nativeToScVal(request.specialHandling),
           ]
         )
@@ -629,10 +790,13 @@ export class TrackerClient {
    */
   async buildOfflineCreateShipment(
     sourcePublicKey: string,
-    request: any
+    request: SupplyChainRequest
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const shipmentId = `shipment_${request.donorId}_${Date.now()}`;
+    const tempReqScVal = (request.temperatureRequirements != null)
+      ? nativeToScVal(request.temperatureRequirements)
+      : nativeToScVal(null);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
       networkPassphrase: this.getNetworkPassphrase(),
@@ -642,11 +806,21 @@ export class TrackerClient {
           'create_shipment',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(shipmentId), nativeToScVal(request.donorId),
-            nativeToScVal(request.supplyType), nativeToScVal(request.quantity),
-            nativeToScVal(request.unit), nativeToScVal(request.origin),
-            nativeToScVal(request.destination), nativeToScVal(request.estimatedArrival),
-            nativeToScVal(request.temperatureRequirements),
+            nativeToScVal(shipmentId),
+            nativeToScVal(request.donorId),
+            nativeToScVal(request.supplyType),
+            nativeToScVal(request.quantity),
+            nativeToScVal(request.unit),
+            nativeToScVal(request.originLatLng),
+            nativeToScVal(request.originAddress),
+            nativeToScVal(request.originFacility),
+            nativeToScVal(request.originContact),
+            nativeToScVal(request.destinationLatLng),
+            nativeToScVal(request.destinationAddress),
+            nativeToScVal(request.destinationFacility),
+            nativeToScVal(request.destinationContact),
+            nativeToScVal(request.estimatedArrival),
+            tempReqScVal,
             nativeToScVal(request.specialHandling),
           ]
         )

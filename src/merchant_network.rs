@@ -5,7 +5,7 @@
 //! abuse-resistance gaps are documented in `docs/offline-flows.md`.
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
-use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
+use crate::unique_id::*;
 
 // Merchant categories for spending rules (stored as u32)
 pub const CATEGORY_FOOD: u32 = 0;
@@ -286,16 +286,45 @@ impl MerchantNetwork {
             .get(&onboarding_key)
             .unwrap_or(Vec::new(&env));
         
-        queue.push_back(merchant_id);
+        queue.push_back(merchant_id.clone());
         env.storage().instance().set(&onboarding_key, &queue);
+
+        // Emit merchant registration event
+        env.events().publish(
+            (Symbol::new(&env, "merchant"), Symbol::new(&env, "registered")),
+            (merchant_id, owner),
+        );
     }
     
-    /// Add community vouches for merchant (3 beneficiaries or 1 NGO worker)
+    /// Add community vouches for a merchant to satisfy onboarding verification.
+    ///
+    /// # Policy Semantics: Community Vouching Arithmetic
+    ///
+    /// - **Vouching Threshold**:
+    ///   - Merchants in standard onboarding start with `vouching_threshold = 3` and `current_vouches = 0`.
+    ///   - Initial status is `STATUS_PENDING` (0) and `is_active = false`.
+    ///
+    /// - **Weighted Voucher Arithmetic**:
+    ///   - **NGO Field Worker** (`voucher_type == 1`): Carries a weight of **3 points**. A single NGO vouch
+    ///     immediately satisfies the threshold (`current_vouches += 3`), enabling 1-step activation.
+    ///   - **Beneficiary Reference** (`voucher_type == 0`): Carries a weight of **1 point** (`current_vouches += 1`).
+    ///     Requires 3 independent beneficiary vouches to meet threshold.
+    ///
+    /// - **State Transition**:
+    ///   - When `merchant.current_vouches >= merchant.vouching_threshold` and status is `STATUS_PENDING`:
+    ///     - Status transitions to `STATUS_TRIAL` (1).
+    ///     - `is_verified` becomes `true`.
+    ///     - `is_active` becomes `true`.
+    ///   - Once in trial, the merchant is subjected to `trial_daily_limit` ($100/day) until graduation.
+    ///
+    /// - **Fast-Track Exemption**:
+    ///   - Merchants registered with `emergency_fast_track: true` bypass the vouching queue completely,
+    ///     entering directly as `STATUS_ACTIVE` (2) with standard volume limits.
     pub fn add_vouch(
         env: Env,
         voucher: Address,
         merchant_id: String,
-        voucher_type: u32, // 0 = beneficiary, 1 = ngo
+        voucher_type: u32, // 0 = beneficiary (weight: 1), 1 = ngo (weight: 3)
     ) {
         voucher.require_auth();
         
@@ -357,6 +386,10 @@ impl MerchantNetwork {
             None => panic_with_error!(&env, "Merchant not found"),
         };
         
+        if merchant != merchant_profile.owner {
+            panic!("Unauthorized: signer is not the merchant owner");
+        }
+        
         if !merchant_profile.is_active {
             panic_with_error!(&env, "Merchant is not active");
         }
@@ -384,7 +417,7 @@ impl MerchantNetwork {
         }
         
         // Create transaction record
-        let transaction_id = format!("tx_{}_{}", merchant_id, env.ledger().timestamp());
+        let transaction_id = generate_merchant_txn_id(&env, &merchant_id);
         let transaction = Transaction {
             id: transaction_id.clone(),
             merchant_id: merchant_id.clone(),
@@ -413,9 +446,15 @@ impl MerchantNetwork {
         merchant_profile.current_month_volume += amount;
         merchant_profile.pending_settlement += amount;
         
-        merchants.set(merchant_id, merchant_profile);
+        merchants.set(merchant_id.clone(), merchant_profile);
         env.storage().instance().set(&merchants_key, &merchants);
         
+        // Emit payment processed event
+        env.events().publish(
+            (Symbol::new(&env, "merchant"), Symbol::new(&env, "payment_processed")),
+            (merchant_id.clone(), beneficiary_id, amount),
+        );
+
         // Run fraud detection
         Self::fraud_detection(env.clone(), merchant_id.clone(), amount);
         
@@ -453,7 +492,7 @@ impl MerchantNetwork {
         }
         
         // Create offline transaction
-        let transaction_id = format!("offline_{}_{}", merchant_id, env.ledger().timestamp());
+        let transaction_id = generate_offline_txn_id(&env, &merchant_id);
         let offline_tx = OfflineTransaction {
             id: transaction_id.clone(),
             merchant_id: merchant_id.clone(),
@@ -573,7 +612,7 @@ impl MerchantNetwork {
         let amount_u64: u64 = amount.into();
         if amount_u64 > 5000 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "large"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "large_transaction"),
                 severity: 7,
@@ -602,7 +641,7 @@ impl MerchantNetwork {
         
         if recent_count > 20 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "velocity"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "high_velocity"),
                 severity: 8,
@@ -616,7 +655,7 @@ impl MerchantNetwork {
         // Pattern 3: Round amount transactions (potential testing)
         if amount_u64 % 100 == 0 && amount_u64 > 100 {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "round"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "round_amount"),
                 severity: 3,
@@ -630,7 +669,7 @@ impl MerchantNetwork {
         // Pattern 4: New merchant with high volume
         if merchant.status == STATUS_TRIAL && merchant.current_month_volume > U256::from_u64(1000) {
             let alert = FraudAlert {
-                id: format!("alert_{}_{}", merchant_id, env.ledger().timestamp()),
+                id: generate_fraud_alert_id(&env, &merchant_id, "new_merchant"),
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "new_merchant_high_volume"),
                 severity: 6,
@@ -660,9 +699,36 @@ impl MerchantNetwork {
         merchant_alerts
     }
     
-    /// Daily automatic settlement to merchant wallets
+    /// Settle outstanding merchant balances and record settlement history.
+    ///
+    /// # Policy Semantics: Settlement & Settlement Token
+    ///
+    /// - **Settlement Token**:
+    ///   - The settlement currency is standardized as `"USDC"` (Soroban token string representation).
+    ///   - All settlement records created by this function explicitly designate `"USDC"` as their settlement token.
+    ///
+    /// - **Pending Balance Accrual**:
+    ///   - Every approved payment (via `process_payment` online or reconciled offline payment via `sync_offline_transactions`)
+    ///     increments `merchant.pending_settlement` by the transaction amount.
+    ///
+    /// - **Batch Settlement Execution**:
+    ///   - Invocation requires Admin authorization (`admin.require_auth()`).
+    ///   - Iterates across all registered merchants in storage.
+    ///   - For every merchant where `pending_settlement > 0`:
+    ///     1. Mints a unique `Settlement` record (`id: "settle_{merchant_id}_{timestamp}"`).
+    ///     2. Assigns `amount = merchant.pending_settlement`, `token = "USDC"`.
+    ///     3. Stores the record in the `"settlements"` storage map.
+    ///     4. Resets `merchant.pending_settlement` to 0.
+    ///     5. Updates `merchant.last_settlement_date` to current ledger timestamp.
+    ///   - Returns the total count of settled merchants.
+    ///
+    /// # Edge Cases
+    /// - Zero pending balances: Merchants with `pending_settlement == 0` are skipped; no settlement record created.
+    /// - Partial/unsettled transactions: Offline transactions must be synced via `sync_offline_transactions`
+    ///   before they appear in `pending_settlement`.
     pub fn settle_balances(env: Env, admin: Address) -> u32 {
         admin.require_auth();
+        rbac::require_role(&env, &admin, ROLE_OPERATOR);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -704,6 +770,12 @@ impl MerchantNetwork {
         }
         
         env.storage().instance().set(&merchants_key, &merchants);
+
+        env.events().publish(
+            (Symbol::new(&env, "merchant"), Symbol::new(&env, "balances_settled")),
+            (settlement_count, current_time),
+        );
+
         settlement_count
     }
     
@@ -715,6 +787,7 @@ impl MerchantNetwork {
         approve: bool,
     ) {
         admin.require_auth();
+        rbac::require_role(&env, &admin, ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -734,8 +807,13 @@ impl MerchantNetwork {
                     merchant.status = STATUS_SUSPENDED;
                 }
                 
-                merchants.set(merchant_id, merchant);
+                merchants.set(merchant_id.clone(), merchant);
                 env.storage().instance().set(&merchants_key, &merchants);
+
+                env.events().publish(
+                    (Symbol::new(&env, "merchant"), Symbol::new(&env, "trial_reviewed")),
+                    (merchant_id, approve),
+                );
             }
         }
     }
@@ -900,8 +978,11 @@ impl MerchantNetwork {
         merchant_settlements
     }
     
-    /// Reset daily volumes (called at start of each day)
-    pub fn reset_daily_volumes(env: Env) {
+    /// Reset daily volumes (called at start of each day by operator)
+    pub fn reset_daily_volumes(env: Env, caller: Address) {
+        caller.require_auth();
+        rbac::require_role(&env, &caller, ROLE_OPERATOR);
+
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)

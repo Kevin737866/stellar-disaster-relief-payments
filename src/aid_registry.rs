@@ -1,5 +1,6 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, panic_with_error, log};
 use crate::validation::{require_non_empty_address_list, require_min_address_count};
+use crate::unique_id::*;
 
 const DISASTER_SEISMIC: &str = "seismic";
 const DISASTER_WEATHER: &str = "weather";
@@ -267,6 +268,12 @@ impl AidRegistry {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = Map::new(&env);
         env.storage().instance().set(&disbursement_key, &disbursements);
+
+        // Emit fund created event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_created")),
+            (fund_id, total_amount),
+        );
     }
 
     /// Get fund details
@@ -438,7 +445,7 @@ impl AidRegistry {
         }
         
         // Create disbursement record
-        let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
+        let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
@@ -460,8 +467,14 @@ impl AidRegistry {
         
         // Update fund released amount
         fund.released_amount += amount;
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
     }
 
     /// Get disbursement history for a fund with pagination
@@ -796,7 +809,43 @@ impl AidRegistry {
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Execute automated trigger release (called when oracle conditions met)
+    /// Execute automated trigger release when oracle verification criteria are met.
+    ///
+    /// # Policy Semantics: Automated Release
+    ///
+    /// - **Preconditions**:
+    ///   - Contract must NOT be paused (`require_not_paused`). Pausing acts as an emergency stop
+    ///     that blocks all automated releases.
+    ///   - Fund must exist and have status `"active"` (`FUND_STATUS_ACTIVE`) with `is_active == true`.
+    ///   - Trigger must exist and have `is_active == true`.
+    ///
+    /// - **Oracle Confirmation Criteria**:
+    ///   - Confirms that at least `trigger.min_oracle_confirmations` valid oracle records exist.
+    ///   - A record is valid if:
+    ///     1. Recency: `record.timestamp > ledger_now - ORACLE_STALENESS_SECS` (within 1 hour / 3,600s).
+    ///     2. Quality: `record.confidence >= ORACLE_MIN_CONFIDENCE` (minimum 80% confidence).
+    ///   - [INERT / PLACEHOLDER LOGIC]: Automated trigger execution strictly counts valid oracle
+    ///     confirmations. On-chain evaluation of `trigger.threshold` strings against `record.value`
+    ///     and geospatial distance checks against `geofence_latitude`/`geofence_longitude`
+    ///     are not computed on-chain.
+    ///
+    /// - **Fund Balance Arithmetic**:
+    ///   - Available balance is strictly computed as:
+    ///     `available = fund.total_amount - fund.released_amount - fund.reserved_for_recall`
+    ///   - If `trigger.auto_release_amount > available`, invocation panics with "Insufficient available funds".
+    ///   - Funds already reserved for donor recall cannot be touched by auto-release.
+    ///
+    /// - **State Transitions**:
+    ///   - `fund.released_amount` is incremented by `trigger.auto_release_amount`.
+    ///   - `fund.current_status` transitions to `"triggered"`.
+    ///   - `trigger.last_triggered` is updated to current ledger timestamp.
+    ///   - `trigger.trigger_count` is incremented by 1.
+    ///   - Summary record stored under `"auto_release_{fund_id}_{timestamp}"`.
+    ///
+    /// # Edge Cases
+    /// - Partially released funds: Auto-release succeeds as long as unreleased & unreserved balance covers `auto_release_amount`.
+    /// - Stale oracle records: Oracle entries older than 3,600s are ignored; if total fresh entries < `min_oracle_confirmations`, release fails.
+    /// - Recalled funds: If `reserved_for_recall` covers remaining funds, `available` is 0 and trigger release panics.
     pub fn execute_trigger(
         env: Env,
         fund_id: String,
@@ -870,7 +919,7 @@ impl AidRegistry {
         env.storage().instance().set(&triggers_key, &triggers);
         
         // Record automated release
-        let release_summary_key = Symbol::new(&env, &format!("auto_release_{}_{}", fund_id, env.ledger().timestamp()));
+        let release_summary_key = Symbol::new(&env, &generate_auto_release_key(&env, &fund_id));
         env.storage().instance().set(&release_summary_key, &trigger.auto_release_amount);
         
         trigger.auto_release_amount
@@ -981,10 +1030,7 @@ impl AidRegistry {
         let base_ts = env.ledger().timestamp();
 
         for (idx, (beneficiary, amount, purpose)) in entries.iter().enumerate() {
-            let disbursement_id = String::from_str(
-                &env,
-                &format!("{}_batch_{}_{}", fund_id, base_ts, idx),
-            );
+            let disbursement_id = generate_batch_disbursement_id(&env, &fund_id, idx as u32);
             let record = DisbursementRecord {
                 id: disbursement_id.clone(),
                 fund_id: fund_id.clone(),
@@ -1009,6 +1055,12 @@ impl AidRegistry {
         fund.released_amount = fund.released_amount + total;
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
+
+        // Emit batch disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "batch_disbursed")),
+            (fund_id, total, ids.len() as u32),
+        );
 
         ids
     }
@@ -1064,7 +1116,7 @@ impl AidRegistry {
         fund.released_amount += amount;
         fund.current_status = String::from_str(&env, FUND_STATUS_RELEASED);
         
-        let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
+        let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
@@ -1088,10 +1140,37 @@ impl AidRegistry {
         env.storage().instance().set(&disbursement_key, &disbursements);
         
         // Update fund
-        funds.set(fund_id, fund);
+        funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
         
+        // Emit disbursement event
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (fund_id, beneficiary, amount),
+        );
+
         true
+    }
+
+    /// Archive a fund (e.g. after mission completion or cancellation).
+    pub fn archive_fund(env: Env, admin: Address, fund_id: String, reason: String) {
+        admin.require_auth();
+        
+        let fund_key = Symbol::new(&env, "fund");
+        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+            .get(&fund_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+        fund.is_active = false;
+        fund.current_status = String::from_str(&env, FUND_STATUS_ARCHIVED);
+        funds.set(fund_id.clone(), fund);
+        env.storage().instance().set(&fund_key, &funds);
+
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_archived")),
+            (fund_id, reason),
+        );
     }
 
     // ── #241: two-phase multi-sig release ──────────────────────────────────
@@ -1412,7 +1491,37 @@ impl AidRegistry {
         fund.fund_allocation
     }
 
-    /// Recall unused funds after 12 months
+    /// Recall unused/unreleased funds to donor reservation after recall eligibility period.
+    ///
+    /// # Policy Semantics: Fund Recall
+    ///
+    /// - **Authorization & Activation**:
+    ///   - Donor calling `recall_unused_funds` must authenticate (`donor.require_auth()`).
+    ///   - `fund.recall_enabled` must be true. Initialized as false; requires admin authorization
+    ///     via `enable_recall(admin, fund_id)`.
+    ///
+    /// - **Eligibility Time Arithmetic**:
+    ///   - Age calculation: `age_seconds = env.ledger().timestamp() - fund.created_at`.
+    ///   - Threshold: `recall_threshold = fund.recall_after_months * SECONDS_PER_MONTH`
+    ///     where `SECONDS_PER_MONTH = 2_592_000` (30 days). Default threshold is 12 months (360 days).
+    ///   - If `age_seconds < recall_threshold`, invocation panics with "Fund is not yet eligible for recall".
+    ///
+    /// - **Balance Arithmetic & State Transitions**:
+    ///   - `unused = fund.total_amount - fund.released_amount`.
+    ///   - Disbursed funds are permanent and cannot be recalled.
+    ///   - If `unused > 0`:
+    ///     - `fund.reserved_for_recall = unused`.
+    ///     - `fund.current_status` transitions to `"recalled"` (`FUND_STATUS_RECALLED`).
+    ///     - Reserved funds are deducted from `available` in all subsequent checks.
+    ///
+    /// - **Emergency Pause Independence**:
+    ///   - Pausing does NOT block `recall_unused_funds`. Pausing prevents outbound spending; recall
+    ///     is the safe return path and remains operational.
+    ///
+    /// # Edge Cases
+    /// - Fully disbursed fund: If `released_amount == total_amount`, `unused` is 0; status is unaffected.
+    /// - Disabled recall: Invoking when `recall_enabled == false` panics regardless of fund age.
+    /// - Premature call: Invoking even one second before `recall_threshold` panics.
     pub fn recall_unused_funds(
         env: Env,
         donor: Address,
@@ -1475,7 +1584,11 @@ impl AidRegistry {
         )
     }
 
-    /// Enable recall for a fund
+    /// Enable recall for a fund.
+    ///
+    /// Requires Admin authentication (`admin.require_auth()`). Sets `fund.recall_enabled = true`.
+    /// Does not trigger recall itself, but permits donors to invoke `recall_unused_funds` once
+    /// the time eligibility threshold (`recall_after_months`) has elapsed.
     pub fn enable_recall(
         env: Env,
         admin: Address,

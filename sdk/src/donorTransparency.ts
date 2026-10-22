@@ -1,4 +1,7 @@
-import CryptoJS from 'crypto-js';
+import axios from 'axios';
+// NOTE: crypto-js is intentionally not imported here — donorTransparency uses
+// Math.random() + Date.now() for non-security IDs and certificate numbers.
+// No cryptographic hashing is required in this module.
 
 export interface TransparencyEntry {
   id: string;
