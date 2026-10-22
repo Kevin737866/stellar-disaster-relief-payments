@@ -1,6 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
-use crate::aid_registry::require_not_paused;
-use crate::rbac::{self, ROLE_NGO, ROLE_OPERATOR};
+use crate::unique_id::*;
 
 #[contract]
 pub struct CashTransfer;
@@ -143,7 +142,7 @@ impl CashTransfer {
         let (is_approved, rejection_reason) = Self::validate_spending_rules(&env, &transfer, amount, &category, &location);
         
         // Create transaction record
-        let transaction_id = format!("txn_{}_{}", transfer_id, env.ledger().timestamp());
+        let transaction_id = generate_cash_transfer_txn_id(&env, &transfer_id);
         let transaction = Transaction {
             id: transaction_id.clone(),
             transfer_id: transfer_id.clone(),

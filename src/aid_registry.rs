@@ -1,5 +1,6 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, panic_with_error, log};
 use crate::validation::{require_non_empty_address_list, require_min_address_count};
+use crate::unique_id::*;
 
 const DISASTER_SEISMIC: &str = "seismic";
 const DISASTER_WEATHER: &str = "weather";
@@ -444,7 +445,7 @@ impl AidRegistry {
         }
         
         // Create disbursement record
-        let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
+        let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
@@ -918,7 +919,7 @@ impl AidRegistry {
         env.storage().instance().set(&triggers_key, &triggers);
         
         // Record automated release
-        let release_summary_key = Symbol::new(&env, &format!("auto_release_{}_{}", fund_id, env.ledger().timestamp()));
+        let release_summary_key = Symbol::new(&env, &generate_auto_release_key(&env, &fund_id));
         env.storage().instance().set(&release_summary_key, &trigger.auto_release_amount);
         
         trigger.auto_release_amount
@@ -1029,10 +1030,7 @@ impl AidRegistry {
         let base_ts = env.ledger().timestamp();
 
         for (idx, (beneficiary, amount, purpose)) in entries.iter().enumerate() {
-            let disbursement_id = String::from_str(
-                &env,
-                &format!("{}_batch_{}_{}", fund_id, base_ts, idx),
-            );
+            let disbursement_id = generate_batch_disbursement_id(&env, &fund_id, idx as u32);
             let record = DisbursementRecord {
                 id: disbursement_id.clone(),
                 fund_id: fund_id.clone(),
@@ -1118,7 +1116,7 @@ impl AidRegistry {
         fund.released_amount += amount;
         fund.current_status = String::from_str(&env, FUND_STATUS_RELEASED);
         
-        let disbursement_id = format!("{}_{}", fund_id, env.ledger().timestamp());
+        let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
