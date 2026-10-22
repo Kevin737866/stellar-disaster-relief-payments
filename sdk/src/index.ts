@@ -1,12 +1,27 @@
 // Export all clients
-export { AidClient } from './aidClient';
+export { AidClient, MAX_BATCH_SIZE, MIN_BATCH_SIZE } from './aidClient';
 export { CostEstimationClient } from './costEstimation';
 export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
 export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
-export { BeneficiaryClient } from './beneficiaryClient';
+export {
+  BeneficiaryClient,
+  DEFAULT_BENEFICIARY_PAGE_SIZE,
+  MAX_BENEFICIARY_PAGE_SIZE,
+} from './beneficiaryClient';
+export {
+  normalizePurpose,
+  categorizePurpose,
+  classifyPurpose,
+  validatePurpose,
+  isDisbursementPurposeCategory,
+} from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
-export { MerchantClient } from './merchantClient';
+export {
+  MerchantClient,
+  DEFAULT_MERCHANT_PAGE_SIZE,
+  MAX_MERCHANT_PAGE_SIZE,
+} from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 export { ReadCache } from './readCache';
@@ -41,6 +56,9 @@ export * from './types';
 export * from './errors';
 
 // Export network configurations
+// Note: RPC/Horizon URLs and network passphrases below are real network endpoints.
+// The contractIds values are PLACEHOLDERS and must be replaced with live deployed contract
+// addresses (e.g. starting with 'C...') produced by `soroban contract deploy`.
 export const TESTNET_CONFIG = {
   network: 'testnet' as const,
   rpcUrl: 'https://soroban-testnet.stellar.org',
@@ -48,13 +66,14 @@ export const TESTNET_CONFIG = {
   networkPassphrase: 'Test SDF Network ; September 2015',
   explorerUrl: 'https://stellar.expert/explorer/testnet',
   contractIds: {
-    platform: 'CONTRACT_ID_HERE',
-    aidRegistry: 'CONTRACT_ID_HERE',
-    beneficiaryManager: 'CONTRACT_ID_HERE',
-    merchantNetwork: 'CONTRACT_ID_HERE',
-    cashTransfer: 'CONTRACT_ID_HERE',
-    supplyChainTracker: 'CONTRACT_ID_HERE',
-    antiFraud: 'CONTRACT_ID_HERE'
+    // [PLACEHOLDER] Replace with deployed contract ID (e.g. 'CA...')
+    platform: '<PLACEHOLDER_PLATFORM_CONTRACT_ID>',
+    aidRegistry: '<PLACEHOLDER_AID_REGISTRY_CONTRACT_ID>',
+    beneficiaryManager: '<PLACEHOLDER_BENEFICIARY_MANAGER_CONTRACT_ID>',
+    merchantNetwork: '<PLACEHOLDER_MERCHANT_NETWORK_CONTRACT_ID>',
+    cashTransfer: '<PLACEHOLDER_CASH_TRANSFER_CONTRACT_ID>',
+    supplyChainTracker: '<PLACEHOLDER_SUPPLY_CHAIN_TRACKER_CONTRACT_ID>',
+    antiFraud: '<PLACEHOLDER_ANTI_FRAUD_CONTRACT_ID>'
   }
 };
 
@@ -65,13 +84,14 @@ export const MAINNET_CONFIG = {
   networkPassphrase: 'Public Global Stellar Network ; September 2015',
   explorerUrl: 'https://stellar.expert/explorer/public',
   contractIds: {
-    platform: 'CONTRACT_ID_HERE',
-    aidRegistry: 'CONTRACT_ID_HERE',
-    beneficiaryManager: 'CONTRACT_ID_HERE',
-    merchantNetwork: 'CONTRACT_ID_HERE',
-    cashTransfer: 'CONTRACT_ID_HERE',
-    supplyChainTracker: 'CONTRACT_ID_HERE',
-    antiFraud: 'CONTRACT_ID_HERE'
+    // [PLACEHOLDER] Replace with deployed mainnet contract ID (e.g. 'CA...')
+    platform: '<PLACEHOLDER_MAINNET_PLATFORM_CONTRACT_ID>',
+    aidRegistry: '<PLACEHOLDER_MAINNET_AID_REGISTRY_CONTRACT_ID>',
+    beneficiaryManager: '<PLACEHOLDER_MAINNET_BENEFICIARY_MANAGER_CONTRACT_ID>',
+    merchantNetwork: '<PLACEHOLDER_MAINNET_MERCHANT_NETWORK_CONTRACT_ID>',
+    cashTransfer: '<PLACEHOLDER_MAINNET_CASH_TRANSFER_CONTRACT_ID>',
+    supplyChainTracker: '<PLACEHOLDER_MAINNET_SUPPLY_CHAIN_TRACKER_CONTRACT_ID>',
+    antiFraud: '<PLACEHOLDER_MAINNET_ANTI_FRAUD_CONTRACT_ID>'
   }
 };
 
