@@ -201,18 +201,15 @@ export class MerchantClient {
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
-        this.contract.call(
-          "process_payment",
-          ...[
-            new Address(merchantKeypair.publicKey()).toScVal(),
-            new Address(beneficiaryKeypair.publicKey()).toScVal(),
-            nativeToScVal(merchantId),
-            nativeToScVal(beneficiaryId),
-            nativeToScVal(amount),
-            nativeToScVal(token),
-            nativeToScVal(purpose),
-            nativeToScVal(paymentMethod),
-          ]
+        this.buildProcessPaymentOperation(
+          merchantKeypair.publicKey(),
+          beneficiaryKeypair.publicKey(),
+          merchantId,
+          beneficiaryId,
+          amount,
+          token,
+          purpose,
+          paymentMethod
         )
       )
       .setTimeout(30)
@@ -229,6 +226,38 @@ export class MerchantClient {
     } else {
       throw new NetworkError('process payment', result.status, { merchantId, beneficiaryKey });
     }
+  }
+
+  /**
+   * Build the `process_payment` contract invocation shared by the online and
+   * offline payment flows.
+   *
+   * #179 — keeping the argument list in one place stops `processPayment`,
+   * `buildOfflinePayment` and `buildMultiSigPayment` from drifting apart
+   * (for example, dropping the trailing `paymentMethod` discriminator) after
+   * a merge. Every payment builder must go through this method.
+   */
+  private buildProcessPaymentOperation(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    paymentMethod: number
+  ): any {
+    return this.contract.call(
+      'process_payment',
+      new Address(merchantPublicKey).toScVal(),
+      new Address(beneficiaryPublicKey).toScVal(),
+      nativeToScVal(merchantId),
+      nativeToScVal(beneficiaryId),
+      nativeToScVal(amount),
+      nativeToScVal(token),
+      nativeToScVal(purpose),
+      nativeToScVal(paymentMethod)
+    );
   }
 
   /**
@@ -745,15 +774,15 @@ export class MerchantClient {
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
-        this.contract.call(
-          'process_payment',
-          ...[
-            new Address(merchantPublicKey).toScVal(),
-            new Address(beneficiaryPublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
-            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
-            nativeToScVal(paymentMethod),
-          ]
+        this.buildProcessPaymentOperation(
+          merchantPublicKey,
+          beneficiaryPublicKey,
+          merchantId,
+          beneficiaryId,
+          amount,
+          token,
+          purpose,
+          paymentMethod
         )
       )
       .setTimeout(0)
@@ -793,15 +822,15 @@ export class MerchantClient {
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
-        this.contract.call(
-          'process_payment',
-          ...[
-            new Address(merchantPublicKey).toScVal(),
-            new Address(beneficiaryPublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
-            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
-            nativeToScVal(paymentMethod),
-          ]
+        this.buildProcessPaymentOperation(
+          merchantPublicKey,
+          beneficiaryPublicKey,
+          merchantId,
+          beneficiaryId,
+          amount,
+          token,
+          purpose,
+          paymentMethod
         )
       )
       .setTimeout(0)
