@@ -96,19 +96,41 @@ cp sdk/.env.example sdk/.env
 cp ui/.env.example ui/.env
 ```
 
-Configure your Stellar network settings:
+### ⚠️ Configuration & Placeholders Guide
+
+> [!IMPORTANT]
+> **Distinguishing Real Config from Placeholders:**
+> - **Real Network Parameters**: RPC endpoints (`https://soroban-testnet.stellar.org`), Horizon URL (`https://horizon-testnet.stellar.org`), and network passphrases (`Test SDF Network ; September 2015`) are real public testnet endpoints ready to use.
+> - **Placeholders**: Keys (`S...`), public addresses (`G...`), and contract IDs (`C...`) marked with `<PLACEHOLDER:...>` or `/* [PLACEHOLDER] */` are sample values and **must be replaced** with your own generated testnet keys and deployed contract IDs before execution.
+
+#### Minimal Viable Setup Steps:
+1. **Generate Funded Keypairs**:
+   ```bash
+   # Generate an admin testnet key using Stellar CLI
+   stellar keys generate admin --network testnet
+   # Fund it via Friendbot
+   stellar keys fund admin --network testnet
+   # View your secret key and public address
+   stellar keys show admin
+   ```
+2. **Deploy Contracts**:
+   Deploy the WASM binary to testnet to obtain real contract IDs starting with `C...`.
+3. **Configure Secrets**:
+   Copy the `.env.example` file and replace `<PLACEHOLDER:...>` entries with your generated keys and deployed contract IDs.
+
+Configure your Stellar network settings in `.env`:
 
 ```env
-# Stellar Network Configuration
+# Stellar Network Configuration (Real Public Endpoints)
 STELLAR_NETWORK=testnet
 STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
 
-# Admin Keys (replace with your actual keys)
-ADMIN_SECRET_KEY=SADMIN_KEY_HERE
-NGO_SECRET_KEY=SNGO_KEY_HERE
-GOV_SECRET_KEY=SGOV_KEY_HERE
-UN_SECRET_KEY=SUN_KEY_HERE
+# Secret Keys (PLACEHOLDERS: Replace with your funded testnet secret keys starting with 'S')
+ADMIN_SECRET_KEY=<PLACEHOLDER_ADMIN_SECRET_KEY_STARTS_WITH_S>
+NGO_SECRET_KEY=<PLACEHOLDER_NGO_SECRET_KEY_STARTS_WITH_S>
+GOV_SECRET_KEY=<PLACEHOLDER_GOV_SECRET_KEY_STARTS_WITH_S>
+UN_SECRET_KEY=<PLACEHOLDER_UN_SECRET_KEY_STARTS_WITH_S>
 ```
 
 ## 🚀 Deployment Guide
@@ -129,22 +151,21 @@ stellar contract build
 stellar contract optimize \
   --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm
 
-# Deploy to testnet
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief_payments.wasm \
-  --source admin \
-  --network testnet
+# Deploy to testnet (Replace <PLACEHOLDER_ADMIN_SECRET_KEY> with your funded key)
+soroban contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/stellar_disaster_relief.wasm \
+  --source <PLACEHOLDER_ADMIN_SECRET_KEY>
 
-# Initialize platform contracts
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source admin \
-  --network testnet \
-  -- initialize \
-  --admin <ADMIN_ADDRESS> \
-  --ngo_signer <NGO_ADDRESS> \
-  --gov_signer <GOV_ADDRESS> \
-  --un_signer <UN_ADDRESS>
+# The command above outputs a contract ID (e.g. CA7Q...).
+# Initialize contracts with your live admin and signer public addresses:
+soroban contract invoke \
+  --id <PLACEHOLDER_DEPLOYED_CONTRACT_ID> \
+  --source <PLACEHOLDER_ADMIN_SECRET_KEY> \
+  --function initialize \
+  --arg <PLACEHOLDER_ADMIN_PUBLIC_KEY_STARTS_WITH_G> \
+  --arg <PLACEHOLDER_NGO_PUBLIC_KEY_STARTS_WITH_G> \
+  --arg <PLACEHOLDER_GOV_PUBLIC_KEY_STARTS_WITH_G> \
+  --arg <PLACEHOLDER_UN_PUBLIC_KEY_STARTS_WITH_G>
 ```
 
 > **Note on CLI version compatibility**: 
@@ -187,12 +208,20 @@ npx ts-node examples/merchant-onboarding.ts
 
 ## 📖 Usage Examples
 
+> [!NOTE]
+> All parameters annotated with `/* [PLACEHOLDER: ...] */` in the code samples below represent sample variables or mock values. In production, pass your live funded accounts, valid public addresses, and deployed contract instances.
+
 ### Emergency Fund Deployment
 
 ```typescript
 import { createDisasterReliefSDK, TESTNET_CONFIG } from './sdk/src/index';
 
+// Initialize SDK with testnet config (see index.ts for contractId placeholders)
 const sdk = createDisasterReliefSDK(TESTNET_CONFIG);
+
+const adminKey = '<PLACEHOLDER_ADMIN_SECRET_KEY>'; // [PLACEHOLDER: Stellar secret key starting with 'S']
+const ngoKey = '<PLACEHOLDER_NGO_PUBLIC_KEY>';     // [PLACEHOLDER: Signer public address starting with 'G']
+const govKey = '<PLACEHOLDER_GOV_PUBLIC_KEY>';     // [PLACEHOLDER: Signer public address starting with 'G']
 
 // Deploy emergency funds
 await sdk.aidClient.deployEmergencyFund(
@@ -227,7 +256,7 @@ const beneficiary = await cache.get(
 );
 
 // Invalidate specific cache entry after a state-changing operation
-uwait sdk.beneficiaryClient.updateBeneficiary(adminKey, 'DP_001', updates);
+await sdk.beneficiaryClient.updateBeneficiary(adminKey, 'DP_001', updates);
 cache.invalidate('beneficiary_DP_001');
 
 // Invalidate all entries with a given prefix
@@ -260,7 +289,7 @@ await sdk.beneficiaryClient.registerBeneficiary(
   'Maria Rodriguez Family',
   'earthquake_response_2024',
   'Santo Domingo Centro',
-  'GD5...BENEFICIARY1',
+  'GD5PLACEHOLDERBENEFICIARY1PUBLICKEY', // [PLACEHOLDER: Stellar wallet public address starting with 'G']
   4, // family size
   ['medical', 'elderly_care'],
   [
@@ -310,6 +339,147 @@ const request = sdk.trackerClient.createSupplyChainRequest(
 
 await sdk.trackerClient.createShipment(adminKey, request);
 ```
+
+## 📜 Financial & Policy Semantics
+
+This section specifies the on-chain arithmetic, governance rules, and lifecycle policies governing disaster relief funds, automated trigger releases, community vouching, and merchant settlement.
+
+### 1. Emergency Fund Recall Policy (`aid_registry.rs`)
+
+When humanitarian relief operations wind down or funds remain unutilized past a disaster lifecycle, unused funds can be protected and recalled back to donor reservations.
+
+- **Preconditions**:
+  1. **Administrative Enablement**: `fund.recall_enabled` must be `true`. When a fund is created, `recall_enabled` defaults to `false`. An authorized administrator must explicitly invoke `enable_recall(admin, fund_id)` to allow recall.
+  2. **Caller Authorization**: The caller of `recall_unused_funds(donor, fund_id)` must authenticate (`donor.require_auth()`).
+  3. **Time Eligibility Threshold**: The fund age must meet or exceed the recall window:
+     $$\text{age\_seconds} = \text{ledger\_timestamp} - \text{fund.created\_at} \ge \text{recall\_after\_months} \times 2{,}592{,}000$$
+     where $2{,}592{,}000$ seconds represents 30 standard days. The default threshold is 12 months (360 days).
+
+- **Arithmetic & State Transitions**:
+  - The unused balance is calculated strictly as:
+    $$\text{unused} = \text{fund.total\_amount} - \text{fund.released\_amount}$$
+  - If $\text{unused} > 0$:
+    - $\text{fund.reserved\_for\_recall} \leftarrow \text{unused}$
+    - $\text{fund.current\_status} \leftarrow \text{"recalled"}$
+  - Subsequent queries to available balance deduct `reserved_for_recall`:
+    $$\text{available} = \text{fund.total\_amount} - \text{fund.released\_amount} - \text{fund.reserved\_for\_recall}$$
+
+- **Edge Cases & Emergency Pause Independence**:
+  - **No Unused Funds**: If $\text{released\_amount} == \text{total\_amount}$, `unused` is 0; the status remains active or released without reservation.
+  - **Premature Invocation**: Invoking `recall_unused_funds` before $\text{recall\_threshold}$ passes results in a panic (`"Fund is not yet eligible for recall"`).
+  - **Safe Direction Under Pause**: If the contract is paused via `set_paused(true)`, `recall_unused_funds` is **never blocked**. Pausing stops outbound disbursements, but recall safely returns money to the donor.
+
+```typescript
+// Example: Enabling and Executing Fund Recall
+// 1. Admin enables recall once disaster period ends
+await aidClient.enableRecall(adminKey, 'fund_earthquake_2024');
+
+// 2. Donor initiates recall after 12 months (31,104,000s)
+const recalledAmount = await aidClient.recallUnusedFunds(donorKey, 'fund_earthquake_2024');
+console.log(`Recalled ${recalledAmount} XLM to donor reservation`);
+```
+
+---
+
+### 2. Automated Trigger Release Policy (`aid_registry.rs`)
+
+Parametric triggers enable automated fund release upon receipt of verified disaster telemetry from trusted oracles (e.g., USGS earthquake magnitude or weather services).
+
+- **Preconditions**:
+  1. Contract must NOT be paused (`require_not_paused`). Pausing acts as an emergency stop that halts all automated trigger releases.
+  2. Fund must be active with `current_status == "active"` and `is_active == true`.
+  3. Trigger must be active (`trigger.is_active == true`).
+
+- **Oracle Confirmation Requirements**:
+  - The contract evaluates stored oracle submissions for `(fund_id, trigger_id)`.
+  - A submission counts toward the confirmation threshold if and only if:
+    1. **Recency**: $\text{record.timestamp} > \text{ledger\_now} - 3{,}600$ (within the last 1 hour).
+    2. **Confidence**: $\text{record.confidence} \ge 80$ (on a scale of 0 to 100).
+  - Release executes if $\text{valid\_confirmations} \ge \text{trigger.min\_oracle\_confirmations}$.
+  - *Note on Heuristics*: On-chain execution verifies confirmation counts, recency, and confidence; raw threshold string matching and GPS geofence checks are validated by oracle agents before submission.
+
+- **Balance Arithmetic**:
+  - Release amount is bounded by available unreserved funds:
+    $$\text{available} = \text{total\_amount} - \text{released\_amount} - \text{reserved\_for\_recall} \ge \text{trigger.auto\_release\_amount}$$
+  - If $\text{auto\_release\_amount} > \text{available}$, execution panics with `"Insufficient available funds"`.
+
+- **State Transitions**:
+  - $\text{fund.released\_amount} \mathrel{+}= \text{trigger.auto\_release\_amount}$
+  - $\text{fund.current\_status} \leftarrow \text{"triggered"}$
+  - $\text{trigger.trigger\_count} \mathrel{+}= 1$
+
+---
+
+### 3. Community Vouching Arithmetic (`merchant_network.rs`)
+
+To onboard local corner stores, pharmacies, and bodegas without requiring traditional bank accounts or bureaucratic paperwork, merchants are verified through decentralized community vouching.
+
+- **Onboarding States**:
+  - Initial State: $\text{status} = \text{STATUS\_PENDING}\ (0)$, $\text{current\_vouches} = 0$, $\text{vouching\_threshold} = 3$, $\text{is\_active} = \text{false}$.
+  - Qualified State: $\text{status} = \text{STATUS\_TRIAL}\ (1)$, $\text{is\_verified} = \text{true}$, $\text{is\_active} = \text{true}$.
+
+- **Weighted Vouch Arithmetic**:
+  - **Beneficiary Reference** (`voucher_type = 0`): Weight = **1 point** ($\text{current\_vouches} \mathrel{+}= 1$). Requires **3 independent beneficiaries** to activate the merchant.
+  - **NGO Field Worker** (`voucher_type = 1`): Weight = **3 points** ($\text{current\_vouches} \mathrel{+}= 3$). A **single NGO worker vouch** immediately fulfills the threshold.
+
+- **State Progression & Trial Caps**:
+  - Once $\text{current\_vouches} \ge 3$, the merchant transitions to `STATUS_TRIAL`.
+  - During trial, merchants are restricted to $\text{trial\_daily\_limit} = \$100/\text{day}$ to mitigate risk.
+  - After demonstrating clean transaction history, an admin can graduate the merchant via `review_trial_merchant` to `STATUS_ACTIVE` ($1,000/day regular limit).
+
+- **Fast-Track Exemption**:
+  - Merchants registered with `emergency_fast_track: true` bypass the community vouching queue entirely and enter directly as `STATUS_ACTIVE` with standard limits ($10,000/day for pre-vetted institutional merchants).
+
+```typescript
+// Example: Community Vouching Workflow
+// Option A: 1 NGO Field Worker vouch activates the merchant immediately
+await merchantClient.addVouch(ngoWorkerKey, 'merchant_corner_store', 1);
+
+// Option B: 3 Beneficiaries vouch independently
+await merchantClient.addVouch(beneficiary1Key, 'merchant_bodega', 0);
+await merchantClient.addVouch(beneficiary2Key, 'merchant_bodega', 0);
+await merchantClient.addVouch(beneficiary3Key, 'merchant_bodega', 0); // Reaches 3 points -> Trial Active
+```
+
+---
+
+### 4. Settlement Token & Balance Settlement (`merchant_network.rs`)
+
+Merchants accept payments via QR code, NFC, or USSD vouchers and redeem accumulated balances through automated daily settlements.
+
+- **Settlement Token**:
+  - All settlements in `merchant_network.rs` are denominated and settled in **`"USDC"`** (Soroban token contract representation).
+  - Recorded settlement records explicitly store `token: "USDC"`.
+
+- **Pending Settlement Accrual**:
+  - When an online payment is processed via `process_payment` or offline batches are reconciled via `sync_offline_transactions`, the merchant's pending settlement increases:
+    $$\text{merchant.pending\_settlement} \mathrel{+}= \text{amount}$$
+
+- **Daily Settlement Cycle (`settle_balances`)**:
+  - Authorized administrators or automated operators call `settle_balances(admin)`.
+  - The contract iterates through registered merchants. For each merchant with $\text{pending\_settlement} > 0$:
+    1. Creates a `Settlement` record:
+       $$\text{id} = \text{"settle\_"}\ ||\ \text{merchant\_id}\ ||\ \text{"\_"}\ ||\ \text{ledger\_timestamp}$$
+       $$\text{amount} = \text{merchant.pending\_settlement},\quad \text{token} = \text{"USDC"}$$
+    2. Resets $\text{merchant.pending\_settlement} \leftarrow 0$.
+    3. Updates $\text{merchant.last\_settlement\_date} \leftarrow \text{ledger\_timestamp}$.
+  - Returns total count of settled merchants.
+
+---
+
+### 5. Spending & Volume Limits (`merchant_network.rs`)
+
+Volume limits guard against stolen vouchers, compromised merchant wallets, and collusion:
+
+| Merchant Status | Daily Limit | Monthly Limit | Description |
+|:---|:---|:---|:---|
+| **STATUS_PENDING (0)** | $0 / day | $0 / month | Cannot accept payments until vouched. |
+| **STATUS_TRIAL (1)** | $100 / day (`trial_daily_limit`) | N/A | Restricted onboarding cap for new merchants. |
+| **STATUS_ACTIVE (2)** | $1,000 / day (std) / $10,000 (fast-track) | $20,000 / month | Full active status for established merchants. |
+
+Volume counters (`current_day_volume` and `current_month_volume`) are updated on each payment and can be reset periodically using `reset_daily_volumes(env)` and `reset_monthly_volumes(env)`.
+
+---
 
 ## 🔐 Security Features
 
@@ -500,16 +670,17 @@ const sdk = createDisasterReliefSDK(MAINNET_CONFIG);
 ```typescript
 const customConfig = {
   network: 'custom',
-  rpcUrl: 'https://your-soroban-node.com',
-  horizonUrl: 'https://your-horizon-instance.com',
-  networkPassphrase: 'Your Custom Network',
+  rpcUrl: 'https://your-soroban-node.com', // Replace with your RPC URL
+  horizonUrl: 'https://your-horizon-instance.com', // Replace with your Horizon URL
+  networkPassphrase: 'Your Custom Network Passphrase',
   contracts: {
-    aidRegistry: 'YOUR_AID_REGISTRY_CONTRACT_ID',
-    beneficiaryManager: 'YOUR_BENEFICIARY_CONTRACT_ID',
-    merchantNetwork: 'YOUR_MERCHANT_CONTRACT_ID',
-    cashTransfer: 'YOUR_TRANSFER_CONTRACT_ID',
-    supplyChainTracker: 'YOUR_TRACKER_CONTRACT_ID',
-    antiFraud: 'YOUR_ANTIFRAUD_CONTRACT_ID'
+    // [PLACEHOLDER] Replace all contract IDs with your deployed contract addresses ('C...')
+    aidRegistry: '<PLACEHOLDER_AID_REGISTRY_CONTRACT_ID>',
+    beneficiaryManager: '<PLACEHOLDER_BENEFICIARY_CONTRACT_ID>',
+    merchantNetwork: '<PLACEHOLDER_MERCHANT_CONTRACT_ID>',
+    cashTransfer: '<PLACEHOLDER_TRANSFER_CONTRACT_ID>',
+    supplyChainTracker: '<PLACEHOLDER_TRACKER_CONTRACT_ID>',
+    antiFraud: '<PLACEHOLDER_ANTIFRAUD_CONTRACT_ID>'
   }
 };
 

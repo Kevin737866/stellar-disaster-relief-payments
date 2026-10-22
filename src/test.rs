@@ -459,6 +459,240 @@ mod aid_registry_tests {
             &approvers,
         );
     }
+
+    #[test]
+    fn test_submit_oracle_data_and_verify() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [s1]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_orc"),
+            &str(&env, "Oracle Fund"),
+            &str(&env, "Testing oracle submission"),
+            &u256(500_000),
+            &str(&env, "seismic"),
+            &str(&env, "Zone O"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        client.add_trigger(
+            &admin,
+            &str(&env, "fund_orc"),
+            &str(&env, "trig_orc"),
+            &str(&env, "seismic"),
+            &str(&env, "magnitude_7.0"),
+            &oracle.to_string(),
+            &u256(100_000),
+            &18_500_000i64,
+            &-72_300_000i64,
+            &50u64,
+            &1u32,
+        );
+
+        client.submit_oracle_data(
+            &oracle,
+            &str(&env, "fund_orc"),
+            &str(&env, "trig_orc"),
+            &str(&env, "seismic"),
+            &str(&env, "720"),
+            &str(&env, "Port-au-Prince"),
+            &90u64,
+        );
+
+        let records = client.get_oracle_records(&str(&env, "fund_orc"), &str(&env, "trig_orc"));
+        assert_eq!(records.len(), 1);
+        let rec = records.get(0).unwrap();
+        assert!(rec.is_verified);
+        assert_eq!(rec.confidence, 90u64);
+        assert_eq!(rec.value, str(&env, "720"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_oracle_data_non_whitelisted_panics() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let bad_actor = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [s1]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_bad_orc"),
+            &str(&env, "Oracle Fund"),
+            &str(&env, "Testing oracle auth"),
+            &u256(500_000),
+            &str(&env, "seismic"),
+            &str(&env, "Zone O"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        client.add_trigger(
+            &admin,
+            &str(&env, "fund_bad_orc"),
+            &str(&env, "trig_bad_orc"),
+            &str(&env, "seismic"),
+            &str(&env, "magnitude_7.0"),
+            &oracle.to_string(),
+            &u256(100_000),
+            &18_500_000i64,
+            &-72_300_000i64,
+            &50u64,
+            &1u32,
+        );
+
+        client.submit_oracle_data(
+            &bad_actor,
+            &str(&env, "fund_bad_orc"),
+            &str(&env, "trig_bad_orc"),
+            &str(&env, "seismic"),
+            &str(&env, "720"),
+            &str(&env, "Port-au-Prince"),
+            &90u64,
+        );
+    }
+
+    #[test]
+    fn test_execute_trigger_with_valid_confirmations() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [s1]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_exec"),
+            &str(&env, "Exec Fund"),
+            &str(&env, "Testing trigger execution"),
+            &u256(500_000),
+            &str(&env, "seismic"),
+            &str(&env, "Zone E"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        client.add_trigger(
+            &admin,
+            &str(&env, "fund_exec"),
+            &str(&env, "trig_exec"),
+            &str(&env, "seismic"),
+            &str(&env, "magnitude_7.0"),
+            &oracle.to_string(),
+            &u256(150_000),
+            &18_500_000i64,
+            &-72_300_000i64,
+            &50u64,
+            &1u32,
+        );
+
+        client.submit_oracle_data(
+            &oracle,
+            &str(&env, "fund_exec"),
+            &str(&env, "trig_exec"),
+            &str(&env, "seismic"),
+            &str(&env, "750"),
+            &str(&env, "Port-au-Prince"),
+            &95u64,
+        );
+
+        let released = client.execute_trigger(&str(&env, "fund_exec"), &str(&env, "trig_exec"));
+        assert_eq!(released, u256(150_000));
+
+        let fund = client.get_fund(&str(&env, "fund_exec")).unwrap();
+        assert_eq!(fund.released_amount, u256(150_000));
+        assert_eq!(fund.current_status, str(&env, "triggered"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_execute_trigger_insufficient_confirmations_panics() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [s1]);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_no_conf"),
+            &str(&env, "No Conf Fund"),
+            &str(&env, "Testing insufficient confirmations"),
+            &u256(500_000),
+            &str(&env, "seismic"),
+            &str(&env, "Zone NC"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        client.add_trigger(
+            &admin,
+            &str(&env, "fund_no_conf"),
+            &str(&env, "trig_no_conf"),
+            &str(&env, "seismic"),
+            &str(&env, "magnitude_7.0"),
+            &oracle.to_string(),
+            &u256(100_000),
+            &18_500_000i64,
+            &-72_300_000i64,
+            &50u64,
+            &2u32,
+        );
+
+        client.execute_trigger(&str(&env, "fund_no_conf"), &str(&env, "trig_no_conf"));
+    }
+
+    #[test]
+    fn test_enable_recall_and_recall_unused_funds() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let donor = Address::generate(&env);
+        let s1 = Address::generate(&env);
+        let triggers = Vec::from_array(&env, [s1]);
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+
+        client.create_fund(
+            &admin,
+            &str(&env, "fund_recall_test"),
+            &str(&env, "Recallable Fund"),
+            &str(&env, "Testing fund recall policy"),
+            &u256(400_000),
+            &str(&env, "flood"),
+            &str(&env, "Zone R"),
+            &9_999_999_999u64,
+            &triggers,
+            &1u32,
+        );
+
+        client.enable_recall(&admin, &str(&env, "fund_recall_test"));
+
+        // Advance ledger by 12 months (12 * 2_592_000 seconds)
+        env.ledger().with_mut(|l| l.timestamp = 1_000 + (12 * 2_592_000) + 10);
+
+        let recalled = client.recall_unused_funds(&donor, &str(&env, "fund_recall_test"));
+        assert_eq!(recalled, u256(400_000));
+
+        let fund = client.get_fund(&str(&env, "fund_recall_test")).unwrap();
+        assert_eq!(fund.reserved_for_recall, u256(400_000));
+        assert_eq!(fund.current_status, str(&env, "recalled"));
+    }
 }
 
 // ─── BeneficiaryManager Tests ────────────────────────────────────────────────
@@ -630,6 +864,121 @@ mod beneficiary_tests {
 
         let list = client.list_beneficiaries_by_disaster(&str(&env, "disaster_xyz"));
         assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn test_deactivate_beneficiary() {
+        let env = make_env();
+        let client = deploy(&env);
+        let registrar = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let wallet = Address::generate(&env);
+        let factors = make_factors(&env);
+
+        client.register_beneficiary(
+            &registrar,
+            &str(&env, "ben_deact"),
+            &str(&env, "Deactivation Test"),
+            &str(&env, "disaster_001"),
+            &str(&env, "Camp Alpha"),
+            &wallet,
+            &2u32,
+            &Vec::new(&env),
+            &factors,
+        );
+
+        let profile_before = client.get_beneficiary(&str(&env, "ben_deact")).unwrap();
+        assert!(profile_before.is_active);
+
+        client.deactivate_beneficiary(&admin, &str(&env, "ben_deact"));
+
+        let profile_after = client.get_beneficiary(&str(&env, "ben_deact")).unwrap();
+        assert!(!profile_after.is_active);
+    }
+
+    #[test]
+    fn test_update_location() {
+        let env = make_env();
+        let client = deploy(&env);
+        let registrar = Address::generate(&env);
+        let wallet = Address::generate(&env);
+        let factors = make_factors(&env);
+
+        client.register_beneficiary(
+            &registrar,
+            &str(&env, "ben_loc"),
+            &str(&env, "Location Test"),
+            &str(&env, "disaster_001"),
+            &str(&env, "Old Camp"),
+            &wallet,
+            &1u32,
+            &Vec::new(&env),
+            &factors,
+        );
+
+        client.update_location(&wallet, &str(&env, "ben_loc"), &str(&env, "New Shelter Camp"));
+
+        let profile = client.get_beneficiary(&str(&env, "ben_loc")).unwrap();
+        assert_eq!(profile.location, str(&env, "New Shelter Camp"));
+    }
+
+    #[test]
+    fn test_update_trust_score() {
+        let env = make_env();
+        let client = deploy(&env);
+        let registrar = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let wallet = Address::generate(&env);
+        let factors = make_factors(&env);
+
+        client.register_beneficiary(
+            &registrar,
+            &str(&env, "ben_score"),
+            &str(&env, "Score Test"),
+            &str(&env, "disaster_001"),
+            &str(&env, "Camp"),
+            &wallet,
+            &1u32,
+            &Vec::new(&env),
+            &factors,
+        );
+
+        client.update_trust_score(&admin, &str(&env, "ben_score"), &88u32, &str(&env, "Field worker verified"));
+
+        let profile = client.get_beneficiary(&str(&env, "ben_score")).unwrap();
+        assert_eq!(profile.trust_score, 88u32);
+    }
+
+    #[test]
+    fn test_list_beneficiaries_paginated() {
+        let env = make_env();
+        let client = deploy(&env);
+        let registrar = Address::generate(&env);
+        let factors = make_factors(&env);
+
+        for id in ["ben_p1", "ben_p2", "ben_p3"] {
+            let wallet = Address::generate(&env);
+            client.register_beneficiary(
+                &registrar,
+                &str(&env, id),
+                &str(&env, "Paging Test"),
+                &str(&env, "disaster_page"),
+                &str(&env, "Camp"),
+                &wallet,
+                &1u32,
+                &Vec::new(&env),
+                &factors.clone(),
+            );
+        }
+
+        let (page1, next_ts, next_id) = client.list_beneficiaries_paginated(
+            &str(&env, "disaster_page"),
+            &0u64,
+            &str(&env, ""),
+            &2u32,
+        );
+        assert_eq!(page1.len(), 2);
+        assert!(next_ts > 0 || !next_id.is_empty());
     }
 }
 
@@ -864,6 +1213,85 @@ mod cash_transfer_tests {
         let txns = client.get_transactions(&str(&env, "txfr_hist"));
         assert_eq!(txns.len(), 2);
     }
+
+    #[test]
+    fn test_extend_expiry() {
+        let env = make_env();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+
+        client.create_transfer(
+            &creator,
+            &str(&env, "txfr_extend"),
+            &str(&env, "ben_ext"),
+            &u256(500),
+            &str(&env, "USDC"),
+            &1_000u64,
+            &Vec::new(&env),
+            &str(&env, "Extend test"),
+        );
+
+        client.extend_expiry(&creator, &str(&env, "txfr_extend"), &5_000u64);
+
+        let t = client.get_transfer(&str(&env, "txfr_extend")).unwrap();
+        assert_eq!(t.expires_at, 5_000u64);
+    }
+
+    #[test]
+    fn test_list_beneficiary_transfers() {
+        let env = make_env();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+
+        client.create_transfer(
+            &creator,
+            &str(&env, "txfr_list_1"),
+            &str(&env, "ben_dual"),
+            &u256(300),
+            &str(&env, "USDC"),
+            &9_999_999_999u64,
+            &Vec::new(&env),
+            &str(&env, "Allowance 1"),
+        );
+
+        client.create_transfer(
+            &creator,
+            &str(&env, "txfr_list_2"),
+            &str(&env, "ben_dual"),
+            &u256(400),
+            &str(&env, "USDC"),
+            &9_999_999_999u64,
+            &Vec::new(&env),
+            &str(&env, "Allowance 2"),
+        );
+
+        let transfers = client.list_beneficiary_transfers(&str(&env, "ben_dual"));
+        assert_eq!(transfers.len(), 2);
+    }
+
+    #[test]
+    fn test_cleanup_expired_transfers() {
+        let env = make_env();
+        let client = deploy(&env);
+        let creator = Address::generate(&env);
+
+        client.create_transfer(
+            &creator,
+            &str(&env, "txfr_cleanup"),
+            &str(&env, "ben_cl"),
+            &u256(250),
+            &str(&env, "USDC"),
+            &500u64,
+            &Vec::new(&env),
+            &str(&env, "Clean test"),
+        );
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        client.cleanup_expired_transfers();
+
+        let t = client.get_transfer(&str(&env, "txfr_cleanup")).unwrap();
+        assert!(!t.is_active);
+    }
 }
 
 // ─── MerchantNetwork Tests ───────────────────────────────────────────────────
@@ -1056,6 +1484,170 @@ mod merchant_tests {
 
         let merchant = client.get_merchant(&str(&env, "merchant_bv")).unwrap();
         assert!(merchant.is_active);
+    }
+
+    #[test]
+    fn test_process_payment_updates_volume_and_pending_settlement() {
+        let env = make_env();
+        let client = deploy(&env);
+        let owner = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
+
+        client.register_merchant(
+            &owner,
+            &str(&env, "merchant_pay"),
+            &str(&env, "Active Store"),
+            &str(&env, "grocery"),
+            &0u32,
+            &location(&env),
+            &str(&env, "+509-0000-0003"),
+            &tokens,
+            &Vec::new(&env),
+            &true, // fast-track active
+        );
+
+        let tx_id = client.process_payment(
+            &owner,
+            &beneficiary,
+            &str(&env, "merchant_pay"),
+            &str(&env, "ben_pay"),
+            &u256(150),
+            &str(&env, "USDC"),
+            &str(&env, "food supplies"),
+            &4u32, // PAYMENT_ONLINE
+        );
+        assert!(!tx_id.is_empty());
+
+        let merchant = client.get_merchant(&str(&env, "merchant_pay")).unwrap();
+        assert_eq!(merchant.pending_settlement, u256(150));
+        assert_eq!(merchant.current_day_volume, u256(150));
+    }
+
+    #[test]
+    fn test_settle_balances_creates_usdc_settlement() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
+
+        client.register_merchant(
+            &owner,
+            &str(&env, "merchant_settle"),
+            &str(&env, "Settlement Store"),
+            &str(&env, "pharmacy"),
+            &3u32,
+            &location(&env),
+            &str(&env, "+509-0000-0004"),
+            &tokens,
+            &Vec::new(&env),
+            &true,
+        );
+
+        client.process_payment(
+            &owner,
+            &beneficiary,
+            &str(&env, "merchant_settle"),
+            &str(&env, "ben_001"),
+            &u256(350),
+            &str(&env, "USDC"),
+            &str(&env, "medical supplies"),
+            &4u32,
+        );
+
+        let settled_count = client.settle_balances(&admin);
+        assert_eq!(settled_count, 1);
+
+        let merchant = client.get_merchant(&str(&env, "merchant_settle")).unwrap();
+        assert_eq!(merchant.pending_settlement, u256(0));
+
+        let history = client.get_settlement_history(&str(&env, "merchant_settle"));
+        assert_eq!(history.len(), 1);
+        let s = history.get(0).unwrap();
+        assert_eq!(s.amount, u256(350));
+        assert_eq!(s.token, str(&env, "USDC"));
+    }
+
+    #[test]
+    fn test_find_merchants_by_category() {
+        let env = make_env();
+        let client = deploy(&env);
+        let owner = Address::generate(&env);
+        let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
+
+        client.register_merchant(
+            &owner,
+            &str(&env, "m_food"),
+            &str(&env, "Food Store"),
+            &str(&env, "grocery"),
+            &0u32, // CATEGORY_FOOD
+            &location(&env),
+            &str(&env, "+509-0000-0005"),
+            &tokens,
+            &Vec::new(&env),
+            &true,
+        );
+
+        client.register_merchant(
+            &owner,
+            &str(&env, "m_med"),
+            &str(&env, "Medical Clinic"),
+            &str(&env, "pharmacy"),
+            &3u32, // CATEGORY_MEDICAL
+            &location(&env),
+            &str(&env, "+509-0000-0006"),
+            &tokens,
+            &Vec::new(&env),
+            &true,
+        );
+
+        let medicals = client.find_merchants_by_category(&3u32);
+        assert_eq!(medicals.len(), 1);
+        assert_eq!(medicals.get(0).unwrap().id, str(&env, "m_med"));
+    }
+
+    #[test]
+    fn test_reset_daily_and_monthly_volumes() {
+        let env = make_env();
+        let client = deploy(&env);
+        let owner = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
+
+        client.register_merchant(
+            &owner,
+            &str(&env, "m_vol"),
+            &str(&env, "Volume Store"),
+            &str(&env, "grocery"),
+            &0u32,
+            &location(&env),
+            &str(&env, "+509-0000-0007"),
+            &tokens,
+            &Vec::new(&env),
+            &true,
+        );
+
+        client.process_payment(
+            &owner,
+            &beneficiary,
+            &str(&env, "m_vol"),
+            &str(&env, "ben_v"),
+            &u256(100),
+            &str(&env, "USDC"),
+            &str(&env, "rations"),
+            &4u32,
+        );
+
+        client.reset_daily_volumes();
+        let m_after_daily = client.get_merchant(&str(&env, "m_vol")).unwrap();
+        assert_eq!(m_after_daily.current_day_volume, u256(0));
+        assert_eq!(m_after_daily.current_month_volume, u256(100));
+
+        client.reset_monthly_volumes();
+        let m_after_monthly = client.get_merchant(&str(&env, "m_vol")).unwrap();
+        assert_eq!(m_after_monthly.current_month_volume, u256(0));
     }
 }
 
@@ -1384,6 +1976,88 @@ mod anti_fraud_tests {
         assert!(profile.is_some());
         assert_eq!(profile.unwrap().entity_type, str(&env, "beneficiary"));
     }
+
+    #[test]
+    fn test_get_high_risk_entities() {
+        let env = make_env();
+        let client = deploy(&env);
+
+        // Clean beneficiary -> risk_score = 0
+        client.register_beneficiary_check(
+            &str(&env, "ben_low_risk"),
+            &Vec::new(&env),
+            &str(&env, "Camp Alpha"),
+            &str(&env, "device_normal_long_fingerprint"),
+        );
+
+        // Suspicious device -> risk_score = 30
+        client.register_beneficiary_check(
+            &str(&env, "ben_med_risk"),
+            &Vec::new(&env),
+            &str(&env, "Camp Beta"),
+            &str(&env, "bot"),
+        );
+
+        let high_risk = client.get_high_risk_entities(&25u32);
+        assert_eq!(high_risk.len(), 1);
+        assert_eq!(high_risk.get(0).unwrap().entity_id, str(&env, "ben_med_risk"));
+
+        let very_high_risk = client.get_high_risk_entities(&50u32);
+        assert_eq!(very_high_risk.len(), 0);
+    }
+
+    #[test]
+    fn test_review_transaction() {
+        let env = make_env();
+        let client = deploy(&env);
+        let reviewer = Address::generate(&env);
+
+        // Review a transaction
+        client.review_transaction(
+            &reviewer,
+            &str(&env, "susp_tx_123"),
+            &str(&env, "cleared"),
+            &str(&env, "Verified legitimate offline distribution"),
+        );
+    }
+
+    #[test]
+    fn test_inert_heuristic_actual_behavior() {
+        let env = make_env();
+        let client = deploy(&env);
+
+        // Verify that duplicate registration checks with matching location/factors
+        // do not exceed threshold (70) because calculate_similarity and location_similarity
+        // are inert heuristics as documented in anti_fraud.rs.
+        client.register_beneficiary_check(
+            &str(&env, "ben_original"),
+            &Vec::from_array(&env, [str(&env, "factor_1")]),
+            &str(&env, "Same Camp"),
+            &str(&env, "device_clean_fingerprint_01"),
+        );
+
+        let (approved, msg) = client.register_beneficiary_check(
+            &str(&env, "ben_duplicate"),
+            &Vec::from_array(&env, [str(&env, "factor_1")]),
+            &str(&env, "Same Camp"),
+            &str(&env, "bot"), // suspicious device (+30)
+        );
+
+        // Inert heuristics ensure score is 30, so registration is approved.
+        assert!(approved);
+        assert_eq!(msg, str(&env, "Registration approved"));
+
+        // In monitor_transaction, unpopulated transaction_history means anomalies return clean
+        let (is_clean, factors) = client.monitor_transaction(
+            &str(&env, "ben_original"),
+            &str(&env, "merchant_01"),
+            &u256(1_000_000),
+            &1_000u64,
+            &str(&env, "tx_hash_inert_test"),
+        );
+        assert!(is_clean);
+        assert_eq!(factors.len(), 0);
+    }
 }
 
 // ─── Platform Integration Tests ──────────────────────────────────────────────
@@ -1426,5 +2100,75 @@ mod platform_tests {
 
         let config = client.get_config();
         assert_eq!(config.len(), 4);
+    }
+}
+
+// ─── RBAC Tests ─────────────────────────────────────────────────────────────
+
+mod rbac_tests {
+    use super::*;
+    use crate::rbac::{
+        assign_role, has_role, revoke_role, seed_initial_roles,
+        ROLE_ADMIN, ROLE_AUDITOR, ROLE_GOV, ROLE_NGO, ROLE_OPERATOR, ROLE_UN,
+    };
+
+    fn setup(env: &Env) -> (Address, Address, Address, Address) {
+        let admin = Address::generate(env);
+        let ngo = Address::generate(env);
+        let gov = Address::generate(env);
+        let un = Address::generate(env);
+        seed_initial_roles(env, &admin, &ngo, &gov, &un);
+        (admin, ngo, gov, un)
+    }
+
+    #[test]
+    fn test_seed_initial_roles() {
+        let env = make_env();
+        let (admin, ngo, gov, un) = setup(&env);
+
+        assert!(has_role(&env, &admin, ROLE_ADMIN));
+        assert!(has_role(&env, &ngo, ROLE_NGO));
+        assert!(has_role(&env, &gov, ROLE_GOV));
+        assert!(has_role(&env, &un, ROLE_UN));
+        assert!(!has_role(&env, &admin, ROLE_NGO));
+    }
+
+    #[test]
+    fn test_assign_and_has_role() {
+        let env = make_env();
+        let (admin, _, _, _) = setup(&env);
+        let target = Address::generate(&env);
+
+        assign_role(&env, &admin, &target, ROLE_OPERATOR | ROLE_AUDITOR);
+        assert!(has_role(&env, &target, ROLE_OPERATOR));
+        assert!(has_role(&env, &target, ROLE_AUDITOR));
+        assert!(!has_role(&env, &target, ROLE_ADMIN));
+    }
+
+    #[test]
+    fn test_revoke_role() {
+        let env = make_env();
+        let (admin, ngo, _, _) = setup(&env);
+
+        assert!(has_role(&env, &ngo, ROLE_NGO));
+        revoke_role(&env, &admin, &ngo, ROLE_NGO);
+        assert!(!has_role(&env, &ngo, ROLE_NGO));
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot revoke own Admin role")]
+    fn test_admin_cannot_revoke_own_role() {
+        let env = make_env();
+        let (admin, _, _, _) = setup(&env);
+        revoke_role(&env, &admin, &admin, ROLE_ADMIN);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: missing required role")]
+    fn test_non_admin_cannot_assign_role() {
+        let env = make_env();
+        let (_, ngo, _, _) = setup(&env);
+        let target = Address::generate(&env);
+        assign_role(&env, &ngo, &target, ROLE_OPERATOR);
     }
 }
