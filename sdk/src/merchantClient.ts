@@ -119,7 +119,13 @@ export class MerchantClient {
   }
 
   /**
-   * Verify merchant (by authorized verifier)
+   * Verify merchant (by authorized verifier).
+   *
+   * The contract does not expose a `verify_merchant` endpoint. Merchant
+   * verification is handled via `review_trial_merchant`, which an admin calls
+   * to approve or reject a trial-period merchant. The `notes` parameter is
+   * accepted for API compatibility and logged client-side but is not sent
+   * to the contract.
    */
   async verifyMerchant(
     verifierKey: string,
@@ -136,12 +142,11 @@ export class MerchantClient {
     })
       .addOperation(
         this.contract.call(
-          "verify_merchant",
+          "review_trial_merchant",
           ...[
             new Address(verifierKeypair.publicKey()).toScVal(),
             nativeToScVal(merchantId),
             nativeToScVal(approved),
-            nativeToScVal(notes)
           ]
         )
       )
@@ -683,6 +688,10 @@ export class MerchantClient {
 
   /**
    * Build an unsigned transaction for approving a merchant.
+   *
+   * Calls `review_trial_merchant` (the contract's merchant-verification
+   * endpoint) rather than the nonexistent `verify_merchant`. The `notes`
+   * parameter is accepted for API compatibility but not sent to the contract.
    */
   async buildOfflineApproveMerchant(
     sourcePublicKey: string,
@@ -697,10 +706,10 @@ export class MerchantClient {
     })
       .addOperation(
         this.contract.call(
-          'verify_merchant',
+          'review_trial_merchant',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(approved), nativeToScVal(notes),
+            nativeToScVal(merchantId), nativeToScVal(approved),
           ]
         )
       )
