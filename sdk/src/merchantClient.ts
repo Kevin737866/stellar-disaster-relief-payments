@@ -500,6 +500,17 @@ export class MerchantClient {
    * size-capped. A blocked request returns an empty list and logs the reason
    * rather than silently returning nothing.
    *
+   * Parsing now uses a proper TOML parser that handles comments, quoted
+   * strings, arrays, and `[[MERCHANTS]]` array-of-tables syntax (the standard
+   * way to represent multiple merchants in TOML). Discovered merchant records
+   * are validated — entries without a `name` are skipped to avoid bogus
+   * records from malformed or irrelevant sections.
+   *
+   * Limitations: this parser supports the TOML subset needed for
+   * `stellar.toml` (key-value pairs, single/double-quoted strings, arrays of
+   * strings, comments, and array-of-tables sections). It does not support
+   * inline tables, multiline strings, or nested tables beyond one level.
+   *
    * @throws {ValidationError} if `domain` is not a bare hostname.
    */
   async discoverMerchantsFromStellarToml(domain: string): Promise<Merchant[]> {
@@ -519,48 +530,59 @@ export class MerchantClient {
     }
 
     try {
-      // Parse TOML and extract merchant information
-      // This is a simplified implementation
+      const tables = parseTomlTables(tomlData);
       const merchants: Merchant[] = [];
-      
-      // In production, use a proper TOML parser
-      const lines = tomlData.split('\n');
-      let currentSection = '';
-      
-      for (const line of lines) {
-        if (line.startsWith('[')) {
-          currentSection = line.slice(1, -1);
-        } else if (currentSection === 'MERCHANTS' && line.includes('=')) {
-          const [key, value] = line.split('=').map(s => s.trim());
-          if (key === 'name') {
-            // Create merchant from TOML data
-            merchants.push({
-              id: `toml_${Date.now()}`,
-              name: value.replace(/"/g, ''),
-              owner: '',
-              businessType: 'general',
-              location: {
-                latitude: 0,
-                longitude: 0,
-                address: '',
-                city: '',
-                country: '',
-                postalCode: ''
-              },
-              contactInfo: '',
-              registrationDate: Date.now(),
-              isVerified: false,
-              verificationDocuments: [],
-              stellarTomlUrl: tomlUrl,
-              acceptedTokens: ['XLM'],
-              dailyLimit: '1000',
-              monthlyLimit: '10000',
-              currentMonthVolume: '0',
-              reputationScore: 50,
-              isActive: false
-            });
-          }
+
+      for (const [sectionName, fields] of tables) {
+        if (sectionName !== 'MERCHANTS') continue;
+
+        // A merchant record must have at least a name to be useful.
+        const name = fields['name'];
+        if (typeof name !== 'string' || name.trim() === '') {
+          continue;
         }
+
+        const acceptedTokens = Array.isArray(fields['accepted_tokens'])
+          ? (fields['accepted_tokens'] as unknown[]).filter(
+              (t): t is string => typeof t === 'string' && t.length > 0
+            )
+          : ['XLM'];
+
+        // Validate location fields if present
+        const lat = typeof fields['latitude'] === 'number'
+          ? (fields['latitude'] as number)
+          : 0;
+        const lng = typeof fields['longitude'] === 'number'
+          ? (fields['longitude'] as number)
+          : 0;
+
+        merchants.push({
+          id: `toml_${host}_${merchants.length}`,
+          name: name.trim(),
+          owner: typeof fields['owner'] === 'string' ? (fields['owner'] as string) : '',
+          businessType: typeof fields['business_type'] === 'string'
+            ? (fields['business_type'] as string)
+            : 'general',
+          location: {
+            latitude: lat,
+            longitude: lng,
+            address: typeof fields['address'] === 'string' ? (fields['address'] as string) : '',
+            city: typeof fields['city'] === 'string' ? (fields['city'] as string) : '',
+            country: typeof fields['country'] === 'string' ? (fields['country'] as string) : '',
+            postalCode: typeof fields['postal_code'] === 'string' ? (fields['postal_code'] as string) : ''
+          },
+          contactInfo: typeof fields['contact_info'] === 'string' ? (fields['contact_info'] as string) : '',
+          registrationDate: Date.now(),
+          isVerified: false,
+          verificationDocuments: [],
+          stellarTomlUrl: tomlUrl,
+          acceptedTokens: acceptedTokens.length > 0 ? acceptedTokens : ['XLM'],
+          dailyLimit: typeof fields['daily_limit'] === 'string' ? (fields['daily_limit'] as string) : '1000',
+          monthlyLimit: typeof fields['monthly_limit'] === 'string' ? (fields['monthly_limit'] as string) : '10000',
+          currentMonthVolume: '0',
+          reputationScore: 50,
+          isActive: false
+        });
       }
 
       return merchants;
@@ -847,4 +869,194 @@ export class MerchantClient {
         throw new Error('Unsupported network');
     }
   }
+}
+
+// ─── TOML parsing helpers ─────────────────────────────────────────────────────
+//
+// A minimal TOML parser sufficient for `stellar.toml` files. Supports:
+// - Array-of-tables sections: `[[MERCHANTS]]`
+// - Single/double-quoted string values
+// - Arrays of strings
+// - Integer and float values
+// - Boolean values
+// - Comments (`#` to end of line)
+// - Blank lines
+//
+// Does NOT support: inline tables, multiline strings, nested tables, or
+// dotted keys. These are rare in stellar.toml merchant sections.
+
+export type TomlValue = string | number | boolean | string[] | number[];
+
+/** A [sectionName, fields] pair for each table/array-of-tables entry. */
+export type TomlTable = [string, Record<string, TomlValue>];
+
+/**
+ * Parse a TOML string into a list of (section-name, fields) pairs.
+ *
+ * Array-of-tables headers like `[[MERCHANTS]]` produce one entry per
+ * occurrence, so multiple `[[MERCHANTS]]` blocks yield multiple rows.
+ */
+export function parseTomlTables(toml: string): TomlTable[] {
+  const tables: TomlTable[] = [];
+  const lines = toml.split(/\r?\n/);
+
+  // Top-level fields go into a synthetic "" section so they are not lost.
+  let currentSection = '';
+  let currentFields: Record<string, TomlValue> = {};
+  let hasFields = false;
+
+  function flush(): void {
+    if (hasFields) {
+      tables.push([currentSection, currentFields]);
+      currentFields = {};
+      hasFields = false;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    // Strip comments (respect quoted strings)
+    const line = stripComment(raw).trim();
+
+    if (line === '') continue;
+
+    // Array-of-tables header: [[SECTION]]
+    if (line.startsWith('[[') && line.endsWith(']]')) {
+      flush();
+      currentSection = line.slice(2, -2).trim();
+      hasFields = true; // start a new entry even if empty
+      continue;
+    }
+
+    // Table header: [SECTION]
+    if (line.startsWith('[') && line.endsWith(']')) {
+      flush();
+      currentSection = line.slice(1, -1).trim();
+      hasFields = true;
+      continue;
+    }
+
+    // Key-value pair
+    const eqIdx = indexOfUnquoted(line, '=');
+    if (eqIdx === -1) continue;
+
+    const key = line.slice(0, eqIdx).trim();
+    const valueRaw = line.slice(eqIdx + 1).trim();
+    const value = parseTomlValue(valueRaw);
+
+    if (value !== undefined) {
+      currentFields[key] = value;
+      hasFields = true;
+    }
+  }
+
+  flush();
+  return tables;
+}
+
+/**
+ * Strip a `#` comment from a line, respecting quoted strings.
+ */
+function stripComment(line: string): string {
+  let result = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === '#' && !inSingle && !inDouble) break;
+    result += ch;
+  }
+  return result;
+}
+
+/**
+ * Find the index of `=` that is not inside a quoted string.
+ */
+function indexOfUnquoted(line: string, target: string): number {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === target && !inSingle && !inDouble) return i;
+  }
+  return -1;
+}
+
+/**
+ * Parse a TOML scalar or array value.
+ */
+function parseTomlValue(raw: string): TomlValue | undefined {
+  const trimmed = raw.trim();
+
+  // Array: ["a", "b"]
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner === '') return [];
+    const items = splitArrayItems(inner);
+    return items
+      .map((item) => parseTomlValue(item))
+      .filter((v): v is string | number => v !== undefined) as string[];
+  }
+
+  // Double-quoted string
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return unescapeString(trimmed.slice(1, -1));
+  }
+
+  // Single-quoted string (literal, no escapes)
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+
+  // Boolean
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+
+  // Number (integer or float)
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return trimmed.includes('.') ? parseFloat(trimmed) : parseInt(trimmed, 10);
+  }
+
+  // Unquoted bare string (best-effort, not valid TOML but tolerate it)
+  return trimmed;
+}
+
+/**
+ * Split an array body into individual items, respecting quoted strings.
+ */
+function splitArrayItems(inner: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+
+    if (ch === ',' && !inSingle && !inDouble) {
+      items.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) items.push(current.trim());
+  return items;
+}
+
+/**
+ * Unescape common TOML string escape sequences.
+ */
+function unescapeString(s: string): string {
+  return s
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
 }
