@@ -6,6 +6,7 @@
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN};
 use crate::unique_id::*;
+use crate::rbac::{self, ROLE_NGO, ROLE_ADMIN};
 
 #[contract]
 pub struct BeneficiaryManager;
@@ -127,6 +128,7 @@ impl BeneficiaryManager {
         verification_factors: Vec<VerificationFactor>,
     ) {
         registrar.require_auth();
+        rbac::require_role(&env, &registrar, ROLE_NGO);
         
         // Check for duplicate registrations
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
@@ -201,6 +203,12 @@ impl BeneficiaryManager {
         beneficiaries.set(beneficiary_id.clone(), profile);
         env.storage().instance().set(&beneficiaries_key, &beneficiaries);
         
+        // Emit registration event
+        env.events().publish(
+            (Symbol::new(&env, "beneficiary"), Symbol::new(&env, "registered")),
+            (beneficiary_id.clone(), wallet_address),
+        );
+
         // Generate recovery codes for account restoration
         Self::generate_recovery_codes(&env, beneficiary_id);
     }
@@ -506,16 +514,25 @@ impl BeneficiaryManager {
             .unwrap_or(Map::new(&env));
         
         if let Some(mut profile) = beneficiaries.get(beneficiary_id.clone()) {
-            profile.location = new_location;
+            if profile.wallet_address != beneficiary {
+                panic!("Unauthorized: caller is not the beneficiary");
+            }
+            profile.location = new_location.clone();
             profile.last_verified = env.ledger().timestamp();
-            beneficiaries.set(beneficiary_id, profile);
+            beneficiaries.set(beneficiary_id.clone(), profile);
             env.storage().instance().set(&beneficiaries_key, &beneficiaries);
+
+            env.events().publish(
+                (Symbol::new(&env, "beneficiary"), Symbol::new(&env, "location_updated")),
+                (beneficiary_id, new_location),
+            );
         }
     }
 
     /// Deactivate beneficiary (e.g., when they leave the program)
     pub fn deactivate_beneficiary(env: Env, admin: Address, beneficiary_id: String) {
         admin.require_auth();
+        rbac::require_role(&env, &admin, ROLE_ADMIN);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
         let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
@@ -524,8 +541,13 @@ impl BeneficiaryManager {
         
         if let Some(mut profile) = beneficiaries.get(beneficiary_id.clone()) {
             profile.is_active = false;
-            beneficiaries.set(beneficiary_id, profile);
+            beneficiaries.set(beneficiary_id.clone(), profile);
             env.storage().instance().set(&beneficiaries_key, &beneficiaries);
+
+            env.events().publish(
+                (Symbol::new(&env, "beneficiary"), Symbol::new(&env, "deactivated")),
+                (beneficiary_id, admin),
+            );
         }
     }
 
@@ -575,6 +597,7 @@ impl BeneficiaryManager {
         duress_pin: Option<String>,
     ) -> BytesN<32> {
         registrar.require_auth();
+        rbac::require_role(&env, &registrar, ROLE_NGO);
         
         // Require at least 3 factors for security
         if factors.len() < 3 {
@@ -624,6 +647,11 @@ impl BeneficiaryManager {
         // Try to link with existing profile by wallet_address
         Self::link_identity_to_profile(&env, &id_hash, &wallet_address);
         
+        env.events().publish(
+            (Symbol::new(&env, "beneficiary"), Symbol::new(&env, "identity_created")),
+            (id_hash.clone(), wallet_address),
+        );
+
         id_hash
     }
 
