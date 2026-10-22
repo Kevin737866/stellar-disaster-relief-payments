@@ -56,29 +56,42 @@ const borderColors: Record<NotificationType, string> = {
 const NotificationItem: React.FC<{ notification: Notification; onDismiss: (id: string) => void }> = ({
   notification,
   onDismiss,
-}) => (
-  <div
-    role="alert"
-    className={`flex items-start gap-3 bg-white rounded-lg shadow-lg border border-gray-200 border-l-4 ${borderColors[notification.type]} p-4 min-w-72 max-w-sm`}
-  >
-    <div className="flex-shrink-0 mt-0.5">{icons[notification.type]}</div>
-    <div className="flex-1 min-w-0">
-      <p className="font-medium text-gray-900 text-sm">{notification.title}</p>
-      {notification.message && (
-        <p className="text-gray-600 text-sm mt-0.5">{notification.message}</p>
-      )}
-    </div>
-    <button
-      onClick={() => onDismiss(notification.id)}
-      className="flex-shrink-0 text-gray-400 hover:text-gray-600 ml-1"
-      aria-label="Dismiss notification"
+}) => {
+  // Errors and warnings are announced immediately; routine confirmations wait
+  // for a pause so they do not interrupt what the user is doing.
+  const isUrgent = notification.type === 'error' || notification.type === 'warning';
+
+  return (
+    <div
+      role={isUrgent ? 'alert' : 'status'}
+      aria-live={isUrgent ? 'assertive' : 'polite'}
+      aria-atomic="true"
+      data-notification-type={notification.type}
+      className={`flex items-start gap-3 bg-white rounded-lg shadow-lg border border-gray-200 border-l-4 ${borderColors[notification.type]} p-4 min-w-72 max-w-sm`}
     >
-      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-      </svg>
-    </button>
-  </div>
-);
+      <div className="flex-shrink-0 mt-0.5">{icons[notification.type]}</div>
+      <div className="flex-1 min-w-0">
+        <p className="font-medium text-gray-900 text-sm">
+          <span className="sr-only">{notification.type}: </span>
+          {notification.title}
+        </p>
+        {notification.message && (
+          <p className="text-gray-600 text-sm mt-0.5">{notification.message}</p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => onDismiss(notification.id)}
+        className="flex-shrink-0 text-gray-400 hover:text-gray-600 ml-1"
+        aria-label={`Dismiss ${notification.type} notification: ${notification.title}`}
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+  );
+};
 
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -110,8 +123,8 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     <NotificationContext.Provider value={{ notify, dismiss }}>
       {children}
       <div
-        aria-live="polite"
-        aria-atomic="false"
+        role="region"
+        aria-label="Notifications"
         className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 items-end"
       >
         {notifications.map((n) => (

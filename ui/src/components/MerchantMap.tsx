@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { MerchantClient, Merchant, Location, NetworkConfig } from '../../sdk/src/types';
+import { MerchantClient } from '../../sdk/src/merchantClient';
+import { Merchant, Location, NetworkConfig } from '../../sdk/src/types';
+import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
