@@ -12,10 +12,12 @@ import {
   Networks,
   StrKey,
   Transaction,
+  nativeToScVal,
+  scValToNative,
 } from 'stellar-sdk';
 import { AidClient } from './aidClient';
 import { BeneficiaryClient } from './beneficiaryClient';
-import { MerchantClient } from './merchantClient';
+import { MerchantClient, PAYMENT_OFFLINE } from './merchantClient';
 import { TransferClient } from './transferClient';
 import { TrackerClient } from './trackerClient';
 import { OfflineSigner, NetworkMismatchError } from './offlineSigner';
@@ -235,5 +237,57 @@ describe('offline envelope builders', () => {
     expect(envelope.networkPassphrase).toBe(Networks.PUBLIC);
     expect(() => OfflineSigner.sign(envelope, source.secret(), Networks.TESTNET))
       .toThrow(NetworkMismatchError);
+  });
+
+  test('all payment builders share one process_payment invocation shape (Issue #179)', async () => {
+    const client = withServer(new MerchantClient(TESTNET_CONFIG), source.publicKey());
+    (client as any).server.sendTransaction = jest.fn(async () => ({
+      status: 'SUCCESS',
+      result: { retval: nativeToScVal('payment_result') },
+    }));
+
+    const merchant = source;
+    const beneficiary = Keypair.random();
+    const signer = Keypair.random();
+
+    const invocation = (tx: Transaction) => {
+      const op = tx.operations[0] as any;
+      expect(op.type).toBe('invokeHostFunction');
+      const call = op.func.invokeContract();
+      return {
+        fn: String(call.functionName()),
+        args: call.args().map((arg: any) => scValToNative(arg)),
+      };
+    };
+
+    const offlineTx = OfflineSigner.deserialize(
+      await client.buildOfflinePayment(
+        merchant.publicKey(), beneficiary.publicKey(),
+        'mer_1', 'ben_1', '25', 'XLM', 'food', PAYMENT_OFFLINE
+      )
+    );
+
+    const manager = await client.buildMultiSigPayment(
+      merchant.publicKey(), beneficiary.publicKey(),
+      'mer_1', 'ben_1', '25', 'XLM', 'food',
+      [signer.publicKey()], 1, PAYMENT_OFFLINE
+    );
+    const managerState = manager.toState();
+    const multiSigTx = new Transaction(managerState.txXdr, managerState.networkPassphrase);
+
+    await client.processPayment(
+      merchant.secret(), beneficiary.secret(),
+      'mer_1', 'ben_1', '25', 'XLM', 'food', PAYMENT_OFFLINE
+    );
+    const onlineTx = (client as any).server.sendTransaction.mock.calls[0][0] as Transaction;
+
+    const expected = invocation(offlineTx);
+    expect(expected.fn).toBe('process_payment');
+    expect(expected.args).toEqual([
+      merchant.publicKey(), beneficiary.publicKey(),
+      'mer_1', 'ben_1', '25', 'XLM', 'food', BigInt(PAYMENT_OFFLINE),
+    ]);
+    expect(invocation(multiSigTx)).toEqual(expected);
+    expect(invocation(onlineTx)).toEqual(expected);
   });
 });

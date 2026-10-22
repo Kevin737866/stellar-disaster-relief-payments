@@ -23,7 +23,8 @@ import {
   BeneficiarySearchOptions,
   FundSearchOptions,
 } from './types';
-import { SHA256 } from 'crypto-js';
+import { OfflineEnvelope, OfflineSigner } from './offlineSigner';
+import { createHash } from 'crypto';
 import {
   BeneficiaryNotFoundError,
   ValidationError,
