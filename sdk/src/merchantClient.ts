@@ -16,6 +16,8 @@ import {
   Location,
   MerchantOnboardingRequest,
   NetworkConfig,
+  MerchantPaginationOptions,
+  PaginatedMerchants,
 } from './types';
 import {
   MerchantNotFoundError,
@@ -40,6 +42,12 @@ export const PAYMENT_USSD = 1;
 export const PAYMENT_NFC = 2;
 export const PAYMENT_OFFLINE = 3;
 export const PAYMENT_ONLINE = 4;
+
+/** Default page size for merchant listing endpoints. */
+export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the merchant contract. */
+export const MAX_MERCHANT_PAGE_SIZE = 100;
 
 export class MerchantClient {
   private server: any;
