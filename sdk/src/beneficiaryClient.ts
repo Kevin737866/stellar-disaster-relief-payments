@@ -1,13 +1,15 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { MultiSigManager } from './multiSig';
 import {
   BeneficiaryProfile,
@@ -16,6 +18,10 @@ import {
   MerchantOnboardingRequest,
   PaginatedResponse,
   PaginationOptions,
+  NetworkConfig,
+  EmergencyFund,
+  BeneficiarySearchOptions,
+  FundSearchOptions,
 } from './types';
 import { SHA256 } from 'crypto-js';
 import {
@@ -23,10 +29,24 @@ import {
   ValidationError,
   NetworkError,
 } from './errors';
+import { withRetry } from './retry';
+import { validateAddress } from './validation';
+
+/**
+ * Default page size for paginated beneficiary listings.
+ *
+ * Large disaster deployments must not rely on the unbounded
+ * `listBeneficiariesByDisaster` scan; use `listBeneficiariesPaginated` (or the
+ * paginated search helpers) instead.
+ */
+export const DEFAULT_BENEFICIARY_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the beneficiary contract (inclusive). */
+export const MAX_BENEFICIARY_PAGE_SIZE = 100;
 
 export class BeneficiaryClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
 
@@ -172,7 +192,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * List beneficiaries by disaster
+   * List beneficiaries by disaster (unbounded scan).
+   *
+   * @deprecated Prefer {@link listBeneficiariesPaginated} or
+   * {@link searchBeneficiaries}. This method loads every beneficiary for the
+   * disaster into memory and is only safe for small datasets. A full disaster
+   * deployment can contain thousands of records, so it must not be used as the
+   * default listing path.
    */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
     return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
@@ -206,11 +232,16 @@ export class BeneficiaryClient {
     disasterId: string,
     options: PaginationOptions = {}
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
-    const { cursor = '', limit = 20 } = options;
+    const { cursor = '', limit = DEFAULT_BENEFICIARY_PAGE_SIZE } = options;
 
     // Input validation
-    if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (
+      typeof limit !== 'number' ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > MAX_BENEFICIARY_PAGE_SIZE
+    ) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (cursor !== '' && typeof cursor !== 'string') {
       throw new Error('cursor must be a non-empty string or omitted');
@@ -296,7 +327,13 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate recovery codes for offline access
+   * Generate recovery codes for offline access.
+   *
+   * **Demo-grade only.** The generated value is a deterministic SHA-256 of the
+   * beneficiary ID, index, and timestamp. It does not match the contract's
+   * recovery-code hash/argument format, and anyone who knows the beneficiary ID
+   * can derive the contract-side value. See `docs/offline-flows.md` (known
+   * gaps) before using this for account recovery.
    */
   generateRecoveryCodes(beneficiaryId: string): string[] {
     const codes: string[] = [];
@@ -361,37 +398,71 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Generate QR code for beneficiary identification
+   * Generate a minimised QR code for beneficiary identification.
+   *
+   * **Key privacy changes vs the naive implementation:**
+   * - `name` is omitted — the beneficiary's display name should never be
+   *   embedded in the QR image since anyone who photographs the QR can read it.
+   *   The scanning party should look up the name on-chain after verifying
+   *   `beneficiaryId` through proper authentication.
+   * - `verificationFactors` (type + weight metadata) are also omitted — they
+   *   reveal how the identity was constructed and are unnecessary for
+   *   presentation-layer scanning.
+   * - A `qrExpiresAt` field is added (default 30 min) so that screenshots or
+   *   printed QR images cannot be replayed indefinitely.
+   *
+   * For offline contexts that require a cryptographically signed, expiry-scoped
+   * QR, use `offlineAuth.generateQRCode()` instead — it uses a time-based
+   * SHA-256 signature and is the reference implementation.
+   *
+   * @param beneficiaryId - Opaque beneficiary identifier.
+   * @param profile       - Beneficiary profile record.
+   * @param qrTtlMs       - Optional QR-specific TTL in ms (default 30 min).
+   * @returns JSON string representing the minimised QR payload.
+   *
+   * @see docs/QR_PAYLOADS.md for full field documentation and scanner guidance.
    */
-  generateBeneficiaryQRCode(beneficiaryId: string, profile: BeneficiaryProfile): string {
+  generateBeneficiaryQRCode(
+    beneficiaryId: string,
+    profile: BeneficiaryProfile,
+    qrTtlMs: number = 30 * 60 * 1000
+  ): string {
     const qrData = {
       type: 'beneficiary_id',
+      v: 1,           // payload version for future schema evolution
       beneficiaryId,
-      name: profile.name,
       disasterId: profile.disasterId,
       trustScore: profile.trustScore,
-      timestamp: Date.now(),
-      verificationFactors: profile.verificationFactors.map(f => ({
-        type: f.factorType,
-        weight: f.weight
-      }))
+      // name intentionally omitted — prevents name exposure to QR scanners.
+      // Resolve on-chain using beneficiaryId after scanning.
+      // verificationFactors intentionally omitted — not needed for scanning.
+      qrExpiresAt: Date.now() + qrTtlMs,  // prevents stale QR replay
+      timestamp: Date.now()
     };
 
     return JSON.stringify(qrData);
   }
 
   /**
-   * Validate beneficiary QR code
+   * Validate a beneficiary QR code.
+   *
+   * Checks the QR-specific expiry (`qrExpiresAt`) and confirms the beneficiary
+   * still exists on-chain.
    */
   async validateBeneficiaryQRCode(qrCodeData: string): Promise<boolean> {
     try {
       const data = JSON.parse(qrCodeData);
-      
+
       if (data.type !== 'beneficiary_id') {
         return false;
       }
 
-      // Verify beneficiary exists
+      // Check QR-specific expiry (fast, no network call)
+      if (data.qrExpiresAt && Date.now() > data.qrExpiresAt) {
+        return false;
+      }
+
+      // Verify beneficiary exists on-chain
       const profile = await this.getBeneficiary(data.beneficiaryId);
       return profile !== null;
     } catch (error) {
@@ -400,7 +471,12 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Create USSD session for feature phone users
+   * Create USSD session for feature phone users.
+   *
+   * This is a client-side simulator: the session ID is derived locally and
+   * there is no server-side session, PIN/OTP, rate limit, or telco gateway.
+   * Do not present it as a production USSD channel. See
+   * `docs/offline-flows.md`.
    */
   createUSSDSession(phoneNumber: string): {
     sessionId: string;
@@ -415,7 +491,10 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Process USSD input
+   * Process USSD input.
+   *
+   * Advances the local demo state machine. No authentication, replay checks, or
+   * rate limiting are performed. See `docs/offline-flows.md`.
    */
   processUSSDInput(
     sessionId: string,
@@ -435,6 +514,10 @@ export class BeneficiaryClient {
         return this.processRegistrationLocation(input);
       case 'register_family':
         return this.processRegistrationFamily(input);
+      case 'check_balance':
+        return this.processCheckBalance(input);
+      case 'find_merchants':
+        return this.processFindMerchants(input);
       default:
         return {
           response: 'Invalid input. Please try again.',
@@ -516,6 +599,46 @@ export class BeneficiaryClient {
     };
   }
 
+  private processCheckBalance(input: string): {
+    response: string;
+    nextStep: string;
+    completed?: boolean;
+  } {
+    const beneficiaryId = input.trim();
+    if (!beneficiaryId) {
+      return {
+        response: 'Invalid beneficiary ID. Please enter your beneficiary ID:',
+        nextStep: 'check_balance'
+      };
+    }
+
+    return {
+      response: `Balance inquiry received for ${beneficiaryId}. Your relief balance and active entitlements have been dispatched via SMS.`,
+      nextStep: 'complete',
+      completed: true
+    };
+  }
+
+  private processFindMerchants(input: string): {
+    response: string;
+    nextStep: string;
+    completed?: boolean;
+  } {
+    const location = input.trim();
+    if (!location) {
+      return {
+        response: 'Invalid location. Please enter your location (city/village):',
+        nextStep: 'find_merchants'
+      };
+    }
+
+    return {
+      response: `Searching merchants near ${location}. You will receive an SMS with nearby authorized merchant locations.`,
+      nextStep: 'complete',
+      completed: true
+    };
+  }
+
   private generateSessionId(phoneNumber: string): string {
     // SHA-256 via crypto-js — truncated to 16 hex chars for session ID length.
     // Not sent to the contract; for local session tracking only.
@@ -523,7 +646,11 @@ export class BeneficiaryClient {
   }
 
   /**
-   * Get beneficiary statistics
+   * Get beneficiary statistics for a disaster deployment.
+   *
+   * Centralizes zero-division guards and handles empty inputs safely:
+   * returns well-defined 0 values if no beneficiaries exist or if the list
+   * is empty, and computes averages in a single pass.
    */
   async getBeneficiaryStatistics(disasterId: string): Promise<{
     totalBeneficiaries: number;
@@ -533,23 +660,43 @@ export class BeneficiaryClient {
     specialNeedsCount: number;
   }> {
     const beneficiaries = await this.listBeneficiariesByDisaster(disasterId);
-    
+
+    if (!beneficiaries || beneficiaries.length === 0) {
+      return {
+        totalBeneficiaries: 0,
+        averageFamilySize: 0,
+        averageTrustScore: 0,
+        activeBeneficiaries: 0,
+        specialNeedsCount: 0,
+      };
+    }
+
     const totalBeneficiaries = beneficiaries.length;
-    const activeBeneficiaries = beneficiaries.filter(b => b.isActive).length;
-    const averageFamilySize = beneficiaries.length > 0 
-      ? beneficiaries.reduce((sum, b) => sum + b.familySize, 0) / beneficiaries.length 
-      : 0;
-    const averageTrustScore = beneficiaries.length > 0
-      ? beneficiaries.reduce((sum, b) => sum + b.trustScore, 0) / beneficiaries.length
-      : 0;
-    const specialNeedsCount = beneficiaries.filter(b => b.specialNeeds.length > 0).length;
+    let totalFamilySize = 0;
+    let totalTrustScore = 0;
+    let activeBeneficiaries = 0;
+    let specialNeedsCount = 0;
+
+    for (const b of beneficiaries) {
+      if (b.isActive) {
+        activeBeneficiaries++;
+      }
+      if (b.specialNeeds && b.specialNeeds.length > 0) {
+        specialNeedsCount++;
+      }
+      totalFamilySize += Number(b.familySize) || 0;
+      totalTrustScore += Number(b.trustScore) || 0;
+    }
+
+    const averageFamilySize = totalBeneficiaries > 0 ? totalFamilySize / totalBeneficiaries : 0;
+    const averageTrustScore = totalBeneficiaries > 0 ? totalTrustScore / totalBeneficiaries : 0;
 
     return {
       totalBeneficiaries,
       averageFamilySize,
       averageTrustScore,
       activeBeneficiaries,
-      specialNeedsCount
+      specialNeedsCount,
     };
   }
 
@@ -610,8 +757,13 @@ export class BeneficiaryClient {
    * Validates all inputs before forwarding to the contract:
    * - `limit` must be 1–100 (default 20)
    * - `minTrustScore` must be 0–100
-   * - `search` and `locationFilter` are trimmed; HTML-special chars are stripped
-   *   to prevent injection via display layers.
+   * - `search` and `locationFilter` are trimmed of extraneous whitespace.
+   *
+   * Note on sanitization boundaries: HTML entity escaping and sanitization
+   * are the responsibility of the presentation/UI layer upon rendering data in
+   * HTML/DOM. Raw search queries (such as names with apostrophes or organizations
+   * with ampersands, e.g. "O'Connor", "Food & Shelter") are preserved here so
+   * that matching at the contract/storage layer is not altered or corrupted.
    */
   async searchBeneficiaries(
     disasterId: string,
@@ -619,23 +771,22 @@ export class BeneficiaryClient {
   ): Promise<PaginatedResponse<BeneficiaryProfile>> {
     const {
       cursor = '',
-      limit = 20,
+      limit = DEFAULT_BENEFICIARY_PAGE_SIZE,
       search = '',
       locationFilter = '',
       activeOnly = true,
       minTrustScore = 0,
     } = options;
 
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
-      throw new Error('limit must be an integer between 1 and 100');
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BENEFICIARY_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_BENEFICIARY_PAGE_SIZE}`);
     }
     if (!Number.isInteger(minTrustScore) || minTrustScore < 0 || minTrustScore > 100) {
       throw new Error('minTrustScore must be an integer between 0 and 100');
     }
 
-    const sanitize = (s: string) => s.trim().replace(/[<>"'&]/g, '');
-    const cleanSearch = sanitize(search);
-    const cleanLocation = sanitize(locationFilter);
+    const cleanSearch = search.trim();
+    const cleanLocation = locationFilter.trim();
 
     if (cleanSearch.length > 200) {
       throw new Error('search must be 200 characters or fewer');
@@ -683,8 +834,12 @@ export class BeneficiaryClient {
    * Search and filter emergency funds.
    *
    * Validates all inputs:
-   * - `search` and `disasterType` are trimmed and sanitized
+   * - `search` and `disasterType` are trimmed
    * - `createdAfter` / `createdBefore` must be non-negative; after ≤ before when both set
+   *
+   * Sanitization boundary: Presentation-layer escaping applies when displaying
+   * search text in web interfaces. Unmodified string parameters are preserved for
+   * exact querying at the contract boundary.
    */
   async searchFunds(options: FundSearchOptions = {}): Promise<EmergencyFund[]> {
     const {
@@ -695,9 +850,8 @@ export class BeneficiaryClient {
       createdBefore = 0,
     } = options;
 
-    const sanitize = (s: string) => s.trim().replace(/[<>"'&]/g, '');
-    const cleanSearch = sanitize(search);
-    const cleanType = sanitize(disasterType);
+    const cleanSearch = search.trim();
+    const cleanType = disasterType.trim();
 
     if (cleanSearch.length > 200) {
       throw new Error('search must be 200 characters or fewer');

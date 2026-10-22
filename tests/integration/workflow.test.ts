@@ -152,6 +152,45 @@ describe('USSD Session Workflow', () => {
     expect(result.completed).toBeFalsy();
   });
 
+  it('navigates check balance flow via USSD', () => {
+    const session = client.createUSSDSession('+254700000005');
+
+    const step1 = client.processUSSDInput(session.sessionId, '2', 'welcome');
+    expect(step1.nextStep).toBe('check_balance');
+    expect(step1.response).toContain('beneficiary ID');
+
+    // Test empty/invalid beneficiary ID
+    const retry = client.processUSSDInput(session.sessionId, '   ', 'check_balance');
+    expect(retry.nextStep).toBe('check_balance');
+    expect(retry.completed).toBeFalsy();
+
+    // Test valid beneficiary ID
+    const step2 = client.processUSSDInput(session.sessionId, 'BEN-999', 'check_balance');
+    expect(step2.completed).toBe(true);
+    expect(step2.nextStep).toBe('complete');
+    expect(step2.response).toContain('BEN-999');
+    expect(step2.response).toContain('balance');
+  });
+
+  it('navigates find merchants flow via USSD', () => {
+    const session = client.createUSSDSession('+254700000006');
+
+    const step1 = client.processUSSDInput(session.sessionId, '3', 'welcome');
+    expect(step1.nextStep).toBe('find_merchants');
+    expect(step1.response).toContain('location');
+
+    // Test empty location
+    const retry = client.processUSSDInput(session.sessionId, '', 'find_merchants');
+    expect(retry.nextStep).toBe('find_merchants');
+    expect(retry.completed).toBeFalsy();
+
+    // Test valid location
+    const step2 = client.processUSSDInput(session.sessionId, 'Mombasa', 'find_merchants');
+    expect(step2.completed).toBe(true);
+    expect(step2.nextStep).toBe('complete');
+    expect(step2.response).toContain('Mombasa');
+  });
+
   it('returns help information on option 4', () => {
     const session = client.createUSSDSession('+254700000003');
     const result = client.processUSSDInput(session.sessionId, '4', 'welcome');
@@ -222,6 +261,51 @@ describe('Conditional Transfer Workflow', () => {
     const timeRules = transfer.spendingRules.filter(r => r.ruleType === 'time_window');
     expect(categoryRules.length).toBeGreaterThan(0);
     expect(timeRules.length).toBeGreaterThan(0);
+
+    const foodRule = categoryRules.find(r => r.parameters.category === 'food');
+    const medRule = categoryRules.find(r => r.parameters.category === 'medicine');
+    const shelterRule = categoryRules.find(r => r.parameters.category === 'shelter');
+    expect(foodRule?.limit).toBe('600');
+    expect(medRule?.limit).toBe('300');
+    expect(shelterRule?.limit).toBe('100');
+  });
+
+  it('allocates emergency transfer category limits with remainder handling', () => {
+    // When amount is not evenly divisible (e.g. 105), food gets the remainder so total equals 105
+    const { transfer: transfer105 } = client.createEmergencyTransfer('BEN-003', '105', 'cyclone');
+    const rules105 = transfer105.spendingRules.filter(r => r.ruleType === 'category_limit');
+    const food105 = rules105.find(r => r.parameters.category === 'food')!;
+    const med105 = rules105.find(r => r.parameters.category === 'medicine')!;
+    const shelter105 = rules105.find(r => r.parameters.category === 'shelter')!;
+
+    expect(med105.limit).toBe('31'); // 105 * 30 / 100 = 31
+    expect(shelter105.limit).toBe('10'); // 105 * 10 / 100 = 10
+    expect(food105.limit).toBe('64'); // 105 - 31 - 10 = 64
+    expect(BigInt(food105.limit) + BigInt(med105.limit) + BigInt(shelter105.limit)).toBe(105n);
+
+    // Boundary case: amount = 1
+    const { transfer: transfer1 } = client.createEmergencyTransfer('BEN-004', '1', 'flood');
+    const rules1 = transfer1.spendingRules.filter(r => r.ruleType === 'category_limit');
+    const food1 = rules1.find(r => r.parameters.category === 'food')!;
+    const med1 = rules1.find(r => r.parameters.category === 'medicine')!;
+    const shelter1 = rules1.find(r => r.parameters.category === 'shelter')!;
+
+    expect(med1.limit).toBe('0');
+    expect(shelter1.limit).toBe('0');
+    expect(food1.limit).toBe('1');
+    expect(BigInt(food1.limit) + BigInt(med1.limit) + BigInt(shelter1.limit)).toBe(1n);
+
+    // Boundary case: amount = 0
+    const { transfer: transfer0 } = client.createEmergencyTransfer('BEN-005', '0', 'flood');
+    const rules0 = transfer0.spendingRules.filter(r => r.ruleType === 'category_limit');
+    expect(rules0.find(r => r.parameters.category === 'food')!.limit).toBe('0');
+    expect(rules0.find(r => r.parameters.category === 'medicine')!.limit).toBe('0');
+    expect(rules0.find(r => r.parameters.category === 'shelter')!.limit).toBe('0');
+
+    // Negative amounts reject
+    expect(() => client.createEmergencyTransfer('BEN-006', '-50', 'flood')).toThrow(
+      'Transfer amount must be non-negative'
+    );
   });
 
   it('emergency transfer expires in 7 days', () => {
@@ -303,5 +387,85 @@ describe('Beneficiary Statistics Workflow', () => {
     expect(stats.averageTrustScore).toBe(0);
     expect(stats.activeBeneficiaries).toBe(0);
     expect(stats.specialNeedsCount).toBe(0);
+  });
+
+  it('computes robust statistics for populated beneficiary dataset', async () => {
+    const mockBeneficiaries = [
+      {
+        id: 'BEN-1',
+        name: 'Beneficiary One',
+        disasterId: 'DISASTER-1',
+        location: 'Zone A',
+        registrationDate: Date.now(),
+        lastVerified: Date.now(),
+        verificationFactors: [],
+        walletAddress: 'GABC1',
+        isActive: true,
+        familySize: 3,
+        specialNeeds: ['medical'],
+        trustScore: 80,
+      },
+      {
+        id: 'BEN-2',
+        name: 'Beneficiary Two',
+        disasterId: 'DISASTER-1',
+        location: 'Zone B',
+        registrationDate: Date.now(),
+        lastVerified: Date.now(),
+        verificationFactors: [],
+        walletAddress: 'GABC2',
+        isActive: false,
+        familySize: 5,
+        specialNeeds: [],
+        trustScore: 60,
+      },
+    ];
+
+    jest.spyOn(client, 'listBeneficiariesByDisaster').mockResolvedValue(mockBeneficiaries as any);
+
+    const stats = await client.getBeneficiaryStatistics('DISASTER-1');
+    expect(stats.totalBeneficiaries).toBe(2);
+    expect(stats.activeBeneficiaries).toBe(1);
+    expect(stats.specialNeedsCount).toBe(1);
+    expect(stats.averageFamilySize).toBe(4); // (3 + 5) / 2 = 4
+    expect(stats.averageTrustScore).toBe(70); // (80 + 60) / 2 = 70
+  });
+});
+
+// ─── Beneficiary Search Workflow ────────────────────────────────────────────
+
+describe('Beneficiary Search Input Boundaries', () => {
+  let client: BeneficiaryClient;
+
+  beforeEach(() => {
+    client = new BeneficiaryClient(TESTNET_CONFIG);
+  });
+
+  it('preserves special query characters without stripping them at client boundary', async () => {
+    let passedSearch: any = null;
+    let passedLocation: any = null;
+
+    // Spy on contract call to observe what parameters reach the contract
+    (client as any).contract.call = jest.fn().mockImplementation((method: string, ...args: any[]) => {
+      passedSearch = args[1];
+      passedLocation = args[2];
+      return Promise.resolve({
+        result: {
+          retval: [[], 0, ''],
+        },
+      });
+    });
+
+    // Query containing quotes, ampersands, and angle brackets
+    const query = "  O'Connor & Sons <Shelter>  ";
+    const loc = "  District #4 & Central  ";
+    await client.searchBeneficiaries('DISASTER-1', {
+      search: query,
+      locationFilter: loc,
+    });
+
+    // Trimmed, but quotes, ampersand, and brackets are preserved (not stripped)
+    expect(passedSearch).toBeDefined();
+    expect(passedLocation).toBeDefined();
   });
 });

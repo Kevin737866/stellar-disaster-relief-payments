@@ -12,12 +12,25 @@ export const ThemeContext = createContext<ThemeContextValue>({
   toggleTheme: () => {},
 });
 
-const STORAGE_KEY = 'stellar-theme';
+/**
+ * The only value persisted for theming. This is a non-sensitive presentation
+ * preference: never store names, wallet addresses, recovery codes, auth tokens,
+ * or any other personal/financial data alongside it.
+ */
+export const THEME_STORAGE_KEY = 'stellar-theme';
+const STORAGE_KEY = THEME_STORAGE_KEY;
+
+function isTheme(value: string | null): value is Theme {
+  return value === 'light' || value === 'dark';
+}
 
 function getInitialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === 'light' || stored === 'dark') return stored;
+    if (isTheme(stored)) return stored;
+    // Discard anything that is not a theme token rather than keeping unknown
+    // (potentially sensitive) data under the theme key.
+    if (stored !== null) localStorage.removeItem(STORAGE_KEY);
   } catch {
     // localStorage unavailable (SSR / private browsing)
   }
@@ -40,7 +53,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   // Track whether the user has explicitly chosen a theme (vs. auto-detected)
   const [userChosen, setUserChosen] = useState<boolean>(() => {
-    try { return !!localStorage.getItem(STORAGE_KEY); } catch { return false; }
+    try { return isTheme(localStorage.getItem(STORAGE_KEY)); } catch { return false; }
   });
 
   // Apply on mount and whenever theme changes
@@ -48,7 +61,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     applyTheme(theme);
   }, [theme]);
 
-  // Persist only when the user has explicitly chosen
+  // Persist only the allowlisted theme value, and only after an explicit choice.
   useEffect(() => {
     if (!userChosen) return;
     try {

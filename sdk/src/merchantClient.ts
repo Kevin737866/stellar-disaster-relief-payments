@@ -1,40 +1,92 @@
 import {
-  Server,
+  SorobanRpc,
   TransactionBuilder,
-  Networks,
   Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import {
   Merchant,
   Transaction,
   Location,
-  MerchantOnboardingRequest
+  MerchantOnboardingRequest,
+  NetworkConfig,
+  MerchantPaginationOptions,
+  PaginatedMerchants,
 } from './types';
 import {
   MerchantNotFoundError,
   NetworkError,
   ValidationError,
 } from './errors';
+import {
+  DEFAULT_OFFCHAIN_POLICY,
+  OffchainPolicy,
+  OffchainRequestBlockedError,
+  normaliseHost,
+  safeFetchText,
+} from './offchainFetch';
+import { ReadCache } from './readCache';
+import { OfflineSigner, OfflineEnvelope } from './offlineSigner';
+import { MultiSigManager } from './multiSig';
+import { withRetry } from './retry';
+
+// Payment methods matching contract enum
+export const PAYMENT_QR = 0;
+export const PAYMENT_USSD = 1;
+export const PAYMENT_NFC = 2;
+export const PAYMENT_OFFLINE = 3;
+export const PAYMENT_ONLINE = 4;
+
+/** Default page size for merchant listing endpoints. */
+export const DEFAULT_MERCHANT_PAGE_SIZE = 20;
+
+/** Maximum page size accepted by the merchant contract. */
+export const MAX_MERCHANT_PAGE_SIZE = 100;
 
 export class MerchantClient {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: NetworkConfig;
   readonly cache: ReadCache;
+  /**
+   * #238 — policy governing off-chain lookups. Empty by default, which means
+   * *every* off-chain request is refused until a host is allowlisted. Failing
+   * closed is deliberate: a silent default-allow would keep the SSRF surface
+   * open for anyone who forgot to configure it.
+   */
+  private offchainPolicy: OffchainPolicy;
 
-  constructor(config: NetworkConfig) {
+  constructor(config: NetworkConfig, offchainPolicy: OffchainPolicy = {}) {
     this.config = config;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.merchantNetwork);
     this.cache = new ReadCache(config);
+    this.offchainPolicy = offchainPolicy;
   }
 
   /**
-   * Register local merchant for relief network
+   * Replace the off-chain fetch policy.
+   *
+   * @example
+   * client.setOffchainPolicy({ allowedHostSuffixes: ['.relief.example'] });
+   */
+  setOffchainPolicy(policy: OffchainPolicy): void {
+    this.offchainPolicy = policy;
+  }
+
+  /**
+   * Register local merchant for relief network.
+   *
+   * Parameter order matches the Rust `register_merchant` contract function:
+   * owner, merchant_id, name, business_type, category, location_lat_lng,
+   * location_address, location_city, location_country, location_postal_code,
+   * contact_info, accepted_tokens, vouchers, emergency_fast_track.
    */
   async registerMerchant(
     ownerKey: string,
@@ -56,13 +108,16 @@ export class MerchantClient {
             nativeToScVal(merchantId),
             nativeToScVal(request.name),
             nativeToScVal(request.businessType),
-            nativeToScVal(request.location),
+            nativeToScVal(request.category),
+            nativeToScVal(request.locationLatLng),
+            nativeToScVal(request.locationAddress),
+            nativeToScVal(request.locationCity),
+            nativeToScVal(request.locationCountry),
+            nativeToScVal(request.locationPostalCode),
             nativeToScVal(request.contactInfo),
-            nativeToScVal(request.stellarTomlUrl),
             nativeToScVal(request.acceptedTokens),
-            nativeToScVal(request.dailyLimit),
-            nativeToScVal(request.monthlyLimit),
-            nativeToScVal(request.verificationDocuments)
+            nativeToScVal(request.vouchers),
+            nativeToScVal(request.emergencyFastTrack),
           ]
         )
       )
@@ -80,7 +135,13 @@ export class MerchantClient {
   }
 
   /**
-   * Verify merchant (by authorized verifier)
+   * Verify merchant (by authorized verifier).
+   *
+   * The contract does not expose a `verify_merchant` endpoint. Merchant
+   * verification is handled via `review_trial_merchant`, which an admin calls
+   * to approve or reject a trial-period merchant. The `notes` parameter is
+   * accepted for API compatibility and logged client-side but is not sent
+   * to the contract.
    */
   async verifyMerchant(
     verifierKey: string,
@@ -97,12 +158,11 @@ export class MerchantClient {
     })
       .addOperation(
         this.contract.call(
-          "verify_merchant",
+          "review_trial_merchant",
           ...[
             new Address(verifierKeypair.publicKey()).toScVal(),
             nativeToScVal(merchantId),
             nativeToScVal(approved),
-            nativeToScVal(notes)
           ]
         )
       )
@@ -124,6 +184,15 @@ export class MerchantClient {
 
   /**
    * Process payment from beneficiary to merchant
+   *
+   * @param merchantKey - Merchant secret key
+   * @param beneficiaryKey - Beneficiary secret key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
    */
   async processPayment(
     merchantKey: string,
@@ -132,7 +201,8 @@ export class MerchantClient {
     beneficiaryId: string,
     amount: string,
     token: string,
-    purpose: string
+    purpose: string,
+    paymentMethod: number = PAYMENT_ONLINE
   ): Promise<string> {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
@@ -153,7 +223,8 @@ export class MerchantClient {
             nativeToScVal(beneficiaryId),
             nativeToScVal(amount),
             nativeToScVal(token),
-            nativeToScVal(purpose)
+            nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
           ]
         )
       )
@@ -189,7 +260,10 @@ export class MerchantClient {
   }
 
   /**
-   * Find merchants by location (geographic search)
+   * Find merchants by location (geographic search, unbounded).
+   *
+   * @deprecated Prefer {@link findMerchantsByLocationPaginated} for production
+   * clients; this helper loads every matching merchant.
    */
   async findMerchantsByLocation(
     latitude: number,
@@ -208,6 +282,112 @@ export class MerchantClient {
     } catch (error) {
       console.error('Failed to find merchants by location:', error);
       return [];
+    }
+  }
+
+  /**
+   * Normalise and validate `offset` / `limit` for merchant listing calls.
+   */
+  private normalizeMerchantPageOptions(
+    options: MerchantPaginationOptions = {}
+  ): { offset: number; limit: number } {
+    const { offset = 0, limit = DEFAULT_MERCHANT_PAGE_SIZE } = options;
+    if (!Number.isInteger(offset) || offset < 0) {
+      throw new Error('offset must be a non-negative integer');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_MERCHANT_PAGE_SIZE) {
+      throw new Error(`limit must be an integer between 1 and ${MAX_MERCHANT_PAGE_SIZE}`);
+    }
+    return { offset, limit };
+  }
+
+  /** Convert the contract tuple into a typed page. */
+  private toMerchantPage(value: unknown): PaginatedMerchants {
+    const [merchants, totalCount, hasMore] = (value ?? [[], 0, false]) as [
+      Merchant[],
+      number | bigint,
+      boolean,
+    ];
+    return {
+      merchants: merchants ?? [],
+      totalCount: Number(totalCount) || 0,
+      hasMore: Boolean(hasMore),
+    };
+  }
+
+  /**
+   * List active merchants with offset/limit pagination.
+   *
+   * This is the preferred listing path for dashboards: the contract returns a
+   * bounded page plus `totalCount` / `hasMore`, so the UI never loads an
+   * unbounded merchant set.
+   */
+  async findMerchantsPaginated(
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_paginated',
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to list merchants (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by location with offset/limit pagination.
+   *
+   * @param latitude  Centre latitude in decimal degrees.
+   * @param longitude Centre longitude in decimal degrees.
+   * @param radiusKm  Search radius in kilometres.
+   */
+  async findMerchantsByLocationPaginated(
+    latitude: number,
+    longitude: number,
+    radiusKm: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_location_paginated',
+        nativeToScVal(latitude),
+        nativeToScVal(longitude),
+        nativeToScVal(radiusKm),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by location (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
+    }
+  }
+
+  /**
+   * Find active merchants by category with offset/limit pagination.
+   */
+  async findMerchantsByCategoryPaginated(
+    category: number,
+    options: MerchantPaginationOptions = {}
+  ): Promise<PaginatedMerchants> {
+    const { offset, limit } = this.normalizeMerchantPageOptions(options);
+    try {
+      const result = await this.contract.call(
+        'find_merchants_by_category_paginated',
+        nativeToScVal(category),
+        nativeToScVal(offset),
+        nativeToScVal(limit)
+      );
+      return this.toMerchantPage(scValToNative(result.result.retval));
+    } catch (error) {
+      console.error('Failed to find merchants by category (paginated):', error);
+      return { merchants: [], totalCount: 0, hasMore: false };
     }
   }
 
@@ -318,87 +498,181 @@ export class MerchantClient {
   }
 
   /**
-   * Discover merchants using Stellar TOML
+   * Discover merchants using Stellar TOML.
+   *
+   * #238 — this previously did `fetch('https://' + domain + '/.well-known/stellar.toml')`
+   * with a caller-supplied, entirely unvalidated `domain`. Because the value
+   * was interpolated into a URL, a caller could supply `user@evil.com` (which
+   * makes the request go to `evil.com`), `localhost:8000` or
+   * `169.254.169.254` (which reach internal services and cloud metadata), and
+   * the response was then parsed and handed back as merchant data.
+   *
+   * Now the host is normalised and checked against the allowlist, the request
+   * is HTTPS-only with no credential headers, redirects are followed manually
+   * with the allowlist re-applied at every hop, and the response is
+   * size-capped. A blocked request returns an empty list and logs the reason
+   * rather than silently returning nothing.
+   *
+   * Parsing now uses a proper TOML parser that handles comments, quoted
+   * strings, arrays, and `[[MERCHANTS]]` array-of-tables syntax (the standard
+   * way to represent multiple merchants in TOML). Discovered merchant records
+   * are validated — entries without a `name` are skipped to avoid bogus
+   * records from malformed or irrelevant sections.
+   *
+   * Limitations: this parser supports the TOML subset needed for
+   * `stellar.toml` (key-value pairs, single/double-quoted strings, arrays of
+   * strings, comments, and array-of-tables sections). It does not support
+   * inline tables, multiline strings, or nested tables beyond one level.
+   *
+   * @throws {ValidationError} if `domain` is not a bare hostname.
    */
   async discoverMerchantsFromStellarToml(domain: string): Promise<Merchant[]> {
-    try {
-      // Fetch Stellar TOML file
-      const tomlUrl = `https://${domain}/.well-known/stellar.toml`;
-      const response = await fetch(tomlUrl);
-      const tomlData = await response.text();
+    const host = normaliseHost(domain);
+    const tomlUrl = `https://${host}/.well-known/stellar.toml`;
 
-      // Parse TOML and extract merchant information
-      // This is a simplified implementation
+    let tomlData: string;
+    try {
+      const result = await safeFetchText(tomlUrl, this.offchainPolicy);
+      tomlData = result.body;
+    } catch (error) {
+      if (error instanceof OffchainRequestBlockedError) {
+        console.error(`Refused Stellar TOML discovery for "${host}": ${error.message}`);
+        return [];
+      }
+      throw error;
+    }
+
+    try {
+      const tables = parseTomlTables(tomlData);
       const merchants: Merchant[] = [];
-      
-      // In production, use a proper TOML parser
-      const lines = tomlData.split('\n');
-      let currentSection = '';
-      
-      for (const line of lines) {
-        if (line.startsWith('[')) {
-          currentSection = line.slice(1, -1);
-        } else if (currentSection === 'MERCHANTS' && line.includes('=')) {
-          const [key, value] = line.split('=').map(s => s.trim());
-          if (key === 'name') {
-            // Create merchant from TOML data
-            merchants.push({
-              id: `toml_${Date.now()}`,
-              name: value.replace(/"/g, ''),
-              owner: '',
-              businessType: 'general',
-              location: {
-                latitude: 0,
-                longitude: 0,
-                address: '',
-                city: '',
-                country: '',
-                postalCode: ''
-              },
-              contactInfo: '',
-              registrationDate: Date.now(),
-              isVerified: false,
-              verificationDocuments: [],
-              stellarTomlUrl: tomlUrl,
-              acceptedTokens: ['XLM'],
-              dailyLimit: '1000',
-              monthlyLimit: '10000',
-              currentMonthVolume: '0',
-              reputationScore: 50,
-              isActive: false
-            });
-          }
+
+      for (const [sectionName, fields] of tables) {
+        if (sectionName !== 'MERCHANTS') continue;
+
+        // A merchant record must have at least a name to be useful.
+        const name = fields['name'];
+        if (typeof name !== 'string' || name.trim() === '') {
+          continue;
         }
+
+        const acceptedTokens = Array.isArray(fields['accepted_tokens'])
+          ? (fields['accepted_tokens'] as unknown[]).filter(
+              (t): t is string => typeof t === 'string' && t.length > 0
+            )
+          : ['XLM'];
+
+        // Validate location fields if present
+        const lat = typeof fields['latitude'] === 'number'
+          ? (fields['latitude'] as number)
+          : 0;
+        const lng = typeof fields['longitude'] === 'number'
+          ? (fields['longitude'] as number)
+          : 0;
+
+        merchants.push({
+          id: `toml_${host}_${merchants.length}`,
+          name: name.trim(),
+          owner: typeof fields['owner'] === 'string' ? (fields['owner'] as string) : '',
+          businessType: typeof fields['business_type'] === 'string'
+            ? (fields['business_type'] as string)
+            : 'general',
+          location: {
+            latitude: lat,
+            longitude: lng,
+            address: typeof fields['address'] === 'string' ? (fields['address'] as string) : '',
+            city: typeof fields['city'] === 'string' ? (fields['city'] as string) : '',
+            country: typeof fields['country'] === 'string' ? (fields['country'] as string) : '',
+            postalCode: typeof fields['postal_code'] === 'string' ? (fields['postal_code'] as string) : ''
+          },
+          contactInfo: typeof fields['contact_info'] === 'string' ? (fields['contact_info'] as string) : '',
+          registrationDate: Date.now(),
+          isVerified: false,
+          verificationDocuments: [],
+          stellarTomlUrl: tomlUrl,
+          acceptedTokens: acceptedTokens.length > 0 ? acceptedTokens : ['XLM'],
+          dailyLimit: typeof fields['daily_limit'] === 'string' ? (fields['daily_limit'] as string) : '1000',
+          monthlyLimit: typeof fields['monthly_limit'] === 'string' ? (fields['monthly_limit'] as string) : '10000',
+          currentMonthVolume: '0',
+          reputationScore: 50,
+          isActive: false
+        });
       }
 
       return merchants;
     } catch (error) {
-      console.error('Failed to discover merchants from TOML:', error);
+      console.error('Failed to parse merchants from TOML:', error);
       return [];
     }
   }
 
   /**
-   * Create merchant onboarding request template
+   * Create merchant onboarding request template.
+   *
+   * @param name              Human-readable merchant name.
+   * @param businessType      Free-text business type description.
+   * @param category          Numeric category code (0=food,1=water,2=shelter,3=medical,4=clothing,5=fuel).
+   * @param locationLatLng    Coordinates as "lat,lng" string, e.g. "18.4861,-69.9312".
+   * @param locationAddress   Street address.
+   * @param locationCity      City name.
+   * @param locationCountry   Country name.
+   * @param locationPostalCode Postal / ZIP code.
+   * @param contactInfo       Contact details (phone, email, etc.).
+   * @param vouchers          Community vouching references (3 beneficiary IDs or 1 NGO worker ID).
+   * @param emergencyFastTrack Pre-approved from existing network (skips trial period).
    */
   createOnboardingRequest(
     name: string,
     businessType: string,
-    location: Location,
+    category: number,
+    locationLatLng: string,
+    locationAddress: string,
+    locationCity: string,
+    locationCountry: string,
+    locationPostalCode: string,
     contactInfo: string,
-    stellarAddress: string
+    vouchers: string[] = [],
+    emergencyFastTrack: boolean = false
   ): MerchantOnboardingRequest {
     return {
       name,
       businessType,
-      location,
+      category,
+      locationLatLng,
+      locationAddress,
+      locationCity,
+      locationCountry,
+      locationPostalCode,
       contactInfo,
-      stellarTomlUrl: `https://stellar.expert/explorer/testnet/account/${stellarAddress}`,
-      acceptedTokens: ['XLM'], // Default to XLM
-      dailyLimit: '1000', // Default limits
-      monthlyLimit: '10000',
-      verificationDocuments: [] // Will be uploaded separately
+      acceptedTokens: ['XLM'],
+      vouchers,
+      emergencyFastTrack,
     };
+  }
+
+  /**
+   * Parse a contract-supplied amount into a non-negative BigInt.
+   *
+   * Contract storage can hand back strings, numbers or BigInts, and a
+   * malformed limit must not make the whole statistics call throw (#180).
+   * Invalid, negative or non-integer values are treated as zero so callers
+   * always receive well-defined statistics.
+   */
+  private toNonNegativeBigInt(value: unknown): bigint {
+    if (typeof value === 'bigint') {
+      return value >= BigInt(0) ? value : BigInt(0);
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) && value >= 0
+        ? BigInt(Math.trunc(value))
+        : BigInt(0);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (/^\d+$/.test(trimmed)) {
+        return BigInt(trimmed);
+      }
+    }
+    return BigInt(0);
   }
 
   /**
@@ -427,9 +701,9 @@ export class MerchantClient {
       ? (totalVolume / BigInt(totalTransactions)).toString()
       : '0';
 
-    const monthlyLimit = BigInt(merchant.monthlyLimit);
-    const currentVolume = BigInt(merchant.currentMonthVolume);
-    const monthlyUtilization = monthlyLimit > 0 
+    const monthlyLimit = this.toNonNegativeBigInt(merchant.monthlyLimit);
+    const currentVolume = this.toNonNegativeBigInt(merchant.currentMonthVolume);
+    const monthlyUtilization = monthlyLimit > BigInt(0)
       ? Number((currentVolume * BigInt(100)) / monthlyLimit)
       : 0;
 
@@ -472,7 +746,7 @@ export class MerchantClient {
   async buildOfflineRegisterMerchant(
     sourcePublicKey: string,
     merchantId: string,
-    request: any
+    request: MerchantOnboardingRequest
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
@@ -484,11 +758,19 @@ export class MerchantClient {
           'register_merchant',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(request.name),
-            nativeToScVal(request.businessType), nativeToScVal(request.location),
-            nativeToScVal(request.contactInfo), nativeToScVal(request.stellarTomlUrl),
-            nativeToScVal(request.acceptedTokens), nativeToScVal(request.dailyLimit),
-            nativeToScVal(request.monthlyLimit), nativeToScVal(request.verificationDocuments),
+            nativeToScVal(merchantId),
+            nativeToScVal(request.name),
+            nativeToScVal(request.businessType),
+            nativeToScVal(request.category),
+            nativeToScVal(request.locationLatLng),
+            nativeToScVal(request.locationAddress),
+            nativeToScVal(request.locationCity),
+            nativeToScVal(request.locationCountry),
+            nativeToScVal(request.locationPostalCode),
+            nativeToScVal(request.contactInfo),
+            nativeToScVal(request.acceptedTokens),
+            nativeToScVal(request.vouchers),
+            nativeToScVal(request.emergencyFastTrack),
           ]
         )
       )
@@ -499,6 +781,10 @@ export class MerchantClient {
 
   /**
    * Build an unsigned transaction for approving a merchant.
+   *
+   * Calls `review_trial_merchant` (the contract's merchant-verification
+   * endpoint) rather than the nonexistent `verify_merchant`. The `notes`
+   * parameter is accepted for API compatibility but not sent to the contract.
    */
   async buildOfflineApproveMerchant(
     sourcePublicKey: string,
@@ -513,10 +799,10 @@ export class MerchantClient {
     })
       .addOperation(
         this.contract.call(
-          'verify_merchant',
+          'review_trial_merchant',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(merchantId), nativeToScVal(approved), nativeToScVal(notes),
+            nativeToScVal(merchantId), nativeToScVal(approved),
           ]
         )
       )
@@ -527,6 +813,15 @@ export class MerchantClient {
 
   /**
    * Build an unsigned transaction for processing a payment.
+   *
+   * @param merchantPublicKey - Merchant account public key
+   * @param beneficiaryPublicKey - Beneficiary account public key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
    */
   async buildOfflinePayment(
     merchantPublicKey: string,
@@ -536,14 +831,7 @@ export class MerchantClient {
     amount: string,
     token: string,
     purpose: string,
-    authorizedSigners: string[],
-    threshold: number
-  ): Promise<MultiSigManager> {
-    const merchantKeypair = Keypair.fromSecret(merchantKey);
-    const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
-    const tx = new TransactionBuilder(merchantAccount, {
-    purpose: string
+    paymentMethod: number = PAYMENT_ONLINE
   ): Promise<OfflineEnvelope> {
     const sourceAccount = await this.server.getAccount(merchantPublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
@@ -558,6 +846,7 @@ export class MerchantClient {
             new Address(beneficiaryPublicKey).toScVal(),
             nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
             nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
           ]
         )
       )
@@ -565,6 +854,55 @@ export class MerchantClient {
       .build();
     return OfflineSigner.serialize(tx);
   }
+
+  /**
+   * Build a multi-sig payment transaction for offline collection of signatures.
+   *
+   * @param merchantPublicKey - Merchant account public key
+   * @param beneficiaryPublicKey - Beneficiary account public key
+   * @param merchantId - Merchant identifier
+   * @param beneficiaryId - Beneficiary identifier
+   * @param amount - Payment amount
+   * @param token - Token symbol/address
+   * @param purpose - Purpose of payment
+   * @param authorizedSigners - Public keys of signers authorized to sign
+   * @param threshold - Number of required signatures
+   * @param paymentMethod - Payment method discriminator (defaults to PAYMENT_ONLINE = 4)
+   */
+  async buildMultiSigPayment(
+    merchantPublicKey: string,
+    beneficiaryPublicKey: string,
+    merchantId: string,
+    beneficiaryId: string,
+    amount: string,
+    token: string,
+    purpose: string,
+    authorizedSigners: string[],
+    threshold: number,
+    paymentMethod: number = PAYMENT_ONLINE
+  ): Promise<MultiSigManager> {
+    const sourceAccount = await this.server.getAccount(merchantPublicKey);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '200',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'process_payment',
+          ...[
+            new Address(merchantPublicKey).toScVal(),
+            new Address(beneficiaryPublicKey).toScVal(),
+            nativeToScVal(merchantId), nativeToScVal(beneficiaryId),
+            nativeToScVal(amount), nativeToScVal(token), nativeToScVal(purpose),
+            nativeToScVal(paymentMethod),
+          ]
+        )
+      )
+      .setTimeout(0)
+      .build();
+    return MultiSigManager.create(tx, this.getNetworkPassphrase(), authorizedSigners, threshold);
+  }
+
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
       case 'testnet':
@@ -577,4 +915,194 @@ export class MerchantClient {
         throw new Error('Unsupported network');
     }
   }
+}
+
+// ─── TOML parsing helpers ─────────────────────────────────────────────────────
+//
+// A minimal TOML parser sufficient for `stellar.toml` files. Supports:
+// - Array-of-tables sections: `[[MERCHANTS]]`
+// - Single/double-quoted string values
+// - Arrays of strings
+// - Integer and float values
+// - Boolean values
+// - Comments (`#` to end of line)
+// - Blank lines
+//
+// Does NOT support: inline tables, multiline strings, nested tables, or
+// dotted keys. These are rare in stellar.toml merchant sections.
+
+export type TomlValue = string | number | boolean | string[] | number[];
+
+/** A [sectionName, fields] pair for each table/array-of-tables entry. */
+export type TomlTable = [string, Record<string, TomlValue>];
+
+/**
+ * Parse a TOML string into a list of (section-name, fields) pairs.
+ *
+ * Array-of-tables headers like `[[MERCHANTS]]` produce one entry per
+ * occurrence, so multiple `[[MERCHANTS]]` blocks yield multiple rows.
+ */
+export function parseTomlTables(toml: string): TomlTable[] {
+  const tables: TomlTable[] = [];
+  const lines = toml.split(/\r?\n/);
+
+  // Top-level fields go into a synthetic "" section so they are not lost.
+  let currentSection = '';
+  let currentFields: Record<string, TomlValue> = {};
+  let hasFields = false;
+
+  function flush(): void {
+    if (hasFields) {
+      tables.push([currentSection, currentFields]);
+      currentFields = {};
+      hasFields = false;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    // Strip comments (respect quoted strings)
+    const line = stripComment(raw).trim();
+
+    if (line === '') continue;
+
+    // Array-of-tables header: [[SECTION]]
+    if (line.startsWith('[[') && line.endsWith(']]')) {
+      flush();
+      currentSection = line.slice(2, -2).trim();
+      hasFields = true; // start a new entry even if empty
+      continue;
+    }
+
+    // Table header: [SECTION]
+    if (line.startsWith('[') && line.endsWith(']')) {
+      flush();
+      currentSection = line.slice(1, -1).trim();
+      hasFields = true;
+      continue;
+    }
+
+    // Key-value pair
+    const eqIdx = indexOfUnquoted(line, '=');
+    if (eqIdx === -1) continue;
+
+    const key = line.slice(0, eqIdx).trim();
+    const valueRaw = line.slice(eqIdx + 1).trim();
+    const value = parseTomlValue(valueRaw);
+
+    if (value !== undefined) {
+      currentFields[key] = value;
+      hasFields = true;
+    }
+  }
+
+  flush();
+  return tables;
+}
+
+/**
+ * Strip a `#` comment from a line, respecting quoted strings.
+ */
+function stripComment(line: string): string {
+  let result = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === '#' && !inSingle && !inDouble) break;
+    result += ch;
+  }
+  return result;
+}
+
+/**
+ * Find the index of `=` that is not inside a quoted string.
+ */
+function indexOfUnquoted(line: string, target: string): number {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === target && !inSingle && !inDouble) return i;
+  }
+  return -1;
+}
+
+/**
+ * Parse a TOML scalar or array value.
+ */
+function parseTomlValue(raw: string): TomlValue | undefined {
+  const trimmed = raw.trim();
+
+  // Array: ["a", "b"]
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (inner === '') return [];
+    const items = splitArrayItems(inner);
+    return items
+      .map((item) => parseTomlValue(item))
+      .filter((v): v is string | number => v !== undefined) as string[];
+  }
+
+  // Double-quoted string
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return unescapeString(trimmed.slice(1, -1));
+  }
+
+  // Single-quoted string (literal, no escapes)
+  if (trimmed.startsWith("'") && trimmed.endsWith("'")) {
+    return trimmed.slice(1, -1);
+  }
+
+  // Boolean
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+
+  // Number (integer or float)
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return trimmed.includes('.') ? parseFloat(trimmed) : parseInt(trimmed, 10);
+  }
+
+  // Unquoted bare string (best-effort, not valid TOML but tolerate it)
+  return trimmed;
+}
+
+/**
+ * Split an array body into individual items, respecting quoted strings.
+ */
+function splitArrayItems(inner: string): string[] {
+  const items: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+
+    if (ch === ',' && !inSingle && !inDouble) {
+      items.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) items.push(current.trim());
+  return items;
+}
+
+/**
+ * Unescape common TOML string escape sequences.
+ */
+function unescapeString(s: string): string {
+  return s
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
 }
