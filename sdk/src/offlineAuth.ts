@@ -15,6 +15,34 @@ import {
  * Offline Authentication Module
  * Provides authentication capabilities without internet connectivity
  */
+const MIN_BACKUP_CODE_COUNT = 1;
+const MAX_BACKUP_CODE_COUNT = 100;
+
+/**
+ * Generates cryptographically secure random bytes using Web Crypto API or Node's crypto module.
+ * Fails explicitly if no CSPRNG is available rather than falling back to Math.random().
+ */
+function getSecureRandomHex(byteLength: number = 16): string {
+  const webCrypto = (globalThis as any)?.crypto;
+  if (webCrypto && typeof webCrypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(byteLength);
+    webCrypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodeCrypto = require('crypto');
+    if (nodeCrypto && typeof nodeCrypto.randomBytes === 'function') {
+      return nodeCrypto.randomBytes(byteLength).toString('hex');
+    }
+  } catch {
+    // Ignore require failure and throw explicit error below
+  }
+  throw new Error(
+    'Cryptographically secure random number generator is unavailable in this environment.'
+  );
+}
+
 export class OfflineAuthClient {
   private config: any;
   private meshNodes: Map<string, BluetoothMeshNode> = new Map();
@@ -101,23 +129,42 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate paper backup codes with cryptographic checksums
+   * Generate paper backup codes with display error-detection checksums
+   * using a cryptographically secure random source.
    */
   generatePaperBackupCodes(
     idHash: string,
     count: number = 10
   ): PaperBackupCode[] {
+    if (
+      typeof count !== 'number' ||
+      !Number.isInteger(count) ||
+      count < MIN_BACKUP_CODE_COUNT ||
+      count > MAX_BACKUP_CODE_COUNT
+    ) {
+      throw new Error(
+        `Invalid backup code count (${count}): must be an integer between ${MIN_BACKUP_CODE_COUNT} and ${MAX_BACKUP_CODE_COUNT}.`
+      );
+    }
+
     const codes: PaperBackupCode[] = [];
+    const seenCodes = new Set<string>();
     const timestamp = Date.now();
 
-    for (let i = 0; i < count; i++) {
-      // Generate random code
-      const randomData = `${idHash}:${timestamp}:${i}:${Math.random()}`;
+    while (codes.length < count) {
+      const index = codes.length;
+      const entropyHex = getSecureRandomHex(16);
+      const randomData = `${idHash}:${timestamp}:${index}:${entropyHex}`;
       const code = SHA256(randomData).toString().substring(0, 16).toUpperCase();
-      
-      // Generate checksum
+
+      if (seenCodes.has(code)) {
+        continue;
+      }
+      seenCodes.add(code);
+
+      // Generate display checksum (for transcription error detection only)
       const checksum = this.generateChecksum(code);
-      
+
       // Format code for readability: XXXX-XXXX-XXXX-XXXX
       const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
 
@@ -125,7 +172,7 @@ export class OfflineAuthClient {
         code: formattedCode,
         checksum,
         createdAt: timestamp,
-        instructions: `Keep this code safe. Use it to recover your identity. Code ${i + 1} of ${count}.`
+        instructions: `Keep this code safe. Use it to recover your identity. Code ${index + 1} of ${count}.`
       });
     }
 
