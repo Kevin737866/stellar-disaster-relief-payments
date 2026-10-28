@@ -546,6 +546,7 @@ export interface OfflineAuthCode {
   expiresAt: number;
   signature: string;
   checksum?: string; // For paper codes
+  challengeId?: string; // Explicit challenge identifier for single-use replay prevention (#323)
 }
 
 export interface BluetoothMeshNode {

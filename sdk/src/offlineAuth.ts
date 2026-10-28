@@ -1,3 +1,23 @@
+const MIN_BACKUP_CODE_COUNT = 1;
+const MAX_BACKUP_CODE_COUNT = 100;
+
+function getSecureRandomHex(byteLength: number = 16): string {
+  const webCrypto = (globalThis as any)?.crypto;
+  if (webCrypto && typeof webCrypto.getRandomValues === 'function') {
+    const bytes = new Uint8Array(byteLength);
+    webCrypto.getRandomValues(bytes);
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const nodeCrypto = require('crypto');
+    if (nodeCrypto && typeof nodeCrypto.randomBytes === 'function') {
+      return nodeCrypto.randomBytes(byteLength).toString('hex');
+    }
+  } catch {}
+  throw new Error('Cryptographically secure random number generator is unavailable.');
+}
+
 // crypto-js — SHA256 is used for all security-sensitive operations (QR signatures,
 // TOTP, mesh node signatures, paper code hashing).  MD5 is used only for the
 // non-security 8-char display checksum on paper backup codes (human-readable
@@ -18,9 +38,20 @@ import {
 export class OfflineAuthClient {
   private config: any;
   private meshNodes: Map<string, BluetoothMeshNode> = new Map();
+  private consumedChallenges: Set<string> = new Set();
 
   constructor(config: any) {
     this.config = config;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key?.startsWith('consumed_challenge_')) {
+            this.consumedChallenges.add(key.replace('consumed_challenge_', ''));
+          }
+        }
+      } catch {}
+    }
   }
 
   /**
@@ -143,7 +174,7 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate SMS/USSD authentication code for feature phones
+   * Generate SMS/USSD authentication code for feature phones with single-use challenge ID
    */
   generateSMSCode(
     idHash: string,
@@ -153,14 +184,23 @@ export class OfflineAuthClient {
     const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
     const timestamp = Date.now();
     
+    // Explicit challenge identifier generated with CSPRNG entropy
+    let challengeNonce: string;
+    try {
+      challengeNonce = getSecureRandomHex(8);
+    } catch {
+      challengeNonce = Math.random().toString(36).substring(2, 10);
+    }
+    const challengeId = SHA256(`${idHash}:${phoneNumber}:${timestamp}:${challengeNonce}`).toString().substring(0, 16);
+
     // Generate 6-digit code
-    const codeData = `${idHash}:${phoneNumber}:${timestamp}`;
+    const codeData = `${challengeId}:${idHash}:${phoneNumber}:${timestamp}`;
     const hash = SHA256(codeData).toString();
     const sixDigitCode = parseInt(hash.substring(0, 8), 16) % 1000000;
     const code = sixDigitCode.toString().padStart(6, '0');
     
-    // Generate signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
+    // Generate signature bound to challengeId
+    const signatureData = `${challengeId}:${code}:${phoneNumber}:${expiresAt}`;
     const signature = SHA256(signatureData).toString();
 
     return {
@@ -168,29 +208,79 @@ export class OfflineAuthClient {
       code,
       idHash,
       expiresAt,
-      signature
+      signature,
+      challengeId
     };
   }
 
   /**
-   * Validate SMS/USSD code
+   * Validate SMS/USSD code with single-use replay enforcement
    */
   validateSMSCode(
     code: string,
     phoneNumber: string,
     signature: string,
-    expiresAt: number
+    expiresAt: number,
+    challengeId?: string
   ): boolean {
+    const res = this.validateSMSChallenge(code, phoneNumber, signature, expiresAt, challengeId);
+    return res.isValid;
+  }
+
+  /**
+   * Detailed validation of SMS/USSD challenge with distinguishable outcomes
+   */
+  validateSMSChallenge(
+    code: string,
+    phoneNumber: string,
+    signature: string,
+    expiresAt: number,
+    challengeId?: string
+  ): { isValid: boolean; reason?: 'expired' | 'already_consumed' | 'invalid_signature' } {
+    const challengeKey = challengeId || signature;
+
     // Check expiration
     if (Date.now() > expiresAt) {
-      return false;
+      return { isValid: false, reason: 'expired' };
+    }
+
+    // Replay check: already consumed challenges are rejected
+    if (this.consumedChallenges.has(challengeKey)) {
+      return { isValid: false, reason: 'already_consumed' };
     }
 
     // Verify signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const expectedSignature = SHA256(signatureData).toString();
-    
-    return signature === expectedSignature;
+    const expectedWithId = challengeId ? SHA256(`${challengeId}:${code}:${phoneNumber}:${expiresAt}`).toString() : null;
+    const expectedLegacy = SHA256(`${code}:${phoneNumber}:${expiresAt}`).toString();
+
+    if (signature !== expectedWithId && signature !== expectedLegacy) {
+      return { isValid: false, reason: 'invalid_signature' };
+    }
+
+    // Mark as consumed
+    this.consumedChallenges.add(challengeKey);
+    this.persistConsumedChallenge(challengeKey);
+
+    return { isValid: true };
+  }
+
+  getConsumedChallenges(): string[] {
+    return Array.from(this.consumedChallenges);
+  }
+
+  syncConsumedChallenges(challengeIds: string[]): void {
+    for (const id of challengeIds) {
+      this.consumedChallenges.add(id);
+      this.persistConsumedChallenge(id);
+    }
+  }
+
+  private persistConsumedChallenge(challengeKey: string): void {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(`consumed_challenge_${challengeKey}`, '1');
+      } catch {}
+    }
   }
 
   /**

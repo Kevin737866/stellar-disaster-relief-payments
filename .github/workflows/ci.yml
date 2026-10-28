@@ -35,6 +35,8 @@ jobs:
       - run: npm ci
       - name: Type-check and build SDK
         run: npm run build
+      - name: Type-check TypeScript examples
+        run: npm run type-check:examples
       - name: Run SDK unit tests
         run: npm run test:sdk -- --runInBand
 

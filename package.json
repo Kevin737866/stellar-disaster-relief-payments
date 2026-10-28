@@ -14,7 +14,8 @@
     "test:performance": "jest --selectProjects performance",
     "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "type-check:examples": "tsc --project tsconfig.examples.json --noEmit"
   },
   "keywords": [
     "stellar",
