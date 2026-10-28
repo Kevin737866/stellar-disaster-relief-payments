@@ -102,26 +102,57 @@ export class DonorTransparencyClient {
    */
   async createTransparencyEntry(
     fundId: string,
-    transactionType: string,
+    transactionType: TransparencyEntry['transactionType'],
     amount: string,
     description: string,
     beneficiary?: string,
     location?: { latitude: number; longitude: number; precision?: number },
     proof?: string
   ): Promise<TransparencyEntry> {
+    if (!fundId || typeof fundId !== 'string' || fundId.trim() === '') {
+      throw new Error('Invalid fundId: must be a non-empty string.');
+    }
+
+    const validTypes: TransparencyEntry['transactionType'][] = [
+      'fund_created',
+      'allocation',
+      'disbursement',
+      'recall',
+    ];
+    if (!validTypes.includes(transactionType)) {
+      throw new Error(
+        `Invalid transactionType (${transactionType}): must be one of ${validTypes.join(', ')}.`
+      );
+    }
+
+    if (
+      typeof amount !== 'string' ||
+      amount.trim() === '' ||
+      !/^\d+$/.test(amount.trim())
+    ) {
+      throw new Error(
+        `Invalid amount (${amount}): must be a non-negative integer stroop string.`
+      );
+    }
+
+    const parsedAmount = BigInt(amount.trim());
+    if (parsedAmount < 0n) {
+      throw new Error(`Invalid amount (${amount}): cannot be negative.`);
+    }
+
     const entry: TransparencyEntry = {
       id: this.generateId(),
-      fundId,
+      fundId: fundId.trim(),
       timestamp: Date.now(),
-      transactionType: transactionType as any,
-      amount,
-      description,
+      transactionType,
+      amount: parsedAmount.toString(),
+      description: description || '',
       beneficiary,
       location,
       proof,
     };
 
-    // Store entry
+    // Store entry only after all validations pass
     await this.storeTransparencyEntry(entry);
 
     return entry;
@@ -220,8 +251,11 @@ export class DonorTransparencyClient {
       transactions
         .filter(t => t.transactionType === 'allocation')
         .forEach(t => {
-          const key = t.description.split(':')[0] || 'Other';
-          allocationBreakdown[key] = t.amount;
+          const rawKey = t.description ? t.description.split(':')[0].trim() : '';
+          const key = rawKey !== '' ? rawKey : 'Other';
+          const existing = allocationBreakdown[key] ? BigInt(allocationBreakdown[key]) : 0n;
+          const toAdd = BigInt(t.amount);
+          allocationBreakdown[key] = (existing + toAdd).toString();
         });
 
       return {
