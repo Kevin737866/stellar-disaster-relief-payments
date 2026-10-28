@@ -214,7 +214,38 @@ describe('FeeBumpClient', () => {
         })
       ).rejects.toThrow('below the required minimum');
     });
+
+    it.each([
+      ['non-numeric string', 'not-a-number'],
+      ['fractional stroops', '1500.5'],
+      ['zero stroops', '0'],
+      ['negative stroops', '-1000'],
+      ['empty string', ''],
+      ['whitespace-padded string', ' 1000 '],
+      ['out-of-range int64 overflow', '9223372036854775808'],
+    ])('rejects malformed newBaseFee (%s: %p) before RPC or Horizon calls in bumpFee and simulateBump', async (_label, badFee) => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair, '100');
+      await expect(
+        client.bumpFee({
+          feeSourceKey: feeSourceKeypair.secret(),
+          innerTransactionXdr: xdr,
+          newBaseFee: badFee,
+        })
+      ).rejects.toThrow(/Invalid newBaseFee/);
+
+      await expect(
+        client.simulateBump({
+          feeSourceKey: feeSourceKeypair.secret(),
+          innerTransactionXdr: xdr,
+          newBaseFee: badFee,
+        })
+      ).rejects.toThrow(/Invalid newBaseFee/);
+
+      expect(horizonCallMock).not.toHaveBeenCalled();
+      expect(mockSendTransaction).not.toHaveBeenCalled();
+    });
   });
+
 
   // -------------------------------------------------------------------------
   // bumpFee — already confirmed

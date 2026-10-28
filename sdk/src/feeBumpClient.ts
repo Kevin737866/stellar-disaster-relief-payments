@@ -15,6 +15,30 @@ import { TransactionSimulator, SimulationResult } from './transactionSimulator';
 /** Minimum multiplier over the inner transaction's per-op fee rate. */
 const MIN_FEE_MULTIPLIER = 10;
 
+/** Maximum protocol-supported stroop fee value (int64 max: 9,223,372,036,854,775,807). */
+const MAX_STROOP_FEE = BigInt('9223372036854775807');
+
+/**
+ * Validates that a fee string represents a positive whole-number amount of stroops
+ * within the protocol-supported int64 range.
+ */
+function parseAndValidateStroopFee(fee: string, fieldName: string = 'newBaseFee'): bigint {
+  if (typeof fee !== 'string' || fee.trim() === '' || fee !== fee.trim()) {
+    throw new Error(`Invalid ${fieldName} (${fee}): must be a non-empty whole-number stroop string.`);
+  }
+  if (!/^\d+$/.test(fee)) {
+    throw new Error(`Invalid ${fieldName} (${fee}): must be a positive whole-number amount of stroops.`);
+  }
+  const parsed = BigInt(fee);
+  if (parsed <= 0n) {
+    throw new Error(`Invalid ${fieldName} (${fee}): fee must be greater than zero stroops.`);
+  }
+  if (parsed > MAX_STROOP_FEE) {
+    throw new Error(`Invalid ${fieldName} (${fee}): exceeds maximum allowed stroop value.`);
+  }
+  return parsed;
+}
+
 export interface FeeBumpOptions {
   /** Secret key of the account paying the bump fee. */
   feeSourceKey: string;
@@ -93,6 +117,10 @@ export class FeeBumpClient {
   async simulateBump(options: FeeBumpOptions): Promise<SimulationResult> {
     const { feeSourceKey, innerTransactionXdr, newBaseFee } = options;
 
+    if (newBaseFee !== undefined) {
+      parseAndValidateStroopFee(newBaseFee, 'newBaseFee');
+    }
+
     const feeSourceKeypair = Keypair.fromSecret(feeSourceKey);
     validateAddress(feeSourceKeypair.publicKey(), 'feeSource');
 
@@ -116,7 +144,10 @@ export class FeeBumpClient {
     const minFee = computeMinBumpFee(innerTx);
     const baseFee = newBaseFee ?? minFee;
 
-    if (Number(baseFee) < Number(minFee)) {
+    const baseFeeBigInt = parseAndValidateStroopFee(baseFee, 'newBaseFee');
+    const minFeeBigInt = parseAndValidateStroopFee(minFee, 'minFee');
+
+    if (baseFeeBigInt < minFeeBigInt) {
       throw new Error(
         `newBaseFee (${baseFee}) is below the required minimum of ${minFee} stroops.`
       );
@@ -148,6 +179,10 @@ export class FeeBumpClient {
   async bumpFee(options: FeeBumpOptions): Promise<FeeBumpResult> {
     const { feeSourceKey, innerTransactionXdr, newBaseFee } = options;
 
+    if (newBaseFee !== undefined) {
+      parseAndValidateStroopFee(newBaseFee, 'newBaseFee');
+    }
+
     const feeSourceKeypair = Keypair.fromSecret(feeSourceKey);
     validateAddress(feeSourceKeypair.publicKey(), 'feeSource');
 
@@ -169,21 +204,24 @@ export class FeeBumpClient {
       throw new Error(`Invalid inner transaction XDR: ${err.message}`);
     }
 
+    // Determine and validate the bump fee before making network calls.
+    const minFee = computeMinBumpFee(innerTx);
+    const baseFee = newBaseFee ?? minFee;
+
+    const baseFeeBigInt = parseAndValidateStroopFee(baseFee, 'newBaseFee');
+    const minFeeBigInt = parseAndValidateStroopFee(minFee, 'minFee');
+
+    if (baseFeeBigInt < minFeeBigInt) {
+      throw new Error(
+        `newBaseFee (${baseFee}) is below the required minimum of ${minFee} stroops.`
+      );
+    }
+
     // Ensure the transaction is still pending.
     const pending = await isTransactionPending(this.horizonServer, innerTx.hash().toString('hex'));
     if (!pending) {
       throw new Error(
         `Transaction ${innerTx.hash().toString('hex')} is already confirmed and cannot be fee bumped.`
-      );
-    }
-
-    // Determine and validate the bump fee.
-    const minFee = computeMinBumpFee(innerTx);
-    const baseFee = newBaseFee ?? minFee;
-
-    if (Number(baseFee) < Number(minFee)) {
-      throw new Error(
-        `newBaseFee (${baseFee}) is below the required minimum of ${minFee} stroops.`
       );
     }
 
