@@ -24,16 +24,16 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const [confirmReject, setConfirmReject] = useState<string | null>(null); // merchantId
   const [confirmBatchApprove, setConfirmBatchApprove] = useState(false);
 
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [onboardingError, setOnboardingError] = useState<string | null>(null);
+
   // Onboarding form state
   const [onboardingForm, setOnboardingForm] = useState({
     merchantId: '',
     name: '',
     businessType: 'grocery',
+    category: 0,
     contactInfo: '',
-    stellarAddress: '',
-    acceptedTokens: 'XLM',
-    dailyLimit: '1000',
-    monthlyLimit: '10000',
     location: {
       latitude: '',
       longitude: '',
@@ -54,14 +54,16 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const loadMerchants = async () => {
     try {
       setLoading(true);
+      setSearchError(null);
       const nearbyMerchants = await merchantClient.findMerchantsByLocation(
         mapCenter.lat,
         mapCenter.lng,
         searchRadius
       );
       setMerchants(nearbyMerchants);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load merchants:', error);
+      setSearchError(error?.message || 'Failed to search merchants by location. Please check network/RPC connection.');
     } finally {
       setLoading(false);
     }
@@ -78,29 +80,31 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
 
   const handleOnboarding = async (e: React.FormEvent) => {
     e.preventDefault();
+    setOnboardingError(null);
     try {
       setLoading(true);
       
-      const location: Location = {
-        latitude: parseFloat(onboardingForm.location.latitude),
-        longitude: parseFloat(onboardingForm.location.longitude),
-        address: onboardingForm.location.address,
-        city: onboardingForm.location.city,
-        country: onboardingForm.location.country,
-        postalCode: onboardingForm.location.postalCode
-      };
+      const lat = onboardingForm.location.latitude.trim();
+      const lng = onboardingForm.location.longitude.trim();
+      const locationLatLng = lat && lng ? `${lat},${lng}` : '';
 
       const request = merchantClient.createOnboardingRequest(
-        onboardingForm.name,
-        onboardingForm.businessType,
-        location,
-        onboardingForm.contactInfo,
-        onboardingForm.stellarAddress
+        onboardingForm.name.trim(),
+        onboardingForm.businessType.trim(),
+        Number(onboardingForm.category),
+        locationLatLng,
+        onboardingForm.location.address.trim(),
+        onboardingForm.location.city.trim(),
+        onboardingForm.location.country.trim(),
+        onboardingForm.location.postalCode.trim(),
+        onboardingForm.contactInfo.trim(),
+        [],
+        false
       );
 
       await merchantClient.registerMerchant(
         adminKey,
-        onboardingForm.merchantId,
+        onboardingForm.merchantId.trim(),
         request
       );
 
@@ -109,11 +113,8 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
         merchantId: '',
         name: '',
         businessType: 'grocery',
+        category: 0,
         contactInfo: '',
-        stellarAddress: '',
-        acceptedTokens: 'XLM',
-        dailyLimit: '1000',
-        monthlyLimit: '10000',
         location: {
           latitude: '',
           longitude: '',
@@ -127,8 +128,9 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
       });
       loadVerificationQueue();
       alert('Merchant registered successfully! Awaiting verification.');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to onboard merchant:', error);
+      setOnboardingError(error?.message || 'Failed to onboard merchant');
       alert('Failed to onboard merchant');
     } finally {
       setLoading(false);
@@ -228,6 +230,11 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           <div className="bg-blue-50 p-6 rounded-lg mb-6">
             <h2 className="text-xl font-semibold mb-4">Onboard New Merchant</h2>
             <form onSubmit={handleOnboarding} className="space-y-4">
+              {onboardingError && (
+                <div role="alert" className="p-3 bg-red-100 border border-red-300 text-red-700 text-sm rounded">
+                  {onboardingError}
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <input
                   type="text"
@@ -249,8 +256,40 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <select
+                  aria-label="Category"
+                  value={onboardingForm.category}
+                  onChange={(e) => setOnboardingForm({...onboardingForm, category: parseInt(e.target.value, 10)})}
+                  className="px-3 py-2 border rounded"
+                  required
+                >
+                  <option value={0}>Food (Category 0)</option>
+                  <option value={1}>Water (Category 1)</option>
+                  <option value={2}>Shelter (Category 2)</option>
+                  <option value={3}>Medical (Category 3)</option>
+                  <option value={4}>Clothing (Category 4)</option>
+                  <option value={5}>Fuel (Category 5)</option>
+                </select>
+                <select
+                  aria-label="Business Type"
                   value={onboardingForm.businessType}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, businessType: e.target.value})}
+                  onChange={(e) => {
+                    const bt = e.target.value;
+                    const catMap: Record<string, number> = {
+                      grocery: 0,
+                      restaurant: 0,
+                      water: 1,
+                      shelter: 2,
+                      hardware: 2,
+                      pharmacy: 3,
+                      clothing: 4,
+                      fuel_station: 5
+                    };
+                    setOnboardingForm({
+                      ...onboardingForm,
+                      businessType: bt,
+                      category: catMap[bt] !== undefined ? catMap[bt] : onboardingForm.category
+                    });
+                  }}
                   className="px-3 py-2 border rounded"
                   required
                 >
@@ -263,48 +302,14 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                   <option value="transport">Transport</option>
                   <option value="communication">Communication</option>
                 </select>
+              </div>
+              
+              <div className="grid grid-cols-1 gap-4">
                 <input
                   type="text"
                   placeholder="Contact Information"
                   value={onboardingForm.contactInfo}
                   onChange={(e) => setOnboardingForm({...onboardingForm, contactInfo: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input
-                  type="text"
-                  placeholder="Stellar Address"
-                  value={onboardingForm.stellarAddress}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, stellarAddress: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-                <input
-                  type="text"
-                  placeholder="Accepted Tokens (comma-separated)"
-                  value={onboardingForm.acceptedTokens}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, acceptedTokens: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                />
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input
-                  type="number"
-                  placeholder="Daily Limit"
-                  value={onboardingForm.dailyLimit}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, dailyLimit: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-                <input
-                  type="number"
-                  placeholder="Monthly Limit"
-                  value={onboardingForm.monthlyLimit}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, monthlyLimit: e.target.value})}
                   className="px-3 py-2 border rounded"
                   required
                 />
@@ -479,6 +484,17 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           
           {loading ? (
             <div className="text-center py-4">Loading...</div>
+          ) : searchError ? (
+            <div role="alert" className="p-4 bg-red-50 border border-red-200 rounded text-center py-4">
+              <p className="text-red-700 font-medium mb-2">{searchError}</p>
+              <button
+                type="button"
+                onClick={loadMerchants}
+                className="px-4 py-1.5 bg-red-600 text-white text-sm font-medium rounded hover:bg-red-700 transition-colors"
+              >
+                Retry Search
+              </button>
+            </div>
           ) : merchants.length === 0 ? (
             <div className="text-gray-500 text-center py-4">No merchants found in this area</div>
           ) : (
