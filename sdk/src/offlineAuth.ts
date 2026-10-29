@@ -3,6 +3,7 @@
 // non-security 8-char display checksum on paper backup codes (human-readable
 // error-detection only; not a security guarantee).  Do not use MD5 for any
 // operation that requires collision or pre-image resistance.
+import * as crypto from 'crypto';
 import { SHA256, MD5 } from 'crypto-js';
 import { 
   OfflineAuthCode, 
@@ -11,55 +12,151 @@ import {
   BeneficiaryIdentity 
 } from './types';
 
+export interface OfflineAuthConfig {
+  signingSecret?: string;
+  trustedVerificationKeys?: string[];
+  ussdSecret?: string;
+  signer?: (payload: string) => string;
+  verifier?: (payload: string, signature: string) => boolean;
+}
+
 /**
  * Offline Authentication Module
  * Provides authentication capabilities without internet connectivity
  */
 export class OfflineAuthClient {
-  private config: any;
+  private config: OfflineAuthConfig & Record<string, any>;
   private meshNodes: Map<string, BluetoothMeshNode> = new Map();
 
-  constructor(config: any) {
-    this.config = config;
+  constructor(config?: OfflineAuthConfig | any) {
+    this.config = config || {};
+  }
+
+  public setSigningSecret(secret: string): void {
+    if (!secret || !secret.trim()) throw new Error('Signing secret must be a non-empty string');
+    this.config.signingSecret = secret.trim();
+  }
+
+  public setTrustedVerificationKeys(keys: string[]): void {
+    if (!keys || !Array.isArray(keys)) throw new Error('Verification keys must be an array');
+    this.config.trustedVerificationKeys = keys;
+  }
+
+  public setUssdSecret(secret: string): void {
+    if (!secret || !secret.trim()) throw new Error('USSD secret must be a non-empty string');
+    this.config.ussdSecret = secret.trim();
+  }
+
+  private getSigningSecret(): string | null {
+    return this.config?.signingSecret || this.config?.secretKey || this.config?.privateKey || null;
+  }
+
+  private getVerificationKeys(): string[] {
+    const keys: string[] = [];
+    if (this.config?.trustedVerificationKeys && Array.isArray(this.config.trustedVerificationKeys)) {
+      keys.push(...this.config.trustedVerificationKeys);
+    }
+    if (this.config?.signingSecret) {
+      keys.push(this.config.signingSecret);
+    }
+    if (this.config?.secretKey) {
+      keys.push(this.config.secretKey);
+    }
+    return Array.from(new Set(keys.filter(Boolean)));
+  }
+
+  private getUssdSecret(): string | null {
+    return this.config?.ussdSecret || this.config?.signingSecret || this.config?.secretKey || null;
+  }
+
+  private signPayload(payload: string): string {
+    if (this.config?.signer) {
+      return this.config.signer(payload);
+    }
+    const secret = this.getSigningSecret();
+    if (!secret) {
+      throw new Error('OfflineAuthClient: signing key not configured (failed closed)');
+    }
+    return crypto.createHmac('sha256', secret).update(payload, 'utf8').digest('hex');
+  }
+
+  private verifyPayload(payload: string, signature: string): boolean {
+    if (this.config?.verifier) {
+      return this.config.verifier(payload, signature);
+    }
+    const verificationKeys = this.getVerificationKeys();
+    if (verificationKeys.length === 0) {
+      // Fail closed if no trusted verification keys/secrets configured
+      return false;
+    }
+    for (const key of verificationKeys) {
+      try {
+        const expected = crypto.createHmac('sha256', key).update(payload, 'utf8').digest('hex');
+        if (expected.length === signature.length) {
+          if (crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+            return true;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    return false;
   }
 
   /**
-   * Generate QR code with time-based signatures for offline verification
+   * Generate QR code with cryptographic authentication over canonical identity fields (#321).
    */
   generateQRCode(
     idHash: string,
     identity: BeneficiaryIdentity,
     validityMinutes: number = 30
   ): OfflineAuthCode {
+    if (!idHash || typeof idHash !== 'string' || !idHash.trim()) {
+      throw new Error('OfflineAuthClient: idHash must be a non-empty string');
+    }
+    if (!identity) {
+      throw new Error('OfflineAuthClient: identity must be provided');
+    }
+
+    const secret = this.getSigningSecret();
+    if (!secret && !this.config?.signer) {
+      throw new Error('OfflineAuthClient: Cannot generate secure QR code without configured signingSecret');
+    }
+
     const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
     const timestamp = Date.now();
-    
-    // Create time-based signature
-    const signatureData = `${idHash}:${timestamp}:${expiresAt}:${identity.trustScore}`;
-    const signature = SHA256(signatureData).toString();
-    
-    // Generate compact QR code data
+    const version = 1;
+    const cleanId = idHash.trim();
+    const trustScore = typeof identity.trustScore === 'number' ? identity.trustScore : 0;
+    const campLocation = identity.campLocation || '';
+
+    // Create cryptographic signature over canonical payload
+    const canonicalPayload = `${version}|${cleanId}|${timestamp}|${expiresAt}|${trustScore}|${campLocation}`;
+    const signature = this.signPayload(canonicalPayload);
+
+    // Compact QR data bound to exact canonical fields
     const qrData = {
-      v: 1, // version
-      id: idHash.substring(0, 16), // Shortened for QR size
+      v: version,
+      id: cleanId,
       ts: timestamp,
       exp: expiresAt,
-      trust: identity.trustScore,
-      loc: identity.campLocation,
-      sig: signature.substring(0, 32) // Shortened signature
+      trust: trustScore,
+      loc: campLocation,
+      sig: signature
     };
 
     return {
       type: 'qr',
       code: JSON.stringify(qrData),
-      idHash,
+      idHash: cleanId,
       expiresAt,
       signature
     };
   }
 
   /**
-   * Validate QR code offline
+   * Validate QR code offline using pinned/trusted verification keys (#321).
    */
   validateQRCode(qrCodeData: string): {
     isValid: boolean;
@@ -69,6 +166,10 @@ export class OfflineAuthClient {
     reason?: string;
   } {
     try {
+      if (!qrCodeData || typeof qrCodeData !== 'string') {
+        return { isValid: false, reason: 'Invalid QR code format' };
+      }
+
       const data = JSON.parse(qrCodeData);
       
       // Check version
@@ -76,17 +177,22 @@ export class OfflineAuthClient {
         return { isValid: false, reason: 'Unsupported QR code version' };
       }
 
+      // Check required fields
+      if (!data.id || data.ts === undefined || data.exp === undefined || data.trust === undefined || data.loc === undefined || !data.sig) {
+        return { isValid: false, reason: 'Missing required QR code fields' };
+      }
+
       // Check expiration
       if (Date.now() > data.exp) {
         return { isValid: false, reason: 'QR code expired' };
       }
 
-      // Verify signature
-      const signatureData = `${data.id}:${data.ts}:${data.exp}:${data.trust}`;
-      const expectedSig = SHA256(signatureData).toString().substring(0, 32);
+      // Check signature against configured trusted verification keys
+      const canonicalPayload = `${data.v}|${data.id}|${data.ts}|${data.exp}|${data.trust}|${data.loc}`;
+      const isValidSig = this.verifyPayload(canonicalPayload, data.sig);
       
-      if (data.sig !== expectedSig) {
-        return { isValid: false, reason: 'Invalid signature' };
+      if (!isValidSig) {
+        return { isValid: false, reason: 'Invalid signature or untrusted signer' };
       }
 
       return {
@@ -143,25 +249,30 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate SMS/USSD authentication code for feature phones
+   * Generate SMS/USSD authentication code for feature phones with verifier-side secret (#321).
    */
   generateSMSCode(
     idHash: string,
     phoneNumber: string,
     validityMinutes: number = 15
   ): OfflineAuthCode {
+    const secret = this.getUssdSecret();
+    if (!secret) {
+      throw new Error('OfflineAuthClient: Cannot generate SMS/USSD code without configured USSD secret');
+    }
+
     const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
     const timestamp = Date.now();
     
-    // Generate 6-digit code
-    const codeData = `${idHash}:${phoneNumber}:${timestamp}`;
-    const hash = SHA256(codeData).toString();
-    const sixDigitCode = parseInt(hash.substring(0, 8), 16) % 1000000;
+    // Generate 6-digit code authenticated by ussdSecret
+    const codePayload = `${idHash}:${phoneNumber}:${timestamp}`;
+    const hmac = crypto.createHmac('sha256', secret).update(codePayload, 'utf8').digest('hex');
+    const sixDigitCode = parseInt(hmac.substring(0, 8), 16) % 1000000;
     const code = sixDigitCode.toString().padStart(6, '0');
     
-    // Generate signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const signature = SHA256(signatureData).toString();
+    // Generate cryptographic signature over code, phone, expiresAt, and idHash bound to secret
+    const signatureData = `${code}:${phoneNumber}:${expiresAt}:${idHash}`;
+    const signature = crypto.createHmac('sha256', secret).update(signatureData, 'utf8').digest('hex');
 
     return {
       type: 'sms',
@@ -173,24 +284,45 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Validate SMS/USSD code
+   * Validate SMS/USSD code with cryptographic authentication (#321).
    */
   validateSMSCode(
     code: string,
     phoneNumber: string,
     signature: string,
-    expiresAt: number
+    expiresAt: number,
+    idHash?: string
   ): boolean {
+    const secret = this.getUssdSecret();
+    if (!secret) {
+      // Fail closed when no USSD secret is configured on the verifier
+      return false;
+    }
+
     // Check expiration
     if (Date.now() > expiresAt) {
       return false;
     }
 
-    // Verify signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const expectedSignature = SHA256(signatureData).toString();
-    
-    return signature === expectedSignature;
+    // Check signature with verifier secret
+    const sigWithId = idHash ? `${code}:${phoneNumber}:${expiresAt}:${idHash}` : null;
+    const sigWithoutId = `${code}:${phoneNumber}:${expiresAt}`;
+
+    const expected1 = sigWithId ? crypto.createHmac('sha256', secret).update(sigWithId, 'utf8').digest('hex') : '';
+    const expected2 = crypto.createHmac('sha256', secret).update(sigWithoutId, 'utf8').digest('hex');
+
+    if (expected1 && signature.length === expected1.length) {
+      if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected1))) {
+        return true;
+      }
+    }
+    if (signature.length === expected2.length) {
+      if (crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected2))) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
