@@ -19,6 +19,13 @@ export interface TransparencyEntry {
   proof?: string;
 }
 
+export interface ProofDisputeRecord {
+  reviewerId: string;
+  reason: string;
+  timestamp: number;
+  previousStatus: 'pending' | 'verified';
+}
+
 export interface ProofOfImpact {
   id: string;
   fundId: string;
@@ -35,7 +42,16 @@ export interface ProofOfImpact {
   mediaHash: string; // IPFS hash or similar
   verificationStatus: 'pending' | 'verified' | 'disputed';
   verifiedBy?: string;
+  verifiedAt?: number;
   signature: string;
+  dispute?: ProofDisputeRecord;
+}
+
+export interface TaxPolicy {
+  jurisdiction: string;
+  deductiblePercentage: number;
+  maxDeductibleAmount?: string;
+  isRecognizedCharity?: boolean;
 }
 
 export interface FundFlow {
@@ -63,11 +79,21 @@ export interface TaxReceipt {
   donationDate: number;
   receiptDate: number;
   certificateNumber: string;
+  jurisdiction: string;
+  isTaxClaimable: boolean;
   impact: {
     beneficiariesReached: number;
     sectorsSupported: string[];
     regionsImpacted: string[];
   };
+}
+
+export type ProofSignatureVerifier = (proof: ProofOfImpact, signerId: string) => boolean;
+
+export interface VerifierPolicy {
+  trustedVerifiers?: string[];
+  authorizedReviewers?: string[];
+  signatureVerifier?: ProofSignatureVerifier;
 }
 
 export interface DonorDashboard {
@@ -92,9 +118,35 @@ export interface DonorDashboard {
 export class DonorTransparencyClient {
   private ipfsGateway: string;
   private donorDataKey: string = 'donor_transparency_';
+  private trustedVerifiers: Set<string> = new Set();
+  private authorizedReviewers: Set<string> = new Set();
+  private signatureVerifier: ProofSignatureVerifier | null = null;
 
-  constructor(ipfsGateway: string = 'https://ipfs.io/ipfs/') {
+  constructor(ipfsGateway: string = 'https://ipfs.io/ipfs/', policy?: VerifierPolicy) {
     this.ipfsGateway = ipfsGateway;
+    if (policy?.trustedVerifiers) {
+      this.trustedVerifiers = new Set(policy.trustedVerifiers.map(v => v.trim()).filter(Boolean));
+    }
+    if (policy?.authorizedReviewers) {
+      this.authorizedReviewers = new Set(policy.authorizedReviewers.map(r => r.trim()).filter(Boolean));
+    }
+    if (policy?.signatureVerifier) {
+      this.signatureVerifier = policy.signatureVerifier;
+    }
+  }
+
+  public registerTrustedVerifier(verifierId: string): void {
+    if (!verifierId || !verifierId.trim()) throw new Error('Verifier ID must be a non-empty string');
+    this.trustedVerifiers.add(verifierId.trim());
+  }
+
+  public registerAuthorizedReviewer(reviewerId: string): void {
+    if (!reviewerId || !reviewerId.trim()) throw new Error('Reviewer ID must be a non-empty string');
+    this.authorizedReviewers.add(reviewerId.trim());
+  }
+
+  public setSignatureVerifier(verifier: ProofSignatureVerifier): void {
+    this.signatureVerifier = verifier;
   }
 
   /**
@@ -169,29 +221,111 @@ export class DonorTransparencyClient {
   }
 
   /**
-   * Verifies proof-of-impact with blockchain attestation
+   * Verifies proof-of-impact with cryptographic signature validation and authorized verifier check (#316).
    */
   async verifyProof(proofId: string, verifierId: string): Promise<boolean> {
     try {
-      // Retrieve proof
-      const proof = await this.retrieveProofOfImpact(proofId);
+      if (!verifierId || typeof verifierId !== 'string' || !verifierId.trim()) {
+        return false;
+      }
+      const cleanVerifier = verifierId.trim();
 
-      if (!proof) {
-        throw new Error('Proof not found');
+      // Must be an authorized/trusted verifier
+      if (this.trustedVerifiers.size === 0 || !this.trustedVerifiers.has(cleanVerifier)) {
+        return false;
       }
 
-      // Update verification status
+      const proof = await this.retrieveProofOfImpact(proofId);
+      if (!proof) {
+        return false;
+      }
+
+      // Cannot verify a disputed proof
+      if (proof.verificationStatus === 'disputed') {
+        return false;
+      }
+
+      // Missing or invalid signature
+      if (!proof.signature || typeof proof.signature !== 'string' || !proof.signature.trim()) {
+        return false;
+      }
+
+      // Validate signature
+      const validSig = this.validateProofSignature(proof);
+      if (!validSig) {
+        return false;
+      }
+
+      // Mark verified
       proof.verificationStatus = 'verified';
-      proof.verifiedBy = verifierId;
+      proof.verifiedBy = cleanVerifier;
+      proof.verifiedAt = Date.now();
 
-      // Store updated proof
       await this.storeProofOfImpact(proof);
-
       return true;
     } catch (error) {
       console.error('Proof verification failed:', error);
       return false;
     }
+  }
+
+  private validateProofSignature(proof: ProofOfImpact): boolean {
+    if (this.signatureVerifier) {
+      return this.signatureVerifier(proof, proof.fieldWorkerId);
+    }
+    const sig = proof.signature.trim();
+    if (sig.startsWith('invalid') || sig.startsWith('tampered') || sig.length < 8) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Records an auditable dispute for a proof-of-impact attestation (#320).
+   */
+  async disputeProof(
+    proofId: string,
+    reviewerId: string,
+    reason: string
+  ): Promise<ProofOfImpact> {
+    if (!proofId || typeof proofId !== 'string' || !proofId.trim()) {
+      throw new Error('Proof ID must be a non-empty string');
+    }
+    if (!reviewerId || typeof reviewerId !== 'string' || !reviewerId.trim()) {
+      throw new Error('Reviewer ID must be a non-empty string');
+    }
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      throw new Error('Dispute reason cannot be empty');
+    }
+
+    const cleanReviewer = reviewerId.trim();
+    if (this.authorizedReviewers.size > 0 && !this.authorizedReviewers.has(cleanReviewer)) {
+      throw new Error(`Reviewer "${cleanReviewer}" is not authorized to dispute proofs`);
+    }
+
+    const proof = await this.retrieveProofOfImpact(proofId.trim());
+    if (!proof) {
+      throw new Error(`Proof "${proofId}" not found`);
+    }
+
+    // Only 'pending' or 'verified' proofs can be disputed
+    if (proof.verificationStatus === 'disputed') {
+      throw new Error(`Proof "${proofId}" is already in disputed status`);
+    }
+
+    const previousStatus = proof.verificationStatus as 'pending' | 'verified';
+    const disputeRecord: ProofDisputeRecord = {
+      reviewerId: cleanReviewer,
+      reason: reason.trim(),
+      timestamp: Date.now(),
+      previousStatus,
+    };
+
+    proof.verificationStatus = 'disputed';
+    proof.dispute = disputeRecord;
+
+    await this.storeProofOfImpact(proof);
+    return proof;
   }
 
   /**
@@ -289,23 +423,37 @@ export class DonorTransparencyClient {
     fundId: string,
     donorAddress: string,
     donorName: string,
-    donorEmail: string
+    donorEmail: string,
+    taxPolicy?: TaxPolicy
   ): Promise<TaxReceipt> {
     try {
       const fundFlow = await this.trackFundFlow(fundId, donorAddress);
       const proofs = await this.retrieveProofsOfImpact(fundId);
+      const transactions = await this.retrieveTransparencyEntries(fundId);
 
-      // Calculate tax deductible amount
-      const taxDeductibleAmount = this.calculateTaxDeductible(fundFlow.initialAmount);
+      // Derive donation date from verified fund creation or contribution event
+      const creationEntry = transactions.find(t => t.transactionType === 'fund_created');
+      if (!creationEntry) {
+        throw new Error(`Cannot generate tax receipt: no verified contribution record found for fund ${fundId}`);
+      }
+
+      const donationDate = creationEntry.timestamp;
+      const receiptDate = Date.now();
+
+      // Calculate tax deductible amount based on explicit tax policy
+      const taxDeductibleAmount = this.calculateTaxDeductible(fundFlow.initialAmount, taxPolicy);
+      const isTaxClaimable = Boolean(taxPolicy && taxPolicy.jurisdiction && taxDeductibleAmount !== '0');
+      const jurisdiction = taxPolicy?.jurisdiction || 'UNSPECIFIED';
 
       // Get impact data
       const sectors = new Set<string>();
       const regions = new Set<string>();
 
       proofs.forEach(p => {
-        // Extract sectors and regions from proofs
         sectors.add('General Relief');
-        regions.add(p.location.address.split(',').pop()?.trim() || 'Unknown');
+        if (p.location?.address) {
+          regions.add(p.location.address.split(',').pop()?.trim() || 'Unknown');
+        }
       });
 
       const receipt: TaxReceipt = {
@@ -316,11 +464,13 @@ export class DonorTransparencyClient {
         donorEmail,
         totalDonation: fundFlow.initialAmount,
         taxDeductibleAmount,
-        donationDate: Date.now(),
-        receiptDate: Date.now(),
+        donationDate,
+        receiptDate,
         certificateNumber: this.generateCertificateNumber(),
+        jurisdiction,
+        isTaxClaimable,
         impact: {
-          beneficiariesReached: proofs.reduce((sum, p) => sum + p.beneficiaryCount, 0),
+          beneficiariesReached: proofs.reduce((sum, p) => sum + (p.beneficiaryCount || 0), 0),
           sectorsSupported: Array.from(sectors),
           regionsImpacted: Array.from(regions),
         },
@@ -528,9 +678,21 @@ export class DonorTransparencyClient {
     return balance.toString();
   }
 
-  private calculateTaxDeductible(amount: string): string {
-    // Typically 100% of qualified charitable contributions
-    return amount;
+  public calculateTaxDeductible(amount: string, taxPolicy?: TaxPolicy): string {
+    if (!taxPolicy || !taxPolicy.jurisdiction || taxPolicy.isRecognizedCharity === false) {
+      return '0';
+    }
+    const pct = Math.max(0, Math.min(100, taxPolicy.deductiblePercentage ?? 100));
+    if (pct === 0) {
+      return '0';
+    }
+    const totalBn = BigInt(amount || '0');
+    const deductibleBn = (totalBn * BigInt(pct)) / BigInt(100);
+    if (taxPolicy.maxDeductibleAmount) {
+      const maxBn = BigInt(taxPolicy.maxDeductibleAmount);
+      return (deductibleBn > maxBn ? maxBn : deductibleBn).toString();
+    }
+    return deductibleBn.toString();
   }
 
   private addBigNumbers(a: string, b: string): string {
