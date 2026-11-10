@@ -26,6 +26,7 @@ export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
 export { ReadCache } from './readCache';
 
+import { StrKey } from 'stellar-sdk';
 import { AidClient } from './aidClient';
 import { FeeBumpClient } from './feeBumpClient';
 import { TransactionSimulator } from './transactionSimulator';
@@ -95,8 +96,56 @@ export const MAINNET_CONFIG = {
   }
 };
 
+const REQUIRED_CONTRACT_KEYS = [
+  'platform',
+  'aidRegistry',
+  'beneficiaryManager',
+  'merchantNetwork',
+  'cashTransfer',
+  'supplyChainTracker',
+  'antiFraud',
+] as const;
+
+export function isPlaceholderContractId(contractId: unknown): boolean {
+  if (typeof contractId !== 'string') return true;
+  const trimmed = contractId.trim();
+  return (
+    trimmed.length === 0 ||
+    trimmed === 'CONTRACT_ID_HERE' ||
+    trimmed.includes('PLACEHOLDER') ||
+    trimmed.startsWith('<')
+  );
+}
+
+/**
+ * Validate `NetworkConfig` at SDK initialization so placeholder or malformed
+ * contract IDs fail immediately with actionable setup instructions (#161).
+ */
+export function assertValidNetworkConfig(config: any): void {
+  if (!config || typeof config !== 'object' || !config.contractIds || typeof config.contractIds !== 'object') {
+    throw new Error(
+      'Invalid SDK NetworkConfig: provide `contractIds` containing deployed Soroban contract addresses (`C...`).'
+    );
+  }
+  for (const key of REQUIRED_CONTRACT_KEYS) {
+    const id = config.contractIds[key];
+    if (isPlaceholderContractId(id)) {
+      throw new Error(
+        `SDK initialization failed: contractIds.${key} is still a placeholder ("${String(id)}"). ` +
+          'Deploy the contracts (`soroban contract deploy`) and pass deployed `C...` contract IDs instead of TESTNET_CONFIG/MAINNET_CONFIG templates.'
+      );
+    }
+    if (!StrKey.isValidContract(id)) {
+      throw new Error(
+        `SDK initialization failed: contractIds.${key} ("${id}") is not a valid Soroban contract address (expected 56-char C... StrKey).`
+      );
+    }
+  }
+}
+
 // Export utility functions
 export const createDisasterReliefSDK = (config: any) => {
+  assertValidNetworkConfig(config);
   if (config.logging) {
     logger.configure(config.logging);
   }
