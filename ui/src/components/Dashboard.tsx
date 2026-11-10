@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AidClient } from '../../sdk/src/aidClient';
 import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
 import { MerchantClient } from '../../sdk/src/merchantClient';
@@ -105,6 +105,77 @@ interface DashboardStats {
   spentAmount: bigint;
   /** How many amount fields could not be parsed as integers. */
   invalidAmountFields: number;
+}
+
+export interface FilteredDashboardView {
+  funds: EmergencyFund[];
+  beneficiaries: BeneficiaryProfile[];
+  merchants: Merchant[];
+  transfers: ConditionalTransfer[];
+  stats: DashboardStats;
+}
+
+/** Derive filtered records and synchronized aggregate stats for `selectedDisaster` (or all when empty). */
+export function buildFilteredDashboardView(
+  allFunds: EmergencyFund[],
+  allBeneficiaries: BeneficiaryProfile[],
+  allMerchants: Merchant[],
+  merchantTotalCount: number,
+  allTransfers: ConditionalTransfer[],
+  selectedDisaster: string
+): FilteredDashboardView {
+  const scope = selectedDisaster.trim();
+  const funds = scope
+    ? allFunds.filter((f) => f.disasterType === scope || f.id === scope)
+    : allFunds;
+
+  const beneficiaries = scope
+    ? allBeneficiaries.filter((b) => b.disasterId === scope)
+    : allBeneficiaries;
+
+  const scopedBeneficiaryIds = new Set(beneficiaries.map((b) => b.id));
+  const transfers = scope
+    ? allTransfers.filter(
+        (t) =>
+          scopedBeneficiaryIds.has(t.beneficiaryId) ||
+          (t as { disasterId?: string }).disasterId === scope
+      )
+    : allTransfers;
+
+  const merchants = allMerchants;
+  const totalMerchants = scope
+    ? merchants.length
+    : merchantTotalCount || merchants.length;
+
+  const fundTotals = sumAmounts(funds.map((f) => f.totalAmount));
+  const releasedTotals = sumAmounts(funds.map((f) => f.releasedAmount));
+  const transferTotals = sumAmounts(transfers.map((t) => t.amount));
+  const spentTotals = sumAmounts(transfers.map((t) => t.spentAmount));
+
+  const invalidAmountFields =
+    fundTotals.invalid + releasedTotals.invalid + transferTotals.invalid + spentTotals.invalid;
+
+  return {
+    funds,
+    beneficiaries,
+    merchants,
+    transfers,
+    stats: {
+      totalFunds: funds.length,
+      activeFunds: funds.filter((f) => f.isActive).length,
+      totalFundAmount: fundTotals.total,
+      releasedAmount: releasedTotals.total,
+      totalBeneficiaries: beneficiaries.length,
+      activeBeneficiaries: beneficiaries.filter((b) => b.isActive).length,
+      totalMerchants,
+      verifiedMerchants: merchants.filter((m) => m.isVerified).length,
+      totalTransfers: transfers.length,
+      activeTransfers: transfers.filter((t) => t.isActive).length,
+      totalTransferAmount: transferTotals.total,
+      spentAmount: spentTotals.total,
+      invalidAmountFields,
+    },
+  };
 }
 
 // ── Minimal SVG bar chart ──────────────────────────────────────────────────
@@ -228,8 +299,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
   transferClient,
   query,
 }) => {
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [funds, setFunds] = useState<EmergencyFund[]>([]);
+  const [allFunds, setAllFunds] = useState<EmergencyFund[]>([]);
+  const [allBeneficiaries, setAllBeneficiaries] = useState<BeneficiaryProfile[]>([]);
+  const [allMerchants, setAllMerchants] = useState<Merchant[]>([]);
+  const [merchantTotalCount, setMerchantTotalCount] = useState<number>(0);
+  const [allTransfers, setAllTransfers] = useState<ConditionalTransfer[]>([]);
+  const [selectedDisaster, setSelectedDisaster] = useState<string>(query?.disasterId ?? '');
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -237,17 +313,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   useEffect(() => {
     loadDashboardData();
-  }, []);
+  }, [resolved.disasterId, resolved.beneficiaryId]);
 
   const loadDashboardData = async () => {
     try {
       setLoading(true);
       setError(null);
-
-      // Dashboard aggregates use a bounded page (max 100) instead of an
-      // unbounded scan. The contract caps the page size server-side; totals
-      // that need every record should use the dedicated paginated views.
-      const DASHBOARD_AGGREGATE_LIMIT = 100;
 
       const [activeFunds, beneficiaries, merchants, transfers] = await Promise.allSettled([
         aidClient.listActiveFunds(),
@@ -270,39 +341,55 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const merchantsData: Merchant[] = merchantsPage.merchants;
       const transfersData: ConditionalTransfer[] = transfers.status === 'fulfilled' ? transfers.value : [];
 
-      setFunds(fundsData);
-
-      // #203 — sum in bigint and report how many fields were unreadable, so a
-      // malformed amount shows up as a warning rather than silently as $0.
-      const fundTotals = sumAmounts(fundsData.map((f) => f.totalAmount));
-      const releasedTotals = sumAmounts(fundsData.map((f) => f.releasedAmount));
-      const transferTotals = sumAmounts(transfersData.map((t) => t.amount));
-      const spentTotals = sumAmounts(transfersData.map((t) => t.spentAmount));
-
-      const invalidAmountFields =
-        fundTotals.invalid + releasedTotals.invalid + transferTotals.invalid + spentTotals.invalid;
-
-      setStats({
-        totalFunds: fundsData.length,
-        activeFunds: fundsData.filter((f) => f.isActive).length,
-        totalFundAmount: fundTotals.total,
-        releasedAmount: releasedTotals.total,
-        totalBeneficiaries: beneficiariesData.length,
-        activeBeneficiaries: beneficiariesData.filter((b) => b.isActive).length,
-        totalMerchants: merchantsPage.totalCount || merchantsData.length,
-        verifiedMerchants: merchantsData.filter((m) => m.isVerified).length,
-        totalTransfers: transfersData.length,
-        activeTransfers: transfersData.filter((t) => t.isActive).length,
-        totalTransferAmount: transferTotals.total,
-        spentAmount: spentTotals.total,
-        invalidAmountFields,
-      });
+      setAllFunds(fundsData);
+      setAllBeneficiaries(beneficiariesData);
+      setAllMerchants(merchantsData);
+      setMerchantTotalCount(merchantsPage.totalCount || merchantsData.length);
+      setAllTransfers(transfersData);
+      setHasLoaded(true);
     } catch (err) {
       setError('Failed to load dashboard data. Some metrics may be unavailable.');
     } finally {
       setLoading(false);
     }
   };
+
+  const disasterOptions = useMemo(() => {
+    const opts = new Set<string>();
+    for (const f of allFunds) {
+      if (f.disasterType) opts.add(f.disasterType);
+    }
+    for (const b of allBeneficiaries) {
+      if (b.disasterId && b.disasterId !== SAMPLE_DISASTER_ID) opts.add(b.disasterId);
+    }
+    if (selectedDisaster) {
+      opts.add(selectedDisaster);
+    }
+    return Array.from(opts).sort();
+  }, [allFunds, allBeneficiaries, selectedDisaster]);
+
+  const view = useMemo(() => {
+    if (!hasLoaded) return null;
+    return buildFilteredDashboardView(
+      allFunds,
+      allBeneficiaries,
+      allMerchants,
+      merchantTotalCount,
+      allTransfers,
+      selectedDisaster
+    );
+  }, [
+    hasLoaded,
+    allFunds,
+    allBeneficiaries,
+    allMerchants,
+    merchantTotalCount,
+    allTransfers,
+    selectedDisaster,
+  ]);
+
+  const stats = view ? view.stats : null;
+  const funds = view ? view.funds : [];
 
   const pct = (part: bigint, whole: bigint) => percentageOf(part, whole);
 
@@ -329,13 +416,43 @@ export const Dashboard: React.FC<DashboardProps> = ({
             beneficiary and merchant views for full paginated data.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={loadDashboardData}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label htmlFor="disaster-filter" className="text-sm text-gray-600 font-medium">
+              Disaster
+            </label>
+            <select
+              id="disaster-filter"
+              aria-label="Filter by disaster"
+              value={selectedDisaster}
+              onChange={(e) => setSelectedDisaster(e.target.value)}
+              className="border border-gray-300 rounded px-3 py-1.5 text-sm bg-white text-gray-800"
+            >
+              <option value="">All disasters</option>
+              {disasterOptions.map((disaster) => (
+                <option key={disaster} value={disaster}>
+                  {disaster}
+                </option>
+              ))}
+            </select>
+          </div>
+          {selectedDisaster && (
+            <button
+              type="button"
+              onClick={() => setSelectedDisaster('')}
+              className="border border-gray-300 text-gray-700 px-3 py-1.5 rounded hover:bg-gray-50 text-sm"
+            >
+              Clear filter
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={loadDashboardData}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -450,8 +567,28 @@ export const Dashboard: React.FC<DashboardProps> = ({
             <StatCard label="Amount Spent" value={formatAmount(stats.spentAmount)} sub={`${pct(stats.spentAmount, stats.totalTransferAmount)}% utilization`} />
           </div>
 
-          {/* Active funds table */}
-          {funds.length > 0 && (
+          {/* Active funds table or empty state */}
+          {funds.length === 0 ? (
+            <div
+              role="status"
+              className="bg-white rounded-lg border border-gray-200 p-6 text-center text-sm text-gray-600"
+            >
+              {selectedDisaster ? (
+                <div className="space-y-2">
+                  <p>No emergency funds match disaster &ldquo;{selectedDisaster}&rdquo;.</p>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedDisaster('')}
+                    className="text-blue-600 hover:underline font-medium"
+                  >
+                    Clear filter
+                  </button>
+                </div>
+              ) : (
+                <p>No emergency funds found.</p>
+              )}
+            </div>
+          ) : (
             <div className="bg-white rounded-lg border border-gray-200 p-5">
               <h2 className="font-semibold text-gray-800 mb-4">Active Emergency Funds</h2>
               <div className="overflow-x-auto">
@@ -478,8 +615,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       // `NaN < anything` is false, which would have hidden the
                       // "expiring soon" warning rather than showing it.
                       const expiresInMs = fund.expiresAt - Date.now();
+                      const isExpired = Number.isFinite(expiresInMs) && expiresInMs <= 0;
                       const isExpiringSoon =
                         Number.isFinite(expiresInMs) &&
+                        !isExpired &&
                         expiresInMs < 7 * 24 * 60 * 60 * 1000;
                       return (
                         <tr key={fund.id} className="border-b border-gray-100 hover:bg-gray-50">
