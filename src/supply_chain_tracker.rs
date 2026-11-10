@@ -7,11 +7,27 @@ use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
 pub struct SupplyChainTracker;
 
 #[derive(Clone)]
+pub struct AuthorizedRecipient {
+    pub address: Address,
+    pub recipient_id: String,
+}
+
+#[derive(Clone)]
+pub struct DeliveryException {
+    pub shipment_id: String,
+    pub recorded_by: Address,
+    pub missing_quantity: U256,
+    pub reason: String,
+    pub recorded_at: u64,
+}
+
+#[derive(Clone)]
 pub struct SupplyShipment {
     pub id: String,
     pub donor_id: String,
     pub supply_type: String,
     pub quantity: U256,
+    pub total_received_quantity: U256,
     pub unit: String,
     pub origin: Location,
     pub destination: Location,
@@ -22,6 +38,10 @@ pub struct SupplyShipment {
     pub assigned_transporter: Option<Address>,
     pub temperature_requirements: Option<TemperatureRequirements>,
     pub special_handling: Vec<String>,
+    /// Explicit recipient authorization policy (supports single or group deliveries).
+    pub authorized_recipients: Vec<AuthorizedRecipient>,
+    /// Authorized shortage/loss closure exceptions recorded by the shipment creator.
+    pub delivery_exceptions: Vec<DeliveryException>,
     /// The address that created this shipment (used for ownership checks).
     pub creator: Address,
 }
@@ -90,6 +110,9 @@ pub struct RecipientConfirmation {
     pub shipment_id: String,
     pub recipient_id: String,
     pub received_quantity: U256,
+    pub cumulative_received_quantity: U256,
+    pub remaining_quantity: U256,
+    pub is_partial: bool,
     pub received_at: u64,
     pub condition_report: String,
     pub confirmed_by: Address,
@@ -148,6 +171,7 @@ impl SupplyChainTracker {
             donor_id,
             supply_type,
             quantity,
+            total_received_quantity: U256::from_u64(&env, 0),
             unit,
             origin,
             destination,
@@ -158,6 +182,8 @@ impl SupplyChainTracker {
             assigned_transporter: None,
             temperature_requirements,
             special_handling,
+            authorized_recipients: Vec::new(&env),
+            delivery_exceptions: Vec::new(&env),
             creator: donor,
         };
 
@@ -272,9 +298,62 @@ impl SupplyChainTracker {
         }
     }
 
-    /// Confirm final delivery.
+    /// Configure authorized intended recipient(s) for a shipment.
     ///
-    /// Any authenticated address may confirm delivery (the recipient signs).
+    /// **Required role:** NGO (and must be the original shipment creator).
+    /// Supports both single-recipient and group deliveries by registering one or more
+    /// `(Address, recipient_id)` pairs bound to the shipment.
+    pub fn configure_recipient_policy(
+        env: Env,
+        donor: Address,
+        shipment_id: String,
+        authorized_recipients: Vec<(Address, String)>,
+    ) {
+        donor.require_auth();
+        rbac::require_role(&env, &donor, ROLE_NGO);
+
+        if authorized_recipients.is_empty() {
+            panic!("Authorized recipient policy must include at least one recipient");
+        }
+        let mut policy = Vec::new(&env);
+        for (address, recipient_id) in authorized_recipients.iter() {
+            if recipient_id.is_empty() {
+                panic!("Authorized recipient_id must not be empty");
+            }
+            policy.push_back(AuthorizedRecipient { address, recipient_id });
+        }
+
+        let shipments_key = Symbol::new(&env, "shipments");
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut shipment = match shipments.get(shipment_id.clone()) {
+            Some(s) => s,
+            None => panic!("Shipment not found"),
+        };
+
+        if shipment.creator != donor {
+            panic!("Unauthorized: caller is not the shipment creator");
+        }
+
+        shipment.authorized_recipients = policy;
+        shipments.set(shipment_id, shipment);
+        env.storage().instance().set(&shipments_key, &shipments);
+    }
+
+    /// Confirm full or partial delivery.
+    ///
+    /// Enforces:
+    /// 1. Caller holds `ROLE_RECIPIENT` and authenticates.
+    /// 2. Shipment has a configured `authorized_recipients` policy and `(recipient, recipient_id)`
+    ///    matches an entry in that policy.
+    /// 3. `received_quantity > 0` and `received_quantity <= remaining_quantity`.
+    /// 4. Partial deliveries set status to `"partially_delivered"` and accumulate toward
+    ///    `shipment.quantity`; status becomes `"delivered"` only when total received equals
+    ///    declared quantity (or when closed via `record_delivery_exception`).
     pub fn confirm_delivery(
         env: Env,
         recipient: Address,
@@ -301,10 +380,48 @@ impl SupplyChainTracker {
             None => panic!("Shipment not found"),
         };
 
+        if shipment.current_status == String::from_str(&env, "delivered")
+            || shipment.current_status == String::from_str(&env, "lost")
+        {
+            panic!("Shipment delivery already completed or closed");
+        }
+
+        if shipment.authorized_recipients.is_empty() {
+            panic!("Recipient policy not configured for shipment");
+        }
+
+        let mut is_authorized_recipient = false;
+        for policy_entry in shipment.authorized_recipients.iter() {
+            if policy_entry.address == recipient && policy_entry.recipient_id == recipient_id {
+                is_authorized_recipient = true;
+                break;
+            }
+        }
+        if !is_authorized_recipient {
+            panic!("Unauthorized: recipient does not match shipment recipient policy");
+        }
+
+        let zero = U256::from_u64(&env, 0);
+        if received_quantity <= zero {
+            panic!("Received quantity must be greater than zero");
+        }
+
+        let outstanding = shipment.quantity.clone() - shipment.total_received_quantity.clone();
+        if received_quantity > outstanding {
+            panic!("Received quantity exceeds outstanding shipment quantity");
+        }
+
+        let new_total = shipment.total_received_quantity.clone() + received_quantity.clone();
+        let remaining = shipment.quantity.clone() - new_total.clone();
+        let is_partial = remaining > zero;
+
         let confirmation = RecipientConfirmation {
             shipment_id: shipment_id.clone(),
             recipient_id,
             received_quantity,
+            cumulative_received_quantity: new_total.clone(),
+            remaining_quantity: remaining,
+            is_partial,
             received_at: env.ledger().timestamp(),
             condition_report,
             confirmed_by: recipient,
@@ -317,12 +434,85 @@ impl SupplyChainTracker {
             .instance()
             .get(&confirmations_key)
             .unwrap_or(Map::new(&env));
-        confirmations.set(shipment_id.clone(), confirmation);
+        confirmations.set(shipment_id.clone(), confirmation.clone());
         env.storage().instance().set(&confirmations_key, &confirmations);
 
+        let history_key = Symbol::new(&env, "conf_hist");
+        let mut history_map: Map<String, Vec<RecipientConfirmation>> = env
+            .storage()
+            .instance()
+            .get(&history_key)
+            .unwrap_or(Map::new(&env));
+        let mut shipment_history = history_map.get(shipment_id.clone()).unwrap_or(Vec::new(&env));
+        shipment_history.push_back(confirmation);
+        history_map.set(shipment_id.clone(), shipment_history);
+        env.storage().instance().set(&history_key, &history_map);
+
+        shipment.total_received_quantity = new_total;
+        shipment.current_status = if is_partial {
+            String::from_str(&env, "partially_delivered")
+        } else {
+            String::from_str(&env, "delivered")
+        };
+        shipments.set(shipment_id, shipment);
+        env.storage().instance().set(&shipments_key, &shipments);
+    }
+
+    /// Record an authorized shortage/delivery exception and mark a partial shipment as delivered.
+    ///
+    /// **Required role:** NGO (original shipment creator).
+    pub fn record_delivery_exception(
+        env: Env,
+        donor: Address,
+        shipment_id: String,
+        reason: String,
+    ) {
+        donor.require_auth();
+        rbac::require_role(&env, &donor, ROLE_NGO);
+
+        let shipments_key = Symbol::new(&env, "shipments");
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut shipment = match shipments.get(shipment_id.clone()) {
+            Some(s) => s,
+            None => panic!("Shipment not found"),
+        };
+
+        if shipment.creator != donor {
+            panic!("Unauthorized: caller is not the shipment creator");
+        }
+        if shipment.current_status == String::from_str(&env, "delivered")
+            || shipment.current_status == String::from_str(&env, "lost")
+        {
+            panic!("Shipment delivery already completed or closed");
+        }
+
+        let missing_quantity = shipment.quantity.clone() - shipment.total_received_quantity.clone();
+        shipment.delivery_exceptions.push_back(DeliveryException {
+            shipment_id: shipment_id.clone(),
+            recorded_by: donor,
+            missing_quantity,
+            reason,
+            recorded_at: env.ledger().timestamp(),
+        });
         shipment.current_status = String::from_str(&env, "delivered");
         shipments.set(shipment_id, shipment);
         env.storage().instance().set(&shipments_key, &shipments);
+    }
+
+    /// Retrieve all partial/final delivery confirmations recorded for a shipment.
+    pub fn get_delivery_confirmations(env: Env, shipment_id: String) -> Vec<RecipientConfirmation> {
+        let history_key = Symbol::new(&env, "conf_hist");
+        let history_map: Map<String, Vec<RecipientConfirmation>> = env
+            .storage()
+            .instance()
+            .get(&history_key)
+            .unwrap_or(Map::new(&env));
+        history_map.get(shipment_id).unwrap_or(Vec::new(&env))
     }
 
     /// Report a shipment as lost.

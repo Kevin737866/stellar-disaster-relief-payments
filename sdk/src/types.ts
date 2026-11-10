@@ -222,21 +222,37 @@ export interface TransferTransaction {
   rejectionReason: string;
 }
 
+export interface AuthorizedRecipient {
+  address: string;
+  recipientId: string;
+}
+
+export interface DeliveryException {
+  shipmentId: string;
+  recordedBy: string;
+  missingQuantity: string;
+  reason: string;
+  recordedAt: number;
+}
+
 export interface SupplyShipment {
   id: string;
   donorId: string;
   supplyType: string;
   quantity: string;
+  totalReceivedQuantity?: string;
   unit: string;
   origin: Location;
   destination: Location;
   createdAt: number;
   estimatedArrival: number;
-  currentStatus: string; // "in_transit", "at_checkpoint", "delivered", "lost"
+  currentStatus: string; // "in_transit", "at_checkpoint", "partially_delivered", "delivered", "lost"
   checkpoints: Checkpoint[];
   assignedTransporter?: string;
   temperatureRequirements?: TemperatureRequirements;
   specialHandling: string[];
+  authorizedRecipients?: AuthorizedRecipient[];
+  deliveryExceptions?: DeliveryException[];
 }
 
 export interface Checkpoint {
@@ -261,6 +277,9 @@ export interface RecipientConfirmation {
   shipmentId: string;
   recipientId: string;
   receivedQuantity: string;
+  cumulativeReceivedQuantity?: string;
+  remainingQuantity?: string;
+  isPartial?: boolean;
   receivedAt: number;
   conditionReport: string;
   confirmedBy: string;
