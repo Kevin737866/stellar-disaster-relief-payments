@@ -126,10 +126,18 @@ pub fn add_trigger(
     auto_release_amount: U256,
     geofence_latitude: i64,     // degrees × 1e6
     geofence_longitude: i64,    // degrees × 1e6
-    geofence_radius_km: u64,
+    geofence_radius_km: u64,    // radius in km (inclusive boundary)
     min_oracle_confirmations: u32,
 )
 ```
+
+#### Geographic Coordinates & Geofence Semantics (`src/geo.rs`)
+
+- **Coordinate validation:** `GeoPoint::new` requires finite WGS84 degrees (`latitude` in `[-90, 90]`, `longitude` in `[-180, 180]`); `NaN` and `±inf` are rejected. Legacy microdegree imports (`from_scaled_i64` / `GeoMigration`) apply the same bounds check.
+- **String format:** `GeoPoint::to_string` and `from_string` use decimal `"lat,lng"` degrees (optional surrounding whitespace is trimmed on parse).
+- **Radius validation & units:** `is_within_radius`, `bounding_box`, and `GeoBounds::from_radius` accept a non-negative finite `radius_km` in kilometers (`0.0` matches only the center point; negative/`NaN`/infinite values return an error). `GeofenceZone` stores `radius_meters: u32` in meters (`radius_km() == radius_meters as f64 / 1000.0`).
+- **Inclusive boundary rule:** Point-in-circle checks (`is_within_radius` and `GeofenceZone::contains`) are **inclusive** of the boundary (`distance_km <= radius_km + BOUNDARY_EPSILON_KM`, where `BOUNDARY_EPSILON_KM = 1e-9` prevents floating-point rounding on exact boundary coordinates).
+- **Antimeridian bounds:** `GeoBounds` represents bounding boxes that cross `±180°` longitude with `min_lng > max_lng`, denoting the wrapped union `[min_lng, 180.0] ∪ [-180.0, max_lng]`.
 
 ---
 
