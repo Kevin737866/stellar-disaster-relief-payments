@@ -662,6 +662,15 @@ export class I18nManager {
   }
 
   /**
+   * Return the deterministic fallback locale resolution order (`[currentLanguage, fallbackLanguage]`, deduplicated).
+   */
+  getFallbackOrder(): Language[] {
+    return this.currentLanguage === this.fallbackLanguage
+      ? [this.fallbackLanguage]
+      : [this.currentLanguage, this.fallbackLanguage];
+  }
+
+  /**
    * Get error message by code
    */
   getErrorMessage(errorCode: string): ErrorMessage {
@@ -737,4 +746,75 @@ export class I18nManager {
 }
 
 // Create a default instance
-export const defaultI18n = new I18nManager('en');
+export const DEFAULT_FALLBACK_LANGUAGE: Language = 'en';
+
+export interface TranslationMismatch {
+  locale: string;
+  key: string;
+}
+
+export interface TranslationValidationReport {
+  valid: boolean;
+  referenceLocale: Language;
+  missingKeys: TranslationMismatch[];
+  extraKeys: TranslationMismatch[];
+}
+
+/**
+ * Compare every locale dictionary against `referenceLocale` (defaults to `'en'`)
+ * and report missing or extra error keys with their exact locale and key names.
+ */
+export function validateTranslations(
+  dictionaries: Record<string, Record<string, ErrorMessage>> = ERROR_MESSAGES as unknown as Record<string, Record<string, ErrorMessage>>,
+  referenceLocale: Language = DEFAULT_FALLBACK_LANGUAGE
+): TranslationValidationReport {
+  const reference = dictionaries[referenceLocale];
+  if (!reference) {
+    throw new Error(`Reference locale "${referenceLocale}" is not defined in translation dictionaries`);
+  }
+  const referenceKeys = Object.keys(reference);
+  const referenceSet = new Set(referenceKeys);
+  const missingKeys: TranslationMismatch[] = [];
+  const extraKeys: TranslationMismatch[] = [];
+
+  for (const [locale, messages] of Object.entries(dictionaries)) {
+    const localeKeys = new Set(Object.keys(messages ?? {}));
+    for (const key of referenceKeys) {
+      if (!localeKeys.has(key)) {
+        missingKeys.push({ locale, key });
+      }
+    }
+    for (const key of localeKeys) {
+      if (!referenceSet.has(key)) {
+        extraKeys.push({ locale, key });
+      }
+    }
+  }
+
+  return {
+    valid: missingKeys.length === 0 && extraKeys.length === 0,
+    referenceLocale,
+    missingKeys,
+    extraKeys,
+  };
+}
+
+/**
+ * Assert that all locale dictionaries match the reference locale without missing keys.
+ */
+export function assertTranslationsComplete(
+  dictionaries: Record<string, Record<string, ErrorMessage>> = ERROR_MESSAGES as unknown as Record<string, Record<string, ErrorMessage>>,
+  referenceLocale: Language = DEFAULT_FALLBACK_LANGUAGE
+): void {
+  const report = validateTranslations(dictionaries, referenceLocale);
+  if (!report.valid) {
+    const missingDesc = report.missingKeys.map((m) => `${m.locale}.${m.key}`).join(', ');
+    const extraDesc = report.extraKeys.map((m) => `${m.locale}.${m.key}`).join(', ');
+    const parts: string[] = [];
+    if (missingDesc) parts.push(`missing keys: ${missingDesc}`);
+    if (extraDesc) parts.push(`extra keys: ${extraDesc}`);
+    throw new Error(`Incomplete i18n translations (${parts.join('; ')})`);
+  }
+}
+
+export const defaultI18n = new I18nManager(DEFAULT_FALLBACK_LANGUAGE);
