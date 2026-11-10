@@ -17,6 +17,22 @@
 /// - **Merchant**: Approved vendors providing emergency goods in disaster zones.
 /// - **Recipient**: Aid recipients and verified beneficiaries.
 ///
+/// # Bitmask Semantics & Call-Site Audit
+///
+/// Role checks use `u32` bitmasks with two explicit modes:
+/// - `has_role` / `require_role`: **all-bits-required (AND semantics)** — target must hold
+///   every role bit present in `role_mask`.
+/// - `has_any_role` / `require_any_role`: **any-of (OR semantics)** — target must hold
+///   at least one role bit present in `role_mask`.
+///
+/// Audit of existing contract call sites:
+/// - `beneficiary_manager.rs`: `require_role` with single bits (`ROLE_NGO`, `ROLE_ADMIN`)
+/// - `cash_transfer.rs`: `require_role` with single bit (`ROLE_NGO`)
+/// - `merchant_network.rs`: `require_role` with single bits (`ROLE_OPERATOR`, `ROLE_ADMIN`)
+/// - `supply_chain_tracker.rs`: `require_role` / `has_role` with single bits (`ROLE_NGO`, `ROLE_TRANSPORTER`, `ROLE_RECIPIENT`)
+/// For single-bit checks AND and OR behave identically; operations that accept multiple
+/// interchangeable roles must explicitly call `require_any_role` / `has_any_role`.
+///
 /// # Role-Gated Operations
 ///
 /// | Role | Modules & Operations |
@@ -53,34 +69,58 @@
 ///    Community-based recovery and vouching where trusted contacts or existing beneficiaries
 ///    attest to identities or vendors.
 ///
-/// # Storage Layout
+/// # Storage Scope & Multi-Contract Deployment Architecture
 ///
-/// Roles are stored in instance storage under the key `"roles"` as a
-/// `Map<Address, u32>` where the u32 is a bitmask of assigned roles.
+/// Roles are stored in **instance storage** (`env.storage().instance()`) under `"roles"`
+/// as a `Map<Address, u32>`. Because instance storage is bound to the deployed contract
+/// instance lifecycle:
+/// - In a monolithic deployment (`DisasterReliefPlatform` + modules compiled in one contract),
+///   all modules share the contract instance's RBAC map initialized by `initialize()`.
+/// - In a multi-contract deployment (separate contract IDs per module), each deployed
+///   contract instance owns an isolated RBAC map and must seed/manage roles independently
+///   (or perform explicit cross-contract queries against the platform contract).
 ///
-/// # Privilege Escalation Protection
+/// # Privilege Escalation & Operator Safeguards
 ///
-/// - Only Admin can assign or revoke roles.
-/// - Admin cannot revoke their own Admin role (lockout protection).
-/// - `initialize()` is guarded by a one-time init flag; re-initialization panics.
+/// - Only Admin can assign or revoke roles; invalid or zero `role_mask` bits are rejected.
+/// - Admin cannot revoke their own Admin role or remove the last remaining Admin holder.
+/// - Revoking high-impact roles (`CRITICAL_ROLE_MASK`: `ROLE_ADMIN | ROLE_GOV | ROLE_UN`)
+///   emits flagged audit events (`is_high_impact = true`), and operators should prefer
+///   `revoke_critical_role(..., confirm_high_impact: true)` after governance confirmation.
+/// - `DisasterReliefPlatform::initialize()` is guarded by a one-time init flag; re-initialization panics.
 
 use soroban_sdk::{Address, Env, Map, Symbol};
 
 // Role bitmask constants — each role is a distinct bit.
-pub const ROLE_ADMIN: u32    = 1 << 0; // 1
-pub const ROLE_NGO: u32      = 1 << 1; // 2
-pub const ROLE_GOV: u32      = 1 << 2; // 4
-pub const ROLE_UN: u32       = 1 << 3; // 8
-pub const ROLE_AUDITOR: u32  = 1 << 4; // 16
-pub const ROLE_ORACLE: u32   = 1 << 5; // 32
-pub const ROLE_OPERATOR: u32 = 1 << 6; // 64
+pub const ROLE_ADMIN: u32       = 1 << 0; // 1
+pub const ROLE_NGO: u32         = 1 << 1; // 2
+pub const ROLE_GOV: u32         = 1 << 2; // 4
+pub const ROLE_UN: u32          = 1 << 3; // 8
+pub const ROLE_AUDITOR: u32     = 1 << 4; // 16
+pub const ROLE_ORACLE: u32      = 1 << 5; // 32
+pub const ROLE_OPERATOR: u32    = 1 << 6; // 64
 pub const ROLE_TRANSPORTER: u32 = 1 << 7; // 128
-pub const ROLE_MERCHANT: u32 = 1 << 8; // 256
-pub const ROLE_RECIPIENT: u32 = 1 << 9; // 512
+pub const ROLE_MERCHANT: u32    = 1 << 8; // 256
+pub const ROLE_RECIPIENT: u32   = 1 << 9; // 512
+
+/// Bitmask of all defined roles (`ROLE_ADMIN` through `ROLE_RECIPIENT`).
+pub const VALID_ROLE_MASK: u32 = ROLE_ADMIN
+    | ROLE_NGO
+    | ROLE_GOV
+    | ROLE_UN
+    | ROLE_AUDITOR
+    | ROLE_ORACLE
+    | ROLE_OPERATOR
+    | ROLE_TRANSPORTER
+    | ROLE_MERCHANT
+    | ROLE_RECIPIENT;
+
+/// High-impact governance/custody roles requiring elevated operator caution on revocation.
+pub const CRITICAL_ROLE_MASK: u32 = ROLE_ADMIN | ROLE_GOV | ROLE_UN;
 
 const ROLES_KEY: &str = "roles";
 
-// ── Storage helpers ──────────────────────────────────────────────────────────
+// ── Storage & validation helpers ─────────────────────────────────────────────
 
 fn roles_key(env: &Env) -> Symbol {
     Symbol::new(env, ROLES_KEY)
@@ -97,30 +137,59 @@ fn save_roles(env: &Env, roles: &Map<Address, u32>) {
     env.storage().instance().set(&roles_key(env), roles);
 }
 
+/// Returns `true` iff `role_mask` is non-zero and contains only defined role bits (`VALID_ROLE_MASK`).
+pub fn is_valid_role_mask(role_mask: u32) -> bool {
+    role_mask != 0 && (role_mask & !VALID_ROLE_MASK) == 0
+}
+
+fn validate_role_mask(role_mask: u32) {
+    if !is_valid_role_mask(role_mask) {
+        panic!("Invalid role mask");
+    }
+}
+
+fn count_role_holders(roles: &Map<Address, u32>, role_bit: u32) -> u32 {
+    let mut count = 0u32;
+    for (_, bits) in roles.iter() {
+        if (bits & role_bit) == role_bit {
+            count += 1;
+        }
+    }
+    count
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /// Assign `role_mask` to `target`. Caller must be Admin.
 ///
-/// Multiple roles can be assigned in one call by OR-ing role constants:
-/// ```
-/// assign_role(&env, &admin, &target, ROLE_NGO | ROLE_OPERATOR);
-/// ```
+/// Rejects zero or undefined role bits (`VALID_ROLE_MASK`) and emits an RBAC
+/// `"role_assigned"` audit event.
 pub fn assign_role(env: &Env, caller: &Address, target: &Address, role_mask: u32) {
     caller.require_auth();
     require_role(env, caller, ROLE_ADMIN);
+    validate_role_mask(role_mask);
 
     let mut roles = load_roles(env);
     let current = roles.get(target.clone()).unwrap_or(0);
-    roles.set(target.clone(), current | role_mask);
+    let updated = current | role_mask;
+    roles.set(target.clone(), updated);
     save_roles(env, &roles);
+
+    env.events().publish(
+        (Symbol::new(env, "rbac"), Symbol::new(env, "role_assigned")),
+        (caller.clone(), target.clone(), role_mask, updated),
+    );
 }
 
 /// Revoke `role_mask` from `target`. Caller must be Admin.
 ///
-/// Panics if the caller attempts to revoke their own Admin role (lockout protection).
+/// Rejects invalid role masks, prevents self-Admin lockout, prevents removing the
+/// last remaining Admin holder, and emits an auditable `"role_revoked"` event
+/// flagged with `is_high_impact = true` whenever `CRITICAL_ROLE_MASK` bits change.
 pub fn revoke_role(env: &Env, caller: &Address, target: &Address, role_mask: u32) {
     caller.require_auth();
     require_role(env, caller, ROLE_ADMIN);
+    validate_role_mask(role_mask);
 
     // Prevent admin from locking themselves out.
     if target == caller && (role_mask & ROLE_ADMIN) != 0 {
@@ -129,35 +198,84 @@ pub fn revoke_role(env: &Env, caller: &Address, target: &Address, role_mask: u32
 
     let mut roles = load_roles(env);
     let current = roles.get(target.clone()).unwrap_or(0);
-    roles.set(target.clone(), current & !role_mask);
+
+    // Prevent revoking the last remaining Admin holder.
+    if (role_mask & ROLE_ADMIN) != 0
+        && (current & ROLE_ADMIN) != 0
+        && count_role_holders(&roles, ROLE_ADMIN) <= 1
+    {
+        panic!("Cannot revoke the last remaining Admin role");
+    }
+
+    let updated = current & !role_mask;
+    if updated == 0 {
+        roles.remove(target.clone());
+    } else {
+        roles.set(target.clone(), updated);
+    }
     save_roles(env, &roles);
+
+    let is_high_impact = (role_mask & CRITICAL_ROLE_MASK) != 0;
+    env.events().publish(
+        (Symbol::new(env, "rbac"), Symbol::new(env, "role_revoked")),
+        (caller.clone(), target.clone(), role_mask, updated, is_high_impact),
+    );
 }
 
-/// Returns `true` if `address` holds all bits in `role_mask`.
+/// Explicit guarded revocation for high-impact roles (`ROLE_ADMIN`, `ROLE_GOV`, `ROLE_UN`).
+/// Panics unless `confirm_high_impact` is `true` when revoking any critical role bit.
+pub fn revoke_critical_role(
+    env: &Env,
+    caller: &Address,
+    target: &Address,
+    role_mask: u32,
+    confirm_high_impact: bool,
+) {
+    validate_role_mask(role_mask);
+    if (role_mask & CRITICAL_ROLE_MASK) != 0 && !confirm_high_impact {
+        panic!("Confirmation required to revoke high-impact role");
+    }
+    revoke_role(env, caller, target, role_mask);
+}
+
+/// Returns `true` if `role_mask` is valid and `address` holds ALL bits in `role_mask` (AND semantics).
 pub fn has_role(env: &Env, address: &Address, role_mask: u32) -> bool {
+    if !is_valid_role_mask(role_mask) {
+        return false;
+    }
     let roles = load_roles(env);
     let bits = roles.get(address.clone()).unwrap_or(0);
     (bits & role_mask) == role_mask
 }
 
-/// Panics with a descriptive message if `address` does not hold `role_mask`.
+/// Returns `true` if `role_mask` is valid and `address` holds AT LEAST ONE bit in `role_mask` (OR semantics).
+pub fn has_any_role(env: &Env, address: &Address, role_mask: u32) -> bool {
+    if !is_valid_role_mask(role_mask) {
+        return false;
+    }
+    let roles = load_roles(env);
+    let bits = roles.get(address.clone()).unwrap_or(0);
+    (bits & role_mask) != 0
+}
+
+/// Panics with a descriptive message if `address` does not hold ALL roles in `role_mask` (AND semantics).
 pub fn require_role(env: &Env, address: &Address, role_mask: u32) {
+    validate_role_mask(role_mask);
     if !has_role(env, address, role_mask) {
         panic!("Unauthorized: missing required role");
     }
 }
 
-/// Panics if `address` does not hold at least one of the roles in `role_mask`.
+/// Panics if `address` does not hold AT LEAST ONE of the roles in `role_mask` (OR semantics).
 pub fn require_any_role(env: &Env, address: &Address, role_mask: u32) {
-    let roles = load_roles(env);
-    let bits = roles.get(address.clone()).unwrap_or(0);
-    if (bits & role_mask) == 0 {
+    validate_role_mask(role_mask);
+    if !has_any_role(env, address, role_mask) {
         panic!("Unauthorized: missing required role");
     }
 }
 
 /// Seed initial roles from the platform `initialize()` call.
-/// Must only be called once (enforced by the caller via the init guard).
+/// OR-s role bits when the same address fulfills multiple initial signer roles.
 pub fn seed_initial_roles(
     env: &Env,
     admin: &Address,
@@ -166,10 +284,15 @@ pub fn seed_initial_roles(
     un: &Address,
 ) {
     let mut roles = Map::new(env);
-    roles.set(admin.clone(), ROLE_ADMIN);
-    roles.set(ngo.clone(), ROLE_NGO);
-    roles.set(gov.clone(), ROLE_GOV);
-    roles.set(un.clone(), ROLE_UN);
+    for (addr, bit) in [
+        (admin, ROLE_ADMIN),
+        (ngo, ROLE_NGO),
+        (gov, ROLE_GOV),
+        (un, ROLE_UN),
+    ] {
+        let cur = roles.get(addr.clone()).unwrap_or(0);
+        roles.set(addr.clone(), cur | bit);
+    }
     save_roles(env, &roles);
 }
 
