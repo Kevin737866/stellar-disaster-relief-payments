@@ -47,14 +47,22 @@ pub struct DisasterReliefPlatform;
 
 #[contractimpl]
 impl DisasterReliefPlatform {
-    /// Initialize the disaster relief platform with admin addresses
+    /// Initialize the disaster relief platform with admin addresses and seed initial RBAC roles.
+    /// Enforces a one-time initialization guard to prevent re-seeding or role resets.
     pub fn initialize(env: Env, admin: Address, ngo_signer: Address, gov_signer: Address, un_signer: Address) {
+        if Self::is_initialized(env.clone()) {
+            panic!("Platform already initialized");
+        }
+
         // Store multi-sig signers for emergency fund release
         env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
         env.storage().instance().set(&Symbol::new(&env, "ngo_sig"), &ngo_signer);
         env.storage().instance().set(&Symbol::new(&env, "gov_sig"), &gov_signer);
         env.storage().instance().set(&Symbol::new(&env, "un_sig"), &un_signer);
-        
+
+        // Seed platform RBAC roles alongside signer configuration
+        rbac::seed_initial_roles(&env, &admin, &ngo_signer, &gov_signer, &un_signer);
+
         // Initialize contract state
         env.storage().instance().set(&Symbol::new(&env, "initialized"), &true);
     }
