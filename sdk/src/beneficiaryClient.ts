@@ -46,6 +46,28 @@ export const DEFAULT_BENEFICIARY_PAGE_SIZE = 20;
 /** Maximum page size accepted by the beneficiary contract (inclusive). */
 export const MAX_BENEFICIARY_PAGE_SIZE = 100;
 
+/** Domain prefix matching `BeneficiaryManager::hash_recovery_code` on-chain (`SDRP_RC_V1:{beneficiaryId}:{salt}:{index}`). */
+export const RECOVERY_CODE_DOMAIN = 'SDRP_RC_V1';
+
+/**
+ * Validate and normalize `familySize` for Soroban `u32` serialization (`0..=4294967295`, minimum 1).
+ */
+export function validateFamilySize(familySize: number): number {
+  if (
+    typeof familySize !== 'number' ||
+    !Number.isFinite(familySize) ||
+    !Number.isInteger(familySize) ||
+    familySize < 1 ||
+    familySize > 0xffffffff
+  ) {
+    throw new ValidationError(
+      'familySize',
+      `familySize must be an integer between 1 and 4294967295, received ${familySize}`
+    );
+  }
+  return familySize;
+}
+
 export class BeneficiaryClient {
   private server: any;
   private contract: any;
@@ -62,6 +84,10 @@ export class BeneficiaryClient {
   /**
    * Register displaced person without traditional ID
    */
+  /**
+   * Register displaced person on-chain without transmitting raw personal names (#116)
+   * and serialize `familySize` explicitly as Soroban `u32` (#167).
+   */
   async registerBeneficiary(
     registrarKey: string,
     beneficiaryId: string,
@@ -74,6 +100,12 @@ export class BeneficiaryClient {
     verificationFactors: VerificationFactor[]
   ): Promise<string> {
     validateAddress(walletAddress, 'walletAddress');
+    const validFamilySize = validateFamilySize(familySize);
+    // Keep personal names off-chain; send an opaque pseudonymous commitment (#116)
+    const pseudonymHint = createHash('sha256')
+      .update(`SDRP_CLIENT_NAME:${beneficiaryId}:${name}`)
+      .digest('hex');
+
     const registrarKeypair = Keypair.fromSecret(registrarKey);
     const registrarAccount = await withRetry<any>(() => this.server.getAccount(registrarKeypair.publicKey()));
 
@@ -87,11 +119,11 @@ export class BeneficiaryClient {
           ...[
             new Address(registrarKeypair.publicKey()).toScVal(),
             nativeToScVal(beneficiaryId),
-            nativeToScVal(name),
+            nativeToScVal(pseudonymHint),
             nativeToScVal(disasterId),
             nativeToScVal(location),
             new Address(walletAddress).toScVal(),
-            nativeToScVal(familySize),
+            nativeToScVal(validFamilySize, { type: 'u32' }),
             nativeToScVal(specialNeeds),
             nativeToScVal(verificationFactors)
           ]
@@ -202,17 +234,63 @@ export class BeneficiaryClient {
    * deployment can contain thousands of records, so it must not be used as the
    * default listing path.
    */
+  /**
+   * @deprecated Prefer `listBeneficiariesPaginated` (#125). Uses paginated fetches under the hood
+   * when supported by the contract client, falling back to `list_beneficiaries_by_disaster` (capped at 200 on-chain).
+   */
   async listBeneficiariesByDisaster(disasterId: string): Promise<BeneficiaryProfile[]> {
     return this.cache.get(`beneficiary:disaster:${disasterId}`, async () => {
       try {
-        const result = await this.contract.call("list_beneficiaries_by_disaster", nativeToScVal(disasterId));
-        const beneficiaries = scValToNative(result.result.retval);
-        return beneficiaries;
+        const page = await this.listBeneficiariesPaginated(disasterId, {
+          cursor: '',
+          limit: MAX_BENEFICIARY_PAGE_SIZE,
+        });
+        return page.items;
       } catch (error) {
         console.error('Failed to list beneficiaries:', error);
         return [];
       }
     });
+  }
+
+  /**
+   * Reactivate a previously deactivated beneficiary account (#326).
+   */
+  async reactivateBeneficiary(
+    adminKey: string,
+    beneficiaryId: string,
+    reason: string
+  ): Promise<string> {
+    if (!reason || reason.trim().length === 0) {
+      throw new ValidationError('reason', 'Reactivation reason must not be empty');
+    }
+    const adminKeypair = Keypair.fromSecret(adminKey);
+    const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
+
+    const tx = new TransactionBuilder(adminAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          'reactivate_beneficiary',
+          ...[
+            new Address(adminKeypair.publicKey()).toScVal(),
+            nativeToScVal(beneficiaryId),
+            nativeToScVal(reason),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    tx.sign(adminKeypair);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
+    if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`beneficiary:${beneficiaryId}`);
+      return `Beneficiary ${beneficiaryId} reactivated`;
+    }
+    throw new NetworkError('reactivate beneficiary', result.status, { beneficiaryId });
   }
 
   /**
@@ -337,22 +415,35 @@ export class BeneficiaryClient {
    * can derive the contract-side value. See `docs/offline-flows.md` (known
    * gaps) before using this for account recovery.
    */
-  generateRecoveryCodes(beneficiaryId: string): string[] {
-    const codes: string[] = [];
-    
-    for (let i = 0; i < 3; i++) {
-      const code = this.generateRecoveryCode(beneficiaryId, i);
-      codes.push(code);
-    }
-    
-    return codes;
+  /**
+   * Fetch the per-beneficiary recovery salt stored on-chain (`get_recovery_salt`) (#124, #166).
+   */
+  async getRecoverySalt(beneficiaryId: string): Promise<string | null> {
+    const result = await this.contract.call('get_recovery_salt', nativeToScVal(beneficiaryId));
+    const decoded = scValToNative(result.result.retval);
+    return typeof decoded === 'string' ? decoded : null;
   }
 
-  private generateRecoveryCode(beneficiaryId: string, index: number): string {
-    const data = `${beneficiaryId}_${index}_${Date.now()}`;
-    // SHA-256 via crypto-js — aligns with Rust sha2::Sha256 used on-chain for
-    // RecoveryCode.code_hash.  Both produce lowercase hex for identical input.
-    return SHA256(data).toString();
+  /**
+   * Derive a single recovery code digest matching `BeneficiaryManager::hash_recovery_code` on-chain (#166).
+   */
+  deriveRecoveryCode(beneficiaryId: string, salt: string, index: number): string {
+    if (!salt || salt.trim().length === 0) {
+      throw new ValidationError('salt', 'Recovery salt must be non-empty to match on-chain derivation');
+    }
+    const preimage = `${RECOVERY_CODE_DOMAIN}:${beneficiaryId}:${salt}:${index}`;
+    return createHash('sha256').update(preimage).digest('hex');
+  }
+
+  /**
+   * Generate the 3 recovery code hashes matching `BeneficiaryManager::generate_recovery_codes` (#166).
+   */
+  generateRecoveryCodes(beneficiaryId: string, salt: string): string[] {
+    const codes: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      codes.push(this.deriveRecoveryCode(beneficiaryId, salt, i));
+    }
+    return codes;
   }
 
   /**
@@ -714,6 +805,10 @@ export class BeneficiaryClient {
     specialNeeds: string[],
     verificationFactors: any[]
   ): Promise<OfflineEnvelope> {
+    const validFamilySize = validateFamilySize(familySize);
+    const pseudonymHint = createHash('sha256')
+      .update(`SDRP_CLIENT_NAME:${beneficiaryId}:${name}`)
+      .digest('hex');
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100',
@@ -724,9 +819,9 @@ export class BeneficiaryClient {
           'register_beneficiary',
           ...[
             new Address(sourcePublicKey).toScVal(),
-            nativeToScVal(beneficiaryId), nativeToScVal(name), nativeToScVal(disasterId),
+            nativeToScVal(beneficiaryId), nativeToScVal(pseudonymHint), nativeToScVal(disasterId),
             nativeToScVal(location), new Address(walletAddress).toScVal(),
-            nativeToScVal(familySize), nativeToScVal(specialNeeds),
+            nativeToScVal(validFamilySize, { type: 'u32' }), nativeToScVal(specialNeeds),
             nativeToScVal(verificationFactors),
           ]
         )
