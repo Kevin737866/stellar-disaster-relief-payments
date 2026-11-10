@@ -1,4 +1,5 @@
 import { SorobanRpc } from 'stellar-sdk';
+import { ValidationError } from './errors';
 import { TransactionPoller, TransactionPollResult } from './transactionPoller';
 import { NetworkConfig } from './types';
 
@@ -163,5 +164,93 @@ describe('TransactionPoller', () => {
     await jest.runAllTimersAsync();
     const result = await promise;
     expect(result.status).toBe('TIMEOUT');
+  });
+
+  it('uses built-in defaults when both options and config poll fields are omitted', async () => {
+    const poller = makePoller([NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
+    const promise = poller.pollTransaction(HASH);
+    await jest.runAllTimersAsync();
+    const result = await promise;
+    expect(result.status).toBe('SUCCESS');
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([0, -1, -100, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'rejects invalid intervalMs (%s) before issuing RPC calls or timers',
+    async (badInterval) => {
+      const poller = makePoller([SUCCESS_RESPONSE]);
+      await expect(
+        poller.pollTransaction(HASH, { intervalMs: badInterval, timeoutMs: 5000 })
+      ).rejects.toThrow(ValidationError);
+      expect((poller as any).server.getTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([0, -1, -50, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'rejects invalid timeoutMs (%s) before issuing RPC calls or timers',
+    async (badTimeout) => {
+      const poller = makePoller([SUCCESS_RESPONSE]);
+      await expect(
+        poller.pollTransaction(HASH, { intervalMs: 100, timeoutMs: badTimeout })
+      ).rejects.toThrow(ValidationError);
+      expect((poller as any).server.getTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it('returns CANCELLED immediately when aborted before the first request', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const poller = makePoller([SUCCESS_RESPONSE]);
+    const result = await poller.pollTransaction(HASH, {
+      intervalMs: 100,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+    expect(result).toEqual({ status: 'CANCELLED' });
+    expect((poller as any).server.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('stops polling and returns CANCELLED when aborted while waiting between polls', async () => {
+    const controller = new AbortController();
+    const poller = makePoller([NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
+    const promise = poller.pollTransaction(HASH, {
+      intervalMs: 1000,
+      timeoutMs: 10000,
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+    const result = await promise;
+    expect(result).toEqual({ status: 'CANCELLED' });
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns CANCELLED promptly when aborted during an in-flight RPC call', async () => {
+    const controller = new AbortController();
+    const poller = new TransactionPoller(TEST_CONFIG);
+    let resolvePending!: (val: SorobanRpc.Api.GetTransactionResponse) => void;
+    (poller as any).server = {
+      getTransaction: jest.fn(
+        () =>
+          new Promise<SorobanRpc.Api.GetTransactionResponse>((resolve) => {
+            resolvePending = resolve;
+          })
+      ),
+    };
+
+    const promise = poller.pollTransaction(HASH, {
+      intervalMs: 100,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
+    controller.abort();
+    const result = await promise;
+    expect(result).toEqual({ status: 'CANCELLED' });
+
+    resolvePending(NOT_FOUND_RESPONSE);
+    await Promise.resolve();
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
   });
 });
