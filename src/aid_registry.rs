@@ -1,4 +1,4 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, panic_with_error, log};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, BytesN, panic_with_error, log};
 use crate::validation::{require_non_empty_address_list, require_min_address_count};
 use crate::unique_id::*;
 
@@ -7,6 +7,43 @@ const DISASTER_WEATHER: &str = "weather";
 const DISASTER_CONFLICT: &str = "conflict";
 const DISASTER_HEALTH: &str = "health";
 const DISASTER_MANUAL: &str = "manual";
+
+/// Canonical disaster categories allowed by `create_fund` (#113).
+const SUPPORTED_DISASTER_TYPES: [&str; 10] = [
+    "earthquake",
+    "flood",
+    "drought",
+    "hurricane",
+    "storm",
+    "seismic",
+    "weather",
+    "conflict",
+    "health",
+    "manual",
+];
+
+fn validate_disaster_type(env: &Env, disaster_type: &String) {
+    let raw = disaster_type.to_string();
+    if !SUPPORTED_DISASTER_TYPES.iter().any(|allowed| *allowed == raw) {
+        panic_with_error!(env, "Unsupported disaster_type");
+    }
+}
+
+/// Automatically transition an expired fund in storage before state-mutating calls (#112).
+fn ensure_fund_not_expired(
+    env: &Env,
+    funds: &mut Map<String, EmergencyFund>,
+    fund_id: &String,
+    fund: &mut EmergencyFund,
+) {
+    if env.ledger().timestamp() > fund.expires_at {
+        fund.is_active = false;
+        fund.current_status = String::from_str(env, FUND_STATUS_EXPIRED);
+        funds.set(fund_id.clone(), fund.clone());
+        env.storage().instance().set(&Symbol::new(env, "fund"), funds);
+        panic_with_error!(env, "Fund has expired");
+    }
+}
 
 const FUND_STATUS_ACTIVE: &str = "active";
 const FUND_STATUS_TRIGGERED: &str = "triggered";
@@ -142,6 +179,8 @@ pub struct DisbursementRecord {
     pub id: String,
     pub fund_id: String,
     pub beneficiary: Address,
+    /// Canonical string identifier matching `beneficiary_address` or `beneficiary.to_string()` (#110, #111).
+    pub beneficiary_id: String,
     pub amount: U256,
     pub timestamp: u64,
     pub purpose: String,
@@ -149,6 +188,18 @@ pub struct DisbursementRecord {
     pub transaction_hash: String,
     pub trigger_id: Option<String>,
     pub is_auto_released: bool,
+}
+
+#[derive(Clone)]
+pub struct AutoReleaseEvent {
+    pub release_id: String,
+    pub fund_id: String,
+    pub trigger_id: String,
+    pub released_amount: U256,
+    pub confirmation_count: u32,
+    pub aggregate_confidence: u64,
+    pub oracle_summary_hash: BytesN<32>,
+    pub released_at: u64,
 }
 
 #[derive(Clone)]
@@ -231,6 +282,7 @@ impl AidRegistry {
         if expires_at <= env.ledger().timestamp() {
             panic_with_error!(&env, "expires_at must be in the future");
         }
+        validate_disaster_type(&env, &disaster_type);
         
         // Create fund structure
         let fund = EmergencyFund {
@@ -396,7 +448,8 @@ impl AidRegistry {
             .unwrap_or(Map::new(&env));
         
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+        ensure_fund_not_expired(&env, &mut funds, &fund_id, &mut fund);
+
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
         }
@@ -449,6 +502,7 @@ impl AidRegistry {
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
+            beneficiary_id: beneficiary.to_string(),
             beneficiary,
             amount,
             timestamp: env.ledger().timestamp(),
@@ -565,21 +619,24 @@ impl AidRegistry {
     ) {
         admin.require_auth();
         
-        // Verify fund exists
+        // Verify fund exists and is active (not archived, expired, or recalled) (#115)
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
-        if funds.get(fund_id.clone()).is_none() {
-            panic_with_error!(&env, "Fund does not exist");
+
+        let mut f = match funds.get(fund_id.clone()) {
+            Some(existing) => existing,
+            None => panic_with_error!(&env, "Fund does not exist"),
+        };
+        if f.current_status == String::from_str(&env, FUND_STATUS_ARCHIVED) {
+            panic_with_error!(&env, "Fund is archived");
         }
-        
-        // Archived funds cannot receive new triggers
-        if let Some(f) = funds.get(fund_id.clone()) {
-            if f.current_status == String::from_str(&env, FUND_STATUS_ARCHIVED) {
-                panic_with_error!(&env, "Fund is archived");
-            }
+        ensure_fund_not_expired(&env, &mut funds, &fund_id, &mut f);
+        if !f.is_active || f.current_status != String::from_str(&env, FUND_STATUS_ACTIVE) {
+            panic_with_error!(&env, "Fund status does not allow adding triggers");
         }
         
         // Validate trigger type
@@ -652,6 +709,57 @@ impl AidRegistry {
         location: String,
         confidence: u64,
     ) {
+        let now = env.ledger().timestamp();
+        Self::submit_oracle_data_with_ts(
+            env,
+            oracle,
+            fund_id,
+            trigger_id,
+            data_type,
+            value,
+            location,
+            confidence,
+            now,
+        );
+    }
+
+    /// Submit oracle observation with explicit `oracle_timestamp`, enforcing both
+    /// `ORACLE_STALENESS_SECS` (past) and `ORACLE_FUTURE_TOLERANCE_SECS` (clock skew) (#107).
+    pub fn submit_oracle_data_timestamped(
+        env: Env,
+        oracle: Address,
+        fund_id: String,
+        trigger_id: String,
+        data_type: String,
+        value: String,
+        location: String,
+        confidence: u64,
+        oracle_timestamp: u64,
+    ) {
+        Self::submit_oracle_data_with_ts(
+            env,
+            oracle,
+            fund_id,
+            trigger_id,
+            data_type,
+            value,
+            location,
+            confidence,
+            oracle_timestamp,
+        );
+    }
+
+    fn submit_oracle_data_with_ts(
+        env: Env,
+        oracle: Address,
+        fund_id: String,
+        trigger_id: String,
+        data_type: String,
+        value: String,
+        location: String,
+        confidence: u64,
+        oracle_timestamp: u64,
+    ) {
         oracle.require_auth();
 
         let now = env.ledger().timestamp();
@@ -706,24 +814,31 @@ impl AidRegistry {
             panic_with_error!(&env, "Location exceeds maximum length");
         }
 
-        // ── Timestamp: not stale, not in the future ──────────────────────────
-        // We use the ledger timestamp as the authoritative clock.
-        // The oracle-supplied timestamp is validated; we store the ledger time.
-        if now > ORACLE_STALENESS_SECS && now - ORACLE_STALENESS_SECS > now {
-            // underflow guard (should never happen but be safe)
-            panic_with_error!(&env, "Timestamp arithmetic error");
+        // ── Timestamp: reject stale or future-skewed oracle observations (#107) ─
+        // Ledger timestamp `now` is authoritative; `oracle_timestamp` must fall within
+        // `[now - ORACLE_STALENESS_SECS, now + ORACLE_FUTURE_TOLERANCE_SECS]`.
+        if oracle_timestamp > now.saturating_add(ORACLE_FUTURE_TOLERANCE_SECS) {
+            panic_with_error!(&env, "Oracle timestamp exceeds allowed future skew tolerance");
         }
         let stale_threshold = now.saturating_sub(ORACLE_STALENESS_SECS);
-        // We use ledger timestamp as the record timestamp; no caller-supplied ts.
-        // (Caller cannot forge the ledger clock.)
+        if oracle_timestamp < stale_threshold {
+            panic_with_error!(&env, "Oracle timestamp is stale");
+        }
 
-        // ── Replay protection: reject duplicate (oracle, trigger, ledger_ts) ─
-        // Key: "oracle_seen_{fund}_{trigger}_{oracle_str}_{now}"
-        // We use a 5-second bucket to tolerate same-ledger resubmissions.
-        let bucket = now / 5;
+        // ── Exact replay protection without 5-second bucket gap (#105) ─────────
+        // Fingerprint `(oracle, fund, trigger, value, now, sequence)` prevents both rapid
+        // same-second replay AND unintended cross-oracle bucket collisions.
         let replay_key = Symbol::new(
             &env,
-            &format!("seen_{}_{}_{}", fund_id, trigger_id, bucket),
+            &format!(
+                "seen_{}_{}_{}_{}_{}_{}",
+                fund_id,
+                trigger_id,
+                oracle_str,
+                value,
+                now,
+                env.ledger().sequence()
+            ),
         );
         if env.storage().instance().get::<Symbol, bool>(&replay_key).unwrap_or(false) {
             panic_with_error!(&env, "Duplicate oracle submission (replay rejected)");
@@ -732,7 +847,9 @@ impl AidRegistry {
 
         // ── Store validated oracle record ────────────────────────────────────
         let oracle_key = Symbol::new(&env, &format!("oracle_{}_{}", fund_id, trigger_id));
-        let mut oracle_records: Vec<OracleData> = env.storage().instance()
+        let mut oracle_records: Vec<OracleData> = env
+            .storage()
+            .instance()
             .get(&oracle_key)
             .unwrap_or(Vec::new(&env));
 
@@ -740,7 +857,7 @@ impl AidRegistry {
             source: oracle_str,
             data_type,
             value,
-            timestamp: now,
+            timestamp: oracle_timestamp.min(now),
             location,
             confidence,
             is_verified: confidence >= ORACLE_MIN_CONFIDENCE,
@@ -778,16 +895,47 @@ impl AidRegistry {
         }
     }
 
-    /// Parse a decimal u64 from a Soroban `String`.  Panics on non-numeric input.
+    /// Parse a non-negative integer OR fixed-point decimal string (up to 2 decimal places,
+    /// scaled by `×100` when a decimal point is present) (#106).
+    ///
+    /// Examples: `"750"` -> `750`, `"7.50"` -> `750`, `"7.2"` -> `720`.
     fn parse_u64(env: &Env, s: &String) -> u64 {
-        let bytes = s.to_string();
-        if bytes.is_empty() {
+        let raw = s.to_string();
+        if raw.is_empty() {
             panic_with_error!(env, "Value must not be empty");
         }
+        if let Some((whole_str, frac_str)) = raw.split_once('.') {
+            if whole_str.is_empty()
+                || frac_str.is_empty()
+                || frac_str.len() > 2
+                || !whole_str.bytes().all(|b| b.is_ascii_digit())
+                || !frac_str.bytes().all(|b| b.is_ascii_digit())
+            {
+                panic_with_error!(
+                    env,
+                    "Value must be a non-negative integer or fixed-point decimal (max 2 decimal places)"
+                );
+            }
+            let whole = whole_str
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic_with_error!(env, "Value numeric overflow"));
+            let frac_val = frac_str
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic_with_error!(env, "Value numeric overflow"));
+            let scaled_frac = if frac_str.len() == 1 { frac_val * 10 } else { frac_val };
+            return whole
+                .checked_mul(100)
+                .and_then(|v| v.checked_add(scaled_frac))
+                .unwrap_or_else(|| panic_with_error!(env, "Value numeric overflow"));
+        }
+
         let mut result: u64 = 0;
-        for b in bytes.as_bytes() {
+        for b in raw.as_bytes() {
             if *b < b'0' || *b > b'9' {
-                panic_with_error!(env, "Value must be a non-negative integer");
+                panic_with_error!(
+                    env,
+                    "Value must be a non-negative integer or fixed-point decimal (max 2 decimal places)"
+                );
             }
             result = result
                 .checked_mul(10)
@@ -862,67 +1010,118 @@ impl AidRegistry {
             .unwrap_or(Map::new(&env));
         
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+        ensure_fund_not_expired(&env, &mut funds, &fund_id, &mut fund);
+
         if !fund.is_active || fund.current_status != String::from_str(&env, FUND_STATUS_ACTIVE) {
             panic_with_error!(&env, "Fund is not active");
         }
-        
-        // Get trigger
+
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let mut triggers: Map<String, Trigger> = env.storage().instance()
+        let mut triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut trigger = triggers.get(trigger_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !trigger.is_active {
             panic_with_error!(&env, "Trigger is not active");
         }
-        
-        // Verify oracle data confirmations
+
+        // Verify oracle confirmations and aggregate confidence (#104)
         let oracle_key = Symbol::new(&env, &format!("oracle_{}_{}", fund_id, trigger_id));
-        let oracle_records: Vec<OracleData> = env.storage().instance()
+        let oracle_records: Vec<OracleData> = env
+            .storage()
+            .instance()
             .get(&oracle_key)
             .unwrap_or(Vec::new(&env));
-        
-        // Check if we have enough confirmations
-        let recent_threshold = env.ledger().timestamp().saturating_sub(ORACLE_STALENESS_SECS);
+
+        let now = env.ledger().timestamp();
+        let recent_threshold = now.saturating_sub(ORACLE_STALENESS_SECS);
         let mut valid_confirmations: u64 = 0;
-        
+        let mut aggregate_confidence: u64 = 0;
+        let mut summary_digest_parts = Vec::new(&env);
+
         for record in oracle_records.iter() {
             if record.timestamp > recent_threshold && record.confidence >= ORACLE_MIN_CONFIDENCE {
                 valid_confirmations += 1;
+                aggregate_confidence = aggregate_confidence.saturating_add(record.confidence);
+                summary_digest_parts.push_back(String::from_str(
+                    &env,
+                    &format!("{}:{}:{}:{}", record.source, record.value, record.timestamp, record.confidence),
+                ));
             }
         }
-        
-        if valid_confirmations < trigger.min_oracle_confirmations as u64 {
+
+        let required = trigger.min_oracle_confirmations.max(1) as u64;
+        if valid_confirmations < required {
             panic_with_error!(&env, "Insufficient oracle confirmations");
         }
-        
+        let min_composite_confidence = required.saturating_mul(ORACLE_MIN_CONFIDENCE);
+        if aggregate_confidence < min_composite_confidence {
+            panic_with_error!(&env, "Aggregate oracle confidence below threshold");
+        }
+
         // Check available funds
-        let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
+        let available = fund.total_amount.clone() - fund.released_amount.clone() - fund.reserved_for_recall.clone();
         if trigger.auto_release_amount > available {
             panic_with_error!(&env, "Insufficient available funds");
         }
-        
+
         // Execute release
-        fund.released_amount += trigger.auto_release_amount;
+        fund.released_amount += trigger.auto_release_amount.clone();
         fund.current_status = String::from_str(&env, FUND_STATUS_TRIGGERED);
-        trigger.last_triggered = env.ledger().timestamp();
+        trigger.last_triggered = now;
         trigger.trigger_count += 1;
-        
-        // Store updates
+
         funds.set(fund_id.clone(), fund.clone());
         env.storage().instance().set(&fund_key, &funds);
-        
-        triggers.set(trigger_id.clone(), trigger);
+
+        triggers.set(trigger_id.clone(), trigger.clone());
         env.storage().instance().set(&triggers_key, &triggers);
-        
-        // Record automated release
-        let release_summary_key = Symbol::new(&env, &generate_auto_release_key(&env, &fund_id));
+
+        // Persist structured AutoReleaseEvent for auditability & downstream queries (#108)
+        let release_id = generate_auto_release_key(&env, &fund_id);
+        let release_summary_key = Symbol::new(&env, &release_id);
         env.storage().instance().set(&release_summary_key, &trigger.auto_release_amount);
-        
+
+        let summary_bytes = env.crypto().sha256(&summary_digest_parts.to_string().into());
+        let summary_hash: BytesN<32> = BytesN::from_array(&env, &summary_bytes.to_array());
+        let auto_event = AutoReleaseEvent {
+            release_id: String::from_str(&env, &release_id),
+            fund_id: fund_id.clone(),
+            trigger_id: trigger_id.clone(),
+            released_amount: trigger.auto_release_amount.clone(),
+            confirmation_count: valid_confirmations as u32,
+            aggregate_confidence,
+            oracle_summary_hash: summary_hash,
+            released_at: now,
+        };
+        let events_key = Symbol::new(&env, &format!("auto_releases_{}", fund_id));
+        let mut fund_events: Vec<AutoReleaseEvent> = env
+            .storage()
+            .instance()
+            .get(&events_key)
+            .unwrap_or(Vec::new(&env));
+        fund_events.push_back(auto_event);
+        env.storage().instance().set(&events_key, &fund_events);
+
+        env.events().publish(
+            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "trigger_executed")),
+            (fund_id, trigger_id, trigger.auto_release_amount.clone()),
+        );
+
         trigger.auto_release_amount
+    }
+
+    /// Retrieve persisted auto-release audit events for a fund (#108).
+    pub fn get_auto_release_events(env: Env, fund_id: String) -> Vec<AutoReleaseEvent> {
+        let events_key = Symbol::new(&env, &format!("auto_releases_{}", fund_id));
+        env.storage()
+            .instance()
+            .get(&events_key)
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Batch disbursement entry — one recipient in a batch request
@@ -975,6 +1174,7 @@ impl AidRegistry {
             .unwrap_or(Map::new(&env));
 
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+        ensure_fund_not_expired(&env, &mut funds, &fund_id, &mut fund);
 
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
@@ -1028,12 +1228,20 @@ impl AidRegistry {
 
         let mut ids: Vec<String> = Vec::new(&env);
         let base_ts = env.ledger().timestamp();
+        let seq_key = Symbol::new(&env, "batch_seq");
+        let batch_seq: u64 = env.storage().instance().get(&seq_key).unwrap_or(0u64) + 1;
+        env.storage().instance().set(&seq_key, &batch_seq);
 
         for (idx, (beneficiary, amount, purpose)) in entries.iter().enumerate() {
-            let disbursement_id = generate_batch_disbursement_id(&env, &fund_id, idx as u32);
+            let unique_tag = (batch_seq as u32).saturating_mul(1_000).saturating_add(idx as u32);
+            let disbursement_id = generate_batch_disbursement_id(&env, &fund_id, unique_tag);
+            if disbursements.contains_key(disbursement_id.clone()) {
+                panic_with_error!(&env, "Batch disbursement ID collision");
+            }
             let record = DisbursementRecord {
                 id: disbursement_id.clone(),
                 fund_id: fund_id.clone(),
+                beneficiary_id: beneficiary.to_string(),
                 beneficiary,
                 amount,
                 timestamp: base_ts,
@@ -1120,6 +1328,7 @@ impl AidRegistry {
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
+            beneficiary_id: beneficiary.to_string(),
             beneficiary,
             amount,
             timestamp: env.ledger().timestamp(),
@@ -1298,6 +1507,7 @@ impl AidRegistry {
             .unwrap_or(Map::new(&env));
 
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
+        ensure_fund_not_expired(&env, &mut funds, &fund_id, &mut fund);
 
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
@@ -1330,6 +1540,7 @@ impl AidRegistry {
         let record = DisbursementRecord {
             id: disbursement_id.clone(),
             fund_id: fund_id.clone(),
+            beneficiary_id: beneficiary.to_string(),
             beneficiary,
             amount,
             timestamp: env.ledger().timestamp(),
@@ -1572,7 +1783,21 @@ impl AidRegistry {
         
         let fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
         
-        let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
+        let unspent = fund.total_amount.clone() - fund.released_amount.clone();
+        let pending_recall_reserved = if fund.reserved_for_recall > U256::from_u64(0) {
+            fund.reserved_for_recall.clone()
+        } else if fund.recall_enabled {
+            let age_seconds = env.ledger().timestamp().saturating_sub(fund.created_at);
+            let recall_threshold = fund.recall_after_months as u64 * SECONDS_PER_MONTH;
+            if age_seconds >= recall_threshold {
+                unspent.clone()
+            } else {
+                U256::from_u64(0)
+            }
+        } else {
+            U256::from_u64(0)
+        };
+        let available = unspent - pending_recall_reserved;
         let beneficiary_count = fund.fund_allocation.len() as u64;
         
         (
@@ -1680,10 +1905,12 @@ impl AidRegistry {
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
         
+        let ben_hash = env.crypto().sha256(&beneficiary_address.to_string().into());
         let record = DisbursementRecord {
             id: disbursement_key.clone(),
             fund_id: fund_id.clone(),
-            beneficiary: Address::from_contract_id(&env, &env.crypto().sha256(&env.ledger().sequence().to_le_bytes())),
+            beneficiary: Address::from_contract_id(&env, &ben_hash),
+            beneficiary_id: beneficiary_address.clone(),
             amount,
             timestamp: env.ledger().timestamp(),
             purpose: purpose.clone(),
@@ -1732,11 +1959,11 @@ impl AidRegistry {
         
         let mut beneficiary_records = Vec::new(&env);
         for (_, record) in records.iter() {
-            // Filter records for this beneficiary
-            // Note: In production, would need to store beneficiary address properly
-            beneficiary_records.push_back(record);
+            if record.beneficiary_id == beneficiary_address {
+                beneficiary_records.push_back(record);
+            }
         }
-        
+
         beneficiary_records
     }
 
@@ -1855,3 +2082,187 @@ pub fn require_not_paused(env: &Env) {
     }
 }
 
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    fn make_fund(env: &Env, client: &AidRegistryClient, admin: &Address, id: &str, oracle: &Address, dtype: &str) {
+        let triggers = Vec::from_array(env, [oracle.clone()]);
+        client.create_fund(
+            admin,
+            &String::from_str(env, id),
+            &String::from_str(env, "Relief Fund"),
+            &String::from_str(env, "Desc"),
+            &U256::from_u64(500_000),
+            &String::from_str(env, dtype),
+            &String::from_str(env, "Region"),
+            &(env.ledger().timestamp() + 10_000),
+            &triggers,
+            &1u32,
+            &Map::new(env),
+        );
+    }
+
+    #[test]
+    fn test_fixed_point_oracle_validation_replay_protection_and_auto_release_audit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+
+        make_fund(&env, &client, &admin, "f_orc", &oracle, "seismic");
+        client.add_trigger(
+            &admin,
+            &String::from_str(&env, "f_orc"),
+            &String::from_str(&env, "tr_1"),
+            &String::from_str(&env, "seismic"),
+            &String::from_str(&env, "7.0"),
+            &oracle.to_string(),
+            &U256::from_u64(50_000),
+            &0,
+            &0,
+            &50,
+            &1,
+        );
+
+        // Fixed-point decimal encoding ("7.50" == 750 <= 1000) succeeds (#106)
+        client.submit_oracle_data(
+            &oracle,
+            &String::from_str(&env, "f_orc"),
+            &String::from_str(&env, "tr_1"),
+            &String::from_str(&env, "seismic"),
+            &String::from_str(&env, "7.50"),
+            &String::from_str(&env, "Zone"),
+            &92,
+        );
+
+        let released = client.execute_trigger(&String::from_str(&env, "f_orc"), &String::from_str(&env, "tr_1"));
+        assert_eq!(released, U256::from_u64(50_000));
+
+        // Structured auto-release event persisted and queryable (#108)
+        let events = client.get_auto_release_events(&String::from_str(&env, "f_orc"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events.get(0).unwrap().confirmation_count, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate oracle submission")]
+    fn test_rejects_same_second_oracle_replay() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 2_000);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+
+        make_fund(&env, &client, &admin, "f_rep", &oracle, "seismic");
+        client.add_trigger(
+            &admin, &String::from_str(&env, "f_rep"), &String::from_str(&env, "tr_r"),
+            &String::from_str(&env, "seismic"), &String::from_str(&env, "7.0"),
+            &oracle.to_string(), &U256::from_u64(10_000), &0, &0, &10, &1,
+        );
+        client.submit_oracle_data(
+            &oracle, &String::from_str(&env, "f_rep"), &String::from_str(&env, "tr_r"),
+            &String::from_str(&env, "seismic"), &String::from_str(&env, "750"),
+            &String::from_str(&env, "Zone"), &90,
+        );
+        client.submit_oracle_data(
+            &oracle, &String::from_str(&env, "f_rep"), &String::from_str(&env, "tr_r"),
+            &String::from_str(&env, "seismic"), &String::from_str(&env, "750"),
+            &String::from_str(&env, "Zone"), &90,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Oracle timestamp exceeds allowed future skew tolerance")]
+    fn test_rejects_future_oracle_timestamp() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let admin = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+
+        make_fund(&env, &client, &admin, "f_fut", &oracle, "weather");
+        client.add_trigger(
+            &admin, &String::from_str(&env, "f_fut"), &String::from_str(&env, "tr_f"),
+            &String::from_str(&env, "weather"), &String::from_str(&env, "120"),
+            &oracle.to_string(), &U256::from_u64(10_000), &0, &0, &10, &1,
+        );
+        client.submit_oracle_data_timestamped(
+            &oracle, &String::from_str(&env, "f_fut"), &String::from_str(&env, "tr_f"),
+            &String::from_str(&env, "weather"), &String::from_str(&env, "150"),
+            &String::from_str(&env, "Coast"), &95, &2_000u64,
+        );
+    }
+
+    #[test]
+    fn test_batch_id_uniqueness_and_beneficiary_disbursement_filter() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 5_000);
+        let admin = Address::generate(&env);
+        let signer = Address::generate(&env);
+        let b1 = Address::generate(&env);
+        let b2 = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+
+        make_fund(&env, &client, &admin, "f_b", &signer, "flood");
+
+        // Two batches in exact same ledger second produce distinct IDs (#109)
+        let e1 = Vec::from_array(&env, [(b1, U256::from_u64(100), String::from_str(&env, "food"))]);
+        let e2 = Vec::from_array(&env, [(b2, U256::from_u64(200), String::from_str(&env, "water"))]);
+        let ap = Vec::from_array(&env, [signer.clone()]);
+        let ids1 = client.submit_batch_disbursement(&signer, &String::from_str(&env, "f_b"), &e1, &ap);
+        let ids2 = client.submit_batch_disbursement(&signer, &String::from_str(&env, "f_b"), &e2, &ap);
+        assert_ne!(ids1.get(0).unwrap(), ids2.get(0).unwrap());
+
+        // Canonical beneficiary filtering returns only matching beneficiary records (#110, #111)
+        client.record_disbursement(
+            &admin, &String::from_str(&env, "G_ALICE"), &String::from_str(&env, "f_b"),
+            &String::from_str(&env, "food aid"), &U256::from_u64(50),
+            &String::from_str(&env, "tx1"), &ap,
+        );
+        client.record_disbursement(
+            &admin, &String::from_str(&env, "G_BOB"), &String::from_str(&env, "f_b"),
+            &String::from_str(&env, "food aid"), &U256::from_u64(50),
+            &String::from_str(&env, "tx2"), &ap,
+        );
+        assert!(client.check_duplicate_disbursement(&String::from_str(&env, "G_ALICE"), &String::from_str(&env, "food aid")));
+        assert_eq!(client.get_beneficiary_disbursements(&String::from_str(&env, "G_ALICE")).len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unsupported disaster_type")]
+    fn test_rejects_unknown_disaster_type() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let s = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+        make_fund(&env, &client, &admin, "f_bad", &s, "unknown_disaster");
+    }
+
+    #[test]
+    fn test_pending_recall_availability_and_expired_trigger_rejection() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let admin = Address::generate(&env);
+        let s = Address::generate(&env);
+        let client = AidRegistryClient::new(&env, &env.register(AidRegistry, ()));
+
+        make_fund(&env, &client, &admin, "f_stat", &s, "flood");
+        client.enable_recall(&admin, &String::from_str(&env, "f_stat"));
+
+        // Advance past 12-month recall threshold (#114)
+        env.ledger().with_mut(|l| l.timestamp = 1_000 + (12 * SECONDS_PER_MONTH) + 1);
+        let (_, _, _, available, _) = client.get_fund_status(&String::from_str(&env, "f_stat"));
+        assert_eq!(available, U256::from_u64(0));
+    }
+}
