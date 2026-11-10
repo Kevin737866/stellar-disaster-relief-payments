@@ -32,17 +32,159 @@ export const MAX_BATCH_SIZE = BATCH_MAX_SIZE;
 /** A batch must contain at least one entry. */
 export const MIN_BATCH_SIZE = 1;
 
+/** Fallback Stellar base fee in stroops when no estimator or override is configured. */
+export const DEFAULT_BASE_FEE = '100';
+
+/** Minimum Stellar protocol base fee in stroops. */
+export const MIN_BASE_FEE = 100;
+
+/**
+ * Sentinel timeout (0 seconds) passed to `TransactionBuilder.setTimeout` for
+ * air-gapped offline envelopes so transactions do not expire while awaiting
+ * offline multi-sig collection. Pass an explicit positive `timeoutSeconds`
+ * in `OfflineTxOptions` to enforce bounded expiry on submitted envelopes.
+ */
+export const OFFLINE_INFINITE_TIMEOUT = 0;
+
+export interface FeeOptions {
+  /** Static fee (in stroops) overriding `DEFAULT_BASE_FEE` when no estimator is supplied. */
+  baseFee?: string | number;
+  /** Async hook returning an estimated fee in stroops for the named operation. */
+  feeEstimator?: (operation: string) => Promise<string | number>;
+}
+
+export interface TxOptions {
+  /** Per-call transaction fee override in stroops. */
+  fee?: string | number;
+}
+
+export interface OfflineTxOptions extends TxOptions {
+  /**
+   * Transaction validity window in seconds. Defaults to `OFFLINE_INFINITE_TIMEOUT` (0),
+   * meaning no ledger expiry (`TimeBounds(0, 0)`) so multi-party offline signing can
+   * complete without racing a clock. Trade-off: an unconsumed signed envelope remains
+   * valid indefinitely unless invalidated by consuming/bumping the source sequence number.
+   */
+  timeoutSeconds?: number;
+}
+
+function normalizeFee(value: string | number, label = 'fee'): string {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || value < MIN_BASE_FEE) {
+      throw new Error(`Invalid ${label}: expected an integer >= ${MIN_BASE_FEE}, received ${value}`);
+    }
+    return String(value);
+  }
+  const trimmed = String(value).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid ${label}: expected numeric stroops string, received "${value}"`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_BASE_FEE) {
+    throw new Error(`Invalid ${label}: expected stroops >= ${MIN_BASE_FEE}, received "${value}"`);
+  }
+  return trimmed;
+}
+
+function parseMonetaryBigInt(value: unknown, fieldName: string): bigint {
+  if (typeof value === 'bigint') {
+    if (value < 0n) {
+      throw new Error(`Invalid monetary field ${fieldName}: negative value ${value.toString()}`);
+    }
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isInteger(value) || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`Invalid monetary field ${fieldName}: unsafe or non-integer number ${value}`);
+    }
+    return BigInt(value);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`Invalid monetary field ${fieldName}: expected unsigned integer string, received "${value}"`);
+    }
+    return BigInt(trimmed);
+  }
+  throw new Error(`Invalid monetary field ${fieldName}: unsupported value type ${typeof value}`);
+}
+
+function parseBatchDisbursementResult(result: any): string[] {
+  const rawCandidate = result?.returnValue ?? result?.result?.retval;
+  if (rawCandidate !== undefined) {
+    const decoded = Array.isArray(rawCandidate) ? rawCandidate : scValToNative(rawCandidate);
+    if (!Array.isArray(decoded) || decoded.some((item) => typeof item !== 'string')) {
+      throw new Error('Invalid batch disbursement return value: expected string[]');
+    }
+    return decoded;
+  }
+
+  if (result?.resultMetaXdr !== undefined) {
+    let decoded: unknown;
+    try {
+      decoded = scValToNative(result.resultMetaXdr);
+    } catch (err: any) {
+      throw new Error(
+        `Failed to parse batch disbursement IDs from transaction result: ${err?.message ?? String(err)}`
+      );
+    }
+    if (!Array.isArray(decoded) || decoded.some((item) => typeof item !== 'string')) {
+      throw new Error('Failed to parse batch disbursement IDs from transaction result: expected string[]');
+    }
+    return decoded;
+  }
+
+  throw new Error('Batch disbursement succeeded without a parseable return value');
+}
+
 export class AidClient {
   private server: any;
   private contract: any;
   private config: NetworkConfig;
+  private feeOptions: FeeOptions;
   readonly cache: ReadCache;
 
-  constructor(config: NetworkConfig) {
+  constructor(config: NetworkConfig, feeOptions: FeeOptions = {}) {
     this.config = config;
+    this.feeOptions = feeOptions;
     this.server = new Server(config.rpcUrl);
     this.contract = new Contract(config.contractIds.aidRegistry);
     this.cache = new ReadCache(config);
+  }
+
+  /** Resolve transaction fee from explicit override, configured estimator, RPC fee stats, or `DEFAULT_BASE_FEE`. */
+  private async resolveFee(operation: string, explicitFee?: string | number): Promise<string> {
+    if (explicitFee !== undefined) {
+      return normalizeFee(explicitFee, 'explicit fee');
+    }
+    if (this.feeOptions.feeEstimator) {
+      const estimated = await this.feeOptions.feeEstimator(operation);
+      return normalizeFee(estimated, 'estimated fee');
+    }
+    if (typeof this.server?.getFeeStats === 'function') {
+      try {
+        const stats = await this.server.getFeeStats();
+        const rawStat =
+          stats?.sorobanInclusionFee?.p50 ??
+          stats?.inclusionFee?.p50 ??
+          stats?.recommendedFee;
+        if (rawStat !== undefined && rawStat !== null) {
+          const floor = this.feeOptions.baseFee !== undefined
+            ? Number(normalizeFee(this.feeOptions.baseFee, 'baseFee'))
+            : MIN_BASE_FEE;
+          const numeric = Math.max(floor, Math.ceil(Number(rawStat)));
+          if (Number.isSafeInteger(numeric) && numeric >= MIN_BASE_FEE) {
+            return String(numeric);
+          }
+        }
+      } catch {
+        // Fall through to configured/default base fee if fee stats RPC call fails.
+      }
+    }
+    if (this.feeOptions.baseFee !== undefined) {
+      return normalizeFee(this.feeOptions.baseFee, 'baseFee');
+    }
+    return DEFAULT_BASE_FEE;
   }
 
   /**
@@ -58,14 +200,16 @@ export class AidClient {
     geographicScope: string,
     expiresAt: number,
     releaseTriggers: string[],
-    requiredSignatures: number
+    requiredSignatures: number,
+    txOptions?: TxOptions
   ): Promise<string> {
     validateAddressList(releaseTriggers, 'releaseTriggers');
     const adminKeypair = Keypair.fromSecret(adminKey);
     const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
+    const fee = await this.resolveFee('create_fund', txOptions?.fee);
 
     const tx = new TransactionBuilder(adminAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
@@ -108,15 +252,17 @@ export class AidClient {
     beneficiary: string,
     amount: string,
     purpose: string,
-    approvers: string[]
+    approvers: string[],
+    txOptions?: TxOptions
   ): Promise<string> {
     validateAddress(beneficiary, 'beneficiary');
     validateAddressList(approvers, 'approvers');
     const requesterKeypair = Keypair.fromSecret(requesterKey);
     const requesterAccount = await withRetry<any>(() => this.server.getAccount(requesterKeypair.publicKey()));
+    const fee = await this.resolveFee('submit_disbursement', txOptions?.fee);
 
     const tx = new TransactionBuilder(requesterAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
@@ -164,7 +310,8 @@ export class AidClient {
     requesterKey: string,
     fundId: string,
     entries: Array<{ beneficiary: string; amount: string; purpose: string }>,
-    approvers: string[]
+    approvers: string[],
+    txOptions?: TxOptions
   ): Promise<string[]> {
     if (entries.length < MIN_BATCH_SIZE) {
       throw new Error('Batch must contain at least one entry');
@@ -178,6 +325,7 @@ export class AidClient {
 
     const requesterKeypair = Keypair.fromSecret(requesterKey);
     const requesterAccount = await this.server.getAccount(requesterKeypair.publicKey());
+    const fee = await this.resolveFee('submit_batch_disbursement', txOptions?.fee);
 
     // Build the entries as a Vec of tuples for the contract call
     const entriesScVal = nativeToScVal(
@@ -185,7 +333,7 @@ export class AidClient {
     );
 
     const tx = new TransactionBuilder(requesterAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
@@ -206,8 +354,10 @@ export class AidClient {
     const result = await this.server.sendTransaction(tx);
 
     if (result.status === 'SUCCESS') {
-      const ids = scValToNative(result.resultMetaXdr) as string[];
-      return ids ?? [];
+      const ids = parseBatchDisbursementResult(result);
+      this.cache.invalidate(`aid:fund:${fundId}`);
+      this.cache.invalidate(`aid:disbursements:${fundId}`);
+      return ids;
     } else {
       throw new Error(`Batch disbursement failed: ${result.status}`);
     }
@@ -273,13 +423,16 @@ export class AidClient {
       throw new Error(`Fund ${fundId} not found`);
     }
 
-    const totalAmount = BigInt(fund.totalAmount);
-    const releasedAmount = BigInt(fund.releasedAmount);
+    const totalAmount = parseMonetaryBigInt(fund.totalAmount, 'totalAmount');
+    const releasedAmount = parseMonetaryBigInt(fund.releasedAmount, 'releasedAmount');
+    if (releasedAmount > totalAmount) {
+      throw new Error('Invalid fund amounts: releasedAmount exceeds totalAmount');
+    }
     const remainingAmount = totalAmount - releasedAmount;
 
     return {
-      totalAmount: fund.totalAmount,
-      releasedAmount: fund.releasedAmount,
+      totalAmount: totalAmount.toString(),
+      releasedAmount: releasedAmount.toString(),
       remainingAmount: remainingAmount.toString(),
       isActive: fund.isActive,
       expiresAt: fund.expiresAt
@@ -289,12 +442,13 @@ export class AidClient {
   /**
    * Cleanup expired funds
    */
-  async cleanupExpiredFunds(adminKey: string): Promise<string> {
+  async cleanupExpiredFunds(adminKey: string, txOptions?: TxOptions): Promise<string> {
     const adminKeypair = Keypair.fromSecret(adminKey);
     const adminAccount = await withRetry<any>(() => this.server.getAccount(adminKeypair.publicKey()));
+    const fee = await this.resolveFee('cleanup_expired_funds', txOptions?.fee);
 
     const tx = new TransactionBuilder(adminAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(this.contract.call("cleanup_expired_funds"))
@@ -466,6 +620,11 @@ export class AidClient {
 
   /**
    * Build an unsigned transaction for deploying an emergency fund.
+   *
+   * Uses `OFFLINE_INFINITE_TIMEOUT` (0 -> `TimeBounds(0, 0)`) by default because
+   * air-gapped signing workflows often transport unsigned envelopes out-of-band
+   * across signers. Pass `txOptions.timeoutSeconds > 0` when bounded expiry is preferred.
+   *
    * Returns an OfflineEnvelope that can be signed offline and submitted later.
    */
   async buildOfflineDeployFund(
@@ -478,11 +637,14 @@ export class AidClient {
     geographicScope: string,
     expiresAt: number,
     releaseTriggers: string[],
-    requiredSignatures: number
+    requiredSignatures: number,
+    txOptions?: OfflineTxOptions
   ): Promise<OfflineEnvelope> {
+    const timeoutSeconds = this.validateTimeout(txOptions?.timeoutSeconds);
+    const fee = await this.resolveFee('create_fund', txOptions?.fee);
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
@@ -497,13 +659,17 @@ export class AidClient {
           ]
         )
       )
-      .setTimeout(0)
+      .setTimeout(timeoutSeconds)
       .build();
     return OfflineSigner.serialize(tx);
   }
 
   /**
    * Build an unsigned transaction for triggering a disbursement.
+   *
+   * Uses `OFFLINE_INFINITE_TIMEOUT` (0 -> `TimeBounds(0, 0)`) by default so
+   * offline approvers do not hit premature timeout expiration before submission.
+   * Pass `txOptions.timeoutSeconds > 0` to bound envelope validity.
    */
   async buildOfflineDisbursement(
     sourcePublicKey: string,
@@ -511,11 +677,14 @@ export class AidClient {
     beneficiary: string,
     amount: string,
     purpose: string,
-    approvers: string[]
+    approvers: string[],
+    txOptions?: OfflineTxOptions
   ): Promise<OfflineEnvelope> {
+    const timeoutSeconds = this.validateTimeout(txOptions?.timeoutSeconds);
+    const fee = await this.resolveFee('submit_disbursement', txOptions?.fee);
     const sourceAccount = await this.server.getAccount(sourcePublicKey);
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: '100',
+      fee,
       networkPassphrase: this.getNetworkPassphrase(),
     })
       .addOperation(
@@ -528,9 +697,19 @@ export class AidClient {
           ]
         )
       )
-      .setTimeout(0)
+      .setTimeout(timeoutSeconds)
       .build();
     return OfflineSigner.serialize(tx);
+  }
+
+  private validateTimeout(timeoutSeconds?: number): number {
+    if (timeoutSeconds === undefined) {
+      return OFFLINE_INFINITE_TIMEOUT;
+    }
+    if (!Number.isFinite(timeoutSeconds) || !Number.isInteger(timeoutSeconds) || timeoutSeconds < 0) {
+      throw new Error(`Invalid timeoutSeconds: expected non-negative integer, received ${timeoutSeconds}`);
+    }
+    return timeoutSeconds;
   }
   private getNetworkPassphrase(): string {
     switch (this.config.network) {
