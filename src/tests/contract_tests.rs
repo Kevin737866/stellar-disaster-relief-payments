@@ -414,6 +414,7 @@ mod merchant_tests {
 mod supply_chain_tests {
     use super::*;
     use crate::{SupplyChainTracker, supply_chain_tracker::Location};
+    use crate::rbac::ROLE_RECIPIENT;
     use soroban_sdk::U256;
 
     fn setup() -> (Env, Address, Address) {
@@ -478,9 +479,10 @@ mod supply_chain_tests {
     }
 
     #[test]
-    fn test_anyone_can_confirm_delivery() {
-        let (env, _, ngo) = setup();
+    fn test_authorized_recipient_can_confirm_delivery() {
+        let (env, admin, ngo) = setup();
         let recipient = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
         let contract_id = env.register_contract(None, SupplyChainTracker);
         let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
         client.create_shipment(
@@ -496,6 +498,11 @@ mod supply_chain_tests {
             &None,
             &Vec::new(&env),
         );
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), String::from_str(&env, "r1"))],
+        );
+        client.configure_recipient_policy(&ngo, &String::from_str(&env, "s3"), &policy);
         client.confirm_delivery(
             &recipient,
             &String::from_str(&env, "s3"),
@@ -506,6 +513,44 @@ mod supply_chain_tests {
         );
         let shipment = client.get_shipment(&String::from_str(&env, "s3")).unwrap();
         assert_eq!(shipment.current_status, String::from_str(&env, "delivered"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: recipient does not match shipment recipient policy")]
+    fn test_unrelated_recipient_cannot_confirm_delivery() {
+        let (env, admin, ngo) = setup();
+        let intended = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &intended, ROLE_RECIPIENT);
+        rbac::assign_role(&env, &admin, &attacker, ROLE_RECIPIENT);
+        let contract_id = env.register_contract(None, SupplyChainTracker);
+        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
+        client.create_shipment(
+            &ngo,
+            &String::from_str(&env, "s4"),
+            &String::from_str(&env, "donor4"),
+            &String::from_str(&env, "water"),
+            &U256::from_u64(&env, 100),
+            &String::from_str(&env, "liters"),
+            &make_location(&env),
+            &make_location(&env),
+            &(env.ledger().timestamp() + 86400),
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [(intended, String::from_str(&env, "r1"))],
+        );
+        client.configure_recipient_policy(&ngo, &String::from_str(&env, "s4"), &policy);
+        client.confirm_delivery(
+            &attacker,
+            &String::from_str(&env, "s4"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(&env, 100),
+            &String::from_str(&env, "spoofed"),
+            &Vec::new(&env),
+        );
     }
 }
 

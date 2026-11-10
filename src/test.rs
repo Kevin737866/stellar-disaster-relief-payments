@@ -1656,7 +1656,7 @@ mod merchant_tests {
 mod supply_chain_tests {
     use super::*;
     use crate::supply_chain_tracker::{
-        Location, SupplyChainTracker, SupplyChainTrackerClient, TemperatureRequirements,
+        AuthorizedRecipient, Location, SupplyChainTracker, SupplyChainTrackerClient, TemperatureRequirements,
     };
 
     fn deploy(env: &Env) -> SupplyChainTrackerClient {
@@ -1764,6 +1764,13 @@ mod supply_chain_tests {
             &Vec::new(&env),
         );
 
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "recipient_001"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_del"), &policy);
+
+        // Partial delivery (195 of 200) transitions to partially_delivered, not delivered (#328)
         client.confirm_delivery(
             &recipient,
             &str(&env, "ship_del"),
@@ -1773,8 +1780,24 @@ mod supply_chain_tests {
             &Vec::new(&env),
         );
 
+        let ship_partial = client.get_shipment(&str(&env, "ship_del")).unwrap();
+        assert_eq!(ship_partial.current_status, str(&env, "partially_delivered"));
+        assert_eq!(ship_partial.total_received_quantity, u256(195));
+
+        // Delivering the remaining 5 completes the shipment
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_del"),
+            &str(&env, "recipient_001"),
+            &u256(5),
+            &str(&env, "Remainder received"),
+            &Vec::new(&env),
+        );
+
         let ship = client.get_shipment(&str(&env, "ship_del")).unwrap();
         assert_eq!(ship.current_status, str(&env, "delivered"));
+        assert_eq!(ship.total_received_quantity, u256(200));
+        assert_eq!(client.get_delivery_confirmations(&str(&env, "ship_del")).len(), 2);
     }
 
     #[test]
@@ -1825,6 +1848,12 @@ mod supply_chain_tests {
             &Vec::new(&env),
         );
 
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "recipient_hist"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_hist"), &policy);
+
         client.confirm_delivery(
             &recipient,
             &str(&env, "ship_hist"),
@@ -1837,6 +1866,261 @@ mod supply_chain_tests {
         let (shipment, confirmation) = client.get_shipment_history(&str(&env, "ship_hist"));
         assert!(shipment.is_some());
         assert!(confirmation.is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "Recipient policy not configured for shipment")]
+    fn test_confirm_delivery_rejects_unconfigured_policy() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_nopolicy"),
+            &str(&env, "donor_np"),
+            &str(&env, "water"),
+            &u256(50),
+            &str(&env, "liters"),
+            &loc(&env, "Source"),
+            &loc(&env, "Dest"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_nopolicy"),
+            &str(&env, "r_any"),
+            &u256(50),
+            &str(&env, "ok"),
+            &Vec::new(&env),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: recipient does not match shipment recipient policy")]
+    fn test_confirm_delivery_rejects_mismatched_recipient_id() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_badid"),
+            &str(&env, "donor_bi"),
+            &str(&env, "food"),
+            &u256(50),
+            &str(&env, "kg"),
+            &loc(&env, "Source"),
+            &loc(&env, "Dest"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "expected_id"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_badid"), &policy);
+
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_badid"),
+            &str(&env, "wrong_id"),
+            &u256(50),
+            &str(&env, "ok"),
+            &Vec::new(&env),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Received quantity exceeds outstanding shipment quantity")]
+    fn test_confirm_delivery_rejects_over_delivery() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_over"),
+            &str(&env, "donor_ov"),
+            &str(&env, "food"),
+            &u256(100),
+            &str(&env, "kg"),
+            &loc(&env, "Source"),
+            &loc(&env, "Dest"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "r_ov"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_over"), &policy);
+
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_over"),
+            &str(&env, "r_ov"),
+            &u256(60),
+            &str(&env, "part 1"),
+            &Vec::new(&env),
+        );
+        // 60 + 50 > 100 -> must panic without updating totals
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_over"),
+            &str(&env, "r_ov"),
+            &u256(50),
+            &str(&env, "excess"),
+            &Vec::new(&env),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Received quantity must be greater than zero")]
+    fn test_confirm_delivery_rejects_zero_quantity() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_zero"),
+            &str(&env, "donor_z"),
+            &str(&env, "food"),
+            &u256(100),
+            &str(&env, "kg"),
+            &loc(&env, "Source"),
+            &loc(&env, "Dest"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "r_z"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_zero"), &policy);
+
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_zero"),
+            &str(&env, "r_z"),
+            &u256(0),
+            &str(&env, "zero"),
+            &Vec::new(&env),
+        );
+    }
+
+    #[test]
+    fn test_group_delivery_and_authorized_exception() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient_a = Address::generate(&env);
+        let recipient_b = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_grp"),
+            &str(&env, "donor_g"),
+            &str(&env, "medical"),
+            &u256(100),
+            &str(&env, "boxes"),
+            &loc(&env, "Source"),
+            &loc(&env, "Camp"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [
+                (recipient_a.clone(), str(&env, "clinic_a")),
+                (recipient_b.clone(), str(&env, "clinic_b")),
+            ],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_grp"), &policy);
+
+        client.confirm_delivery(
+            &recipient_a,
+            &str(&env, "ship_grp"),
+            &str(&env, "clinic_a"),
+            &u256(40),
+            &str(&env, "clinic a share"),
+            &Vec::new(&env),
+        );
+        client.confirm_delivery(
+            &recipient_b,
+            &str(&env, "ship_grp"),
+            &str(&env, "clinic_b"),
+            &u256(50),
+            &str(&env, "clinic b share"),
+            &Vec::new(&env),
+        );
+
+        let mid = client.get_shipment(&str(&env, "ship_grp")).unwrap();
+        assert_eq!(mid.current_status, str(&env, "partially_delivered"));
+        assert_eq!(mid.total_received_quantity, u256(90));
+
+        // Donor closes remaining 10-box shortage via authorized exception
+        client.record_delivery_exception(&donor, &str(&env, "ship_grp"), &str(&env, "damaged in transit"));
+        let done = client.get_shipment(&str(&env, "ship_grp")).unwrap();
+        assert_eq!(done.current_status, str(&env, "delivered"));
+        assert_eq!(done.delivery_exceptions.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Shipment delivery already completed or closed")]
+    fn test_completed_shipment_rejects_repeated_confirmation() {
+        let env = make_env();
+        let client = deploy(&env);
+        let donor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        client.create_shipment(
+            &donor,
+            &str(&env, "ship_done"),
+            &str(&env, "donor_dn"),
+            &str(&env, "food"),
+            &u256(50),
+            &str(&env, "kg"),
+            &loc(&env, "Source"),
+            &loc(&env, "Dest"),
+            &9_999_999_999u64,
+            &None,
+            &Vec::new(&env),
+        );
+        let policy = Vec::from_array(
+            &env,
+            [(recipient.clone(), str(&env, "r_done"))],
+        );
+        client.configure_recipient_policy(&donor, &str(&env, "ship_done"), &policy);
+
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_done"),
+            &str(&env, "r_done"),
+            &u256(50),
+            &str(&env, "full"),
+            &Vec::new(&env),
+        );
+        client.confirm_delivery(
+            &recipient,
+            &str(&env, "ship_done"),
+            &str(&env, "r_done"),
+            &u256(1),
+            &str(&env, "duplicate"),
+            &Vec::new(&env),
+        );
     }
 
     #[test]
