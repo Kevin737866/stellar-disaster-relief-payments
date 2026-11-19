@@ -412,7 +412,7 @@ Generate and validate offline QR codes for fund access.
 
 ```typescript
 generateFundQRCode(fundId: string, fund: EmergencyFund): string
-validateFundQRCode(qrCodeData: string): boolean
+validateFundQRCode(qrCodeData: string): Promise<boolean>
 ```
 
 ---
@@ -1123,7 +1123,7 @@ async batchCreateTransfers(
 
 ### `createEmergencyTransfer()`
 
-Build a pre-configured emergency transfer with default spending rules (60% food, 30% medicine, 10% shelter, 7-day expiry). Does **not** submit to the network — call `createTransfer()` with the returned data.
+Build a pre-configured emergency transfer with default spending rules (60% food, 30% medicine, 10% shelter, 7-day expiry). Allocations use integer arithmetic where medicine (30%) and shelter (10%) are calculated directly, and food receives the remainder to avoid truncation loss, ensuring the category limits sum to 100% of the disbursement amount. Does **not** submit to the network — call `createTransfer()` with the returned data.
 
 ```typescript
 createEmergencyTransfer(
@@ -1363,10 +1363,27 @@ createSupplyChainRequest(
 ): SupplyChainRequest
 
 // Estimate arrival time based on transport method
+// ⚠️ LIMITATIONS: Uses simplified great-circle distance with fixed average speeds.
+// Does NOT account for real-world humanitarian logistics constraints such as:
+// port/customs delays, weather, security checkpoints, infrastructure damage,
+// transshipment handoffs, or regulatory paperwork.
+// For production use, provide custom speeds, delay factors, or a custom estimator.
 calculateEstimatedArrival(
   origin: Location,
   destination: Location,
-  transportMethod: 'air' | 'ground' | 'sea'
+  transportMethod: 'air' | 'ground' | 'sea',
+  options?: {
+    customSpeeds?: Partial<Record<'air' | 'ground' | 'sea', number>>;
+    delayFactors?: {
+      portCustomsHours?: number;
+      weatherBufferHours?: number;
+      securityCheckpointHours?: number;
+      infrastructureBufferHours?: number;
+      transshipmentHours?: number;
+      documentationHours?: number;
+    };
+    customEstimator?: (distanceKm: number, transportMethod: 'air' | 'ground' | 'sea') => number;
+  }
 ): number  // Unix timestamp (ms)
 ```
 

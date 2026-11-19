@@ -57,3 +57,17 @@ export const TransactionBuilder = jest.fn().mockImplementation(() => ({
     sign: jest.fn(),
   }),
 }));
+
+// Soroban RPC namespace used by SDK clients (e.g. `const { Server } = SorobanRpc`).
+export const SorobanRpc = {
+  Server,
+  Api: {
+    GetTransactionStatus: {
+      SUCCESS: 'SUCCESS',
+      FAILED: 'FAILED',
+      NOT_FOUND: 'NOT_FOUND',
+    },
+  },
+};
+
+export const rpc = SorobanRpc;

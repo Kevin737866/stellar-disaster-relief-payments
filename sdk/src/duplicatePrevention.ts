@@ -47,7 +47,7 @@ export class DuplicatePreventionClient {
     contractId: string,
     signingKey: Keypair,
     server: any,
-    networkPassphrase: string = Networks.TESTNET_NETWORK_PASSPHRASE
+    networkPassphrase: string = Networks.TESTNET
   ) {
     this.contractId = contractId;
     this.signingKey = signingKey;
@@ -115,7 +115,7 @@ export class DuplicatePreventionClient {
   ): Promise<{ success: boolean; recordId: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const recordId = `${beneficiaryAddress}_${fundId}_${purpose}_${Date.now()}`;
 
@@ -178,7 +178,7 @@ export class DuplicatePreventionClient {
   ): Promise<DisbursementHistory> {
     try {
       const sourceAccount = await this.server.loadAccount(this.signingKey.publicKey());
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       // Query contract for disbursements
       // This would typically use contract.call() in a simulation

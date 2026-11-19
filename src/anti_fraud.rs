@@ -1,4 +1,15 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::unique_id::*;
+
+// Performance optimization constants
+/// Maximum transactions to scan for velocity check (bounds iteration)
+pub const MAX_VELOCITY_SCAN: u32 = 1000;
+/// Maximum transactions to scan for amount anomaly check
+pub const MAX_AMOUNT_SCAN: u32 = 500;
+/// Maximum interaction patterns to check
+pub const MAX_PATTERN_SCAN: u32 = 200;
+/// Maximum risk profiles to scan for high-risk queries
+pub const MAX_RISK_PROFILE_SCAN: u32 = 500;
 
 #[contract]
 pub struct AntiFraud;
@@ -124,6 +135,9 @@ impl AntiFraud {
     }
 
     /// Calculate registration risk score
+    ///
+    /// Evaluates device fingerprint patterns and checks against existing profiles.
+    /// Note: Factors similarity and location clustering contain inert/placeholder heuristics as noted below.
     fn calculate_registration_risk(
         env: &Env,
         beneficiary_id: &String,
@@ -141,19 +155,21 @@ impl AntiFraud {
         
         for (_, existing_profile) in profiles.iter() {
             if existing_profile.entity_type == String::from_str(env, "beneficiary") {
-                // Simple similarity check (in production, use more sophisticated algorithms)
+                // [INERT / PLACEHOLDER HEURISTIC]: calculate_similarity is called with an empty
+                // slice (&[]), always returning 0. Full factor comparison is not yet implemented.
                 if Self::calculate_similarity(verification_factors, &[]) > 80 {
                     risk_score += 40;
                 }
                 
-                // Check location clustering (multiple registrations from same location)
+                // [INERT / PLACEHOLDER HEURISTIC]: location_similarity returns a static 50 score
+                // for any non-empty location; coordinate-based geospatial proximity is not computed.
                 if Self::location_similarity(location, &existing_profile.entity_id) > 90 {
                     risk_score += 20;
                 }
             }
         }
         
-        // Check device fingerprint patterns
+        // Check device fingerprint patterns (active heuristic)
         if Self::is_suspicious_device(device_fingerprint) {
             risk_score += 30;
         }
@@ -161,7 +177,8 @@ impl AntiFraud {
         risk_score.min(100)
     }
 
-    /// Simple similarity calculation (placeholder for more sophisticated ML)
+    /// [INERT / PLACEHOLDER HEURISTIC]: Simple similarity calculation (placeholder for more sophisticated ML)
+    /// Always returns 0 when factors2 is empty. Verification factor vector comparison is not yet functional.
     fn calculate_similarity(factors1: &[String], factors2: &[String]) -> u32 {
         if factors2.is_empty() {
             return 0;
@@ -180,7 +197,8 @@ impl AntiFraud {
         (matches * 100) / factors1.len() as u32
     }
 
-    /// Location similarity check
+    /// [INERT / PLACEHOLDER HEURISTIC]: Location similarity check
+    /// Returns fixed placeholder score (50 if location non-empty, else 0); geospatial distance calculation is not implemented.
     fn location_similarity(location1: &str, entity_id: &str) -> u32 {
         // Simple string similarity (in production, use geospatial analysis)
         if location1.len() > 0 {
@@ -268,7 +286,7 @@ impl AntiFraud {
         (true, risk_factors)
     }
 
-    /// Check for velocity breaches
+    /// Check for velocity breaches (bounded scan for performance)
     fn is_velocity_breach(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if more than 10 transactions in last hour
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -277,16 +295,26 @@ impl AntiFraud {
             .unwrap_or(Map::new(env));
         
         let mut recent_count = 0;
+        let mut scanned = 0u32;
+        
         for (_, (tx_timestamp, _)) in transactions.iter() {
+            if scanned >= MAX_VELOCITY_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if timestamp - tx_timestamp < 3600 && tx_timestamp <= timestamp {
                 recent_count += 1;
+                if recent_count > 10 {
+                    return true; // Early exit when threshold exceeded
+                }
             }
         }
         
         recent_count > 10
     }
 
-    /// Check for amount anomalies
+    /// Check for amount anomalies (bounded scan for performance)
     fn is_amount_anomaly(env: &Env, beneficiary_id: &String, amount: U256) -> bool {
         // Check if amount is significantly different from average
         let transactions_key = Symbol::new(env, "transaction_history");
@@ -295,9 +323,15 @@ impl AntiFraud {
             .unwrap_or(Map::new(env));
         
         let mut total_amount = U256::from_u64(0);
-        let mut count = 0;
+        let mut count = 0u32;
+        let mut scanned = 0u32;
         
         for (_, (_, tx_amount)) in transactions.iter() {
+            if scanned >= MAX_AMOUNT_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             total_amount += tx_amount;
             count += 1;
         }
@@ -312,7 +346,7 @@ impl AntiFraud {
         amount > average * 3 || amount < average / 10
     }
 
-    /// Check for suspicious merchant interaction patterns
+    /// Check for suspicious merchant interaction patterns (bounded scan for performance)
     fn is_suspicious_pattern(env: &Env, beneficiary_id: &String, merchant_id: &String) -> bool {
         // Check if beneficiary always transacts with same merchant
         let patterns_key = Symbol::new(env, "interaction_patterns");
@@ -323,8 +357,14 @@ impl AntiFraud {
         if let Some(beneficiary_patterns) = patterns.get(beneficiary_id) {
             let mut total_interactions = 0;
             let mut merchant_interactions = 0;
+            let mut scanned = 0u32;
             
             for (merchant, count) in beneficiary_patterns.iter() {
+                if scanned >= MAX_PATTERN_SCAN {
+                    break; // Bound the scan for performance
+                }
+                scanned += 1;
+                
                 total_interactions += count;
                 if merchant == merchant_id {
                     merchant_interactions = count;
@@ -340,7 +380,8 @@ impl AntiFraud {
         false
     }
 
-    /// Check for geographic anomalies
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for geographic anomalies
+    /// Returns false unconditionally because transaction GPS/location telemetry is not currently captured on-chain.
     fn is_geographic_anomaly(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if transactions are happening in impossible locations
         // This would require location data from transactions
@@ -372,7 +413,9 @@ impl AntiFraud {
         entities: Vec<String>,
         confidence_score: u32,
     ) {
-        let alert_id = format!("alert_{}_{}", pattern_type, env.ledger().timestamp());
+        // Use first entity for alert ID, or pattern_type if no entities
+        let entity_id = entities.get(0).unwrap_or(String::from_str(env, "unknown"));
+        let alert_id = generate_fraud_alert_id(env, &entity_id, pattern_type);
         let alert = FraudPattern {
             id: alert_id,
             pattern_type: String::from_str(env, pattern_type),
@@ -444,7 +487,7 @@ impl AntiFraud {
         }
     }
 
-    /// Get high-risk entities
+    /// Get high-risk entities (bounded scan for performance)
     pub fn get_high_risk_entities(env: Env, threshold: u32) -> Vec<RiskProfile> {
         let profiles_key = Symbol::new(&env, "risk_profiles");
         let profiles: Map<String, RiskProfile> = env.storage().instance()
@@ -452,7 +495,14 @@ impl AntiFraud {
             .unwrap_or(Map::new(&env));
         
         let mut high_risk = Vec::new(&env);
+        let mut scanned = 0u32;
+        
         for (_, profile) in profiles.iter() {
+            if scanned >= MAX_RISK_PROFILE_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if profile.risk_score >= threshold {
                 high_risk.push_back(profile);
             }

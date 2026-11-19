@@ -95,6 +95,7 @@ export function buildFilename(prefix: string, format: ExportFormat): string {
 
 export function triggerDownload(content: string, filename: string, format: ExportFormat): void {
   if (typeof document === 'undefined') return;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return;
   const mime = format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json';
   const blob = new Blob(['\uFEFF' + content], { type: mime });
   const url = URL.createObjectURL(blob);

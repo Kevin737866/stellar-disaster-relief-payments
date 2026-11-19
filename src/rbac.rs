@@ -13,6 +13,45 @@
 /// - **Oracle**: Trusted data providers. Can submit oracle data for trigger verification.
 /// - **Operator**: Maintenance role. Can run cleanup jobs, reset volumes, settle balances,
 ///   and execute automated triggers.
+/// - **Transporter**: Supply chain logistics agents. Carry and deliver relief shipments.
+/// - **Merchant**: Approved vendors providing emergency goods in disaster zones.
+/// - **Recipient**: Aid recipients and verified beneficiaries.
+///
+/// # Role-Gated Operations
+///
+/// | Role | Modules & Operations |
+/// |---|---|
+/// | `ROLE_ADMIN` | `rbac::assign_role`, `rbac::revoke_role`, `beneficiary_manager::deactivate_beneficiary`, `merchant_network::review_trial_merchant`, `aid_registry::archive_fund`, `aid_registry::create_fund` |
+/// | `ROLE_NGO` | `beneficiary_manager::register_beneficiary`, `beneficiary_manager::create_identity_from_factors`, `cash_transfer::create_transfer`, `supply_chain_tracker::create_shipment`, `supply_chain_tracker::add_checkpoint`, `supply_chain_tracker::assign_transporter` |
+/// | `ROLE_OPERATOR` | `cash_transfer::cleanup_expired_transfers`, `merchant_network::settle_balances`, `merchant_network::reset_daily_volumes` |
+/// | `ROLE_AUDITOR` | `anti_fraud::review_transaction`, `anti_fraud::get_high_risk_entities` |
+/// | `ROLE_GOV` / `ROLE_UN` | Multi-sig emergency fund release approvals |
+/// | `ROLE_TRANSPORTER` | Checkpoint custody confirmations (`supply_chain_tracker::add_checkpoint`) |
+///
+/// # Documented Policy Exceptions (Non-Role Gated / Self-Service Operations)
+///
+/// Certain operations intentionally do not require pre-assigned RBAC roles because they
+/// are self-service, peer-to-peer, or public onboarding flows:
+///
+/// 1. **Public Merchant Onboarding (`merchant_network::register_merchant`)**:
+///    Any prospective merchant/vendor in a disaster zone can self-register without an existing role.
+///    The merchant starts in `Pending` or `Trial` status and cannot receive unlimited payouts until
+///    graduated by an Admin or vouched by community members.
+/// 2. **Beneficiary Location Updates (`beneficiary_manager::update_location`)**:
+///    Displaced individuals must be able to update their own camp location without NGO intervention.
+///    Guarded by wallet address ownership (`profile.wallet_address == caller`), not RBAC.
+/// 3. **Transfer Fund Recall (`cash_transfer::recall_funds`)**:
+///    The original creator of an expired conditional transfer can recall unspent funds.
+///    Guarded by creator address ownership (`transfer.creator == caller`).
+/// 4. **Transfer Spending (`cash_transfer::spend`)**:
+///    Aid recipients execute spending within transfer limits and rules.
+///    Guarded by recipient authorization and spending rule engine.
+/// 5. **Merchant Payment Co-Authorization (`merchant_network::process_payment`)**:
+///    Requires mutual consent: the registered merchant owner processes the transaction with
+///    co-authorization from the spending beneficiary.
+/// 6. **Social Recovery & Vouching (`beneficiary_manager::social_recovery`, `merchant_network::add_vouch`)**:
+///    Community-based recovery and vouching where trusted contacts or existing beneficiaries
+///    attest to identities or vendors.
 ///
 /// # Storage Layout
 ///

@@ -1,13 +1,16 @@
-import { 
-  Server, 
-  TransactionBuilder, 
-  Networks, 
-  Keypair, 
+import {
+  SorobanRpc,
+  TransactionBuilder,
+  Networks,
+  Keypair,
   Contract,
   Address,
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+type Server = SorobanRpc.Server;
+
 import { withRetry } from './retry';
 
 // Merchant categories
@@ -153,8 +156,8 @@ export interface TransactionQRData {
 }
 
 export class MerchantNetworkSDK {
-  private server: Server;
-  private contract: Contract;
+  private server: any;
+  private contract: any;
   private config: any;
 
   constructor(config: any) {
@@ -202,7 +205,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(ownerKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return `Merchant ${merchantId} registered successfully.`;
     } else {
@@ -240,7 +243,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(voucherKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return `Vouch added for merchant ${merchantId}`;
     } else {
@@ -264,7 +267,7 @@ export class MerchantNetworkSDK {
   ): Promise<string> {
     const merchantKeypair = Keypair.fromSecret(merchantKey);
     const beneficiaryKeypair = Keypair.fromSecret(beneficiaryKey);
-    
+
     const merchantAccount = await withRetry<any>(() => this.server.getAccount(merchantKeypair.publicKey()));
 
     const tx = new TransactionBuilder(merchantAccount, {
@@ -292,7 +295,7 @@ export class MerchantNetworkSDK {
     tx.sign(merchantKeypair);
     tx.sign(beneficiaryKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
@@ -356,7 +359,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(merchantKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
@@ -402,7 +405,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(adminKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
       return scValToNative(result.result.retval);
     } else {
@@ -440,9 +443,9 @@ export class MerchantNetworkSDK {
 
     tx.sign(adminKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status === 'SUCCESS') {
-      return approve 
+      return approve
         ? `Merchant ${merchantId} graduated successfully`
         : `Merchant ${merchantId} trial extended or suspended`;
     } else {
@@ -460,7 +463,7 @@ export class MerchantNetworkSDK {
         nativeToScVal(merchantId)
       );
       const qrData = scValToNative(result.result.retval);
-      
+
       // Parse QR data: merchant_id|category|lat|lng|name
       const parts = qrData.split('|');
       return {
@@ -493,7 +496,7 @@ export class MerchantNetworkSDK {
         ]
       );
       const qrData = scValToNative(result.result.retval);
-      
+
       // Parse QR data: merchant_id|amount|transfer_code|timestamp
       const parts = qrData.split('|');
       return {
@@ -668,7 +671,7 @@ export class MerchantNetworkSDK {
 
     tx.sign(adminKeypair);
     const result = await withRetry<any>(() => this.server.sendTransaction(tx));
-    
+
     if (result.status !== 'SUCCESS') {
       throw new Error(`Failed to reset daily volumes: ${result.status}`);
     }

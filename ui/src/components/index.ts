@@ -5,5 +5,7 @@ export { TransferCard } from './TransferCard';
 export { Dashboard } from './Dashboard';
 export { ConfirmDialog } from './ConfirmDialog';
 export { ErrorMessage, friendlyError } from './ErrorMessage';
+export { FormField } from './FormField';
 export { NotificationProvider, useNotifications } from './NotificationSystem';
+export { useFocusTrap } from '../accessibility/useFocusTrap';
 export type { Notification, NotificationType } from './NotificationSystem';

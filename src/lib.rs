@@ -19,6 +19,7 @@ pub mod validation {
     }
 }
 
+pub mod rbac;
 mod aid_registry;
 mod beneficiary_manager;
 mod merchant_network;
@@ -29,13 +30,17 @@ pub mod rbac;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod tests;
 
+pub use rbac::*;
 pub use aid_registry::*;
 pub use beneficiary_manager::*;
 pub use merchant_network::*;
 pub use cash_transfer::*;
 pub use supply_chain_tracker::*;
 pub use anti_fraud::*;
+pub use unique_id::*;
 
 #[contract]
 pub struct DisasterReliefPlatform;
