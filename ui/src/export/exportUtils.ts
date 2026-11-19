@@ -21,6 +21,9 @@ export interface ExportAuthorization {
   actorId: string;
   role: ExportRole;
   canExport: boolean;
+  /** Consent must be verified against a trusted consent record, not inferred from this UI. */
+  consentVerified: boolean;
+  consentReference?: string;
   /** Must persist the audit event server-side before the file is generated. */
   auditExport: (event: {
     actorId: string;
@@ -29,6 +32,7 @@ export interface ExportAuthorization {
     rowCount: number;
     exportedFields: string[];
     exportedAt: string;
+    consentReference?: string;
   }) => void;
 }
 
@@ -59,7 +63,8 @@ export function selectExportFields<T>(
     throw new Error('You are not authorized to export this data.');
   }
   const mayExportPersonal =
-    includePersonalData && (authorization.role === 'admin' || authorization.role === 'auditor');
+    includePersonalData && authorization.consentVerified && Boolean(authorization.consentReference?.trim()) &&
+    (authorization.role === 'admin' || authorization.role === 'auditor');
   return fields.filter(field =>
     field.classification === 'public' ||
     field.classification === 'operational' ||
@@ -123,6 +128,7 @@ export function exportData<T>(
     rowCount: rows.length,
     exportedFields: permittedFields.map(field => field.key),
     exportedAt: new Date().toISOString(),
+    ...(includePersonalData ? { consentReference: authorization.consentReference } : {}),
   });
   const content = format === 'csv'
     ? toCSV(rows, permittedFields)
