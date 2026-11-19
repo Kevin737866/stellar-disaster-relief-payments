@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Contract tests (Rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run Soroban contract tests
+        run: cargo test --all
+
+  sdk:
+    name: SDK build and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Type-check and build SDK
+        run: npm run build
+      - name: Run SDK unit tests
+        run: npm run test:sdk -- --runInBand
+
+  ui:
+    name: UI tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run UI tests
+        run: npm run test:ui -- --runInBand
+
+  integration:
+    name: Integration and performance smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Run integration tests
+        run: npm run test:integration -- --runInBand
+      - name: Run performance smoke tests
+        run: npm run test:performance -- --runInBand
+
+  release-gate:
+    name: Release gate
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
+    needs: [contract, sdk, ui, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm all required gates passed
+        run: echo "Contract, SDK, UI, integration and performance gates passed."

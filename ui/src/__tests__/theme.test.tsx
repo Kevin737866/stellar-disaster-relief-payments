@@ -217,3 +217,34 @@ describe('rendering in both themes', () => {
     expect(document.documentElement.classList.contains('dark')).toBe(true);
   });
 });
+
+// ─── privacy ──────────────────────────────────────────────────────────────────
+
+describe('theme persistence privacy', () => {
+  it('stores only the allowlisted theme preference', async () => {
+    const user = userEvent.setup();
+    renderWithProvider(<TestConsumer />);
+    await user.click(screen.getByRole('button', { name: 'toggle' }));
+
+    const keys = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i));
+    expect(keys).toEqual([STORAGE_KEY]);
+    expect(['light', 'dark']).toContain(localStorage.getItem(STORAGE_KEY));
+  });
+
+  it('writes no identity, contact, or financial data', async () => {
+    const user = userEvent.setup();
+    renderWithProvider(<TestConsumer />);
+    await user.click(screen.getByRole('button', { name: 'toggle' }));
+
+    const persisted = JSON.stringify({ ...localStorage });
+    expect(persisted).not.toMatch(/token|secret|password|email|phone|wallet|address|recovery/i);
+  });
+
+  it('removes non-theme values instead of retaining them', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ token: 'should-not-stay' }));
+    renderWithProvider(<TestConsumer />);
+
+    expect(screen.getByTestId('theme').textContent).toBe('light');
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+});

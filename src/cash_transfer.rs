@@ -1,4 +1,15 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
+use crate::unique_id::*;
+
+// Performance optimization constants
+/// Maximum spending rules to check per transaction (bounds iteration)
+pub const MAX_SPENDING_RULES_CHECK: u32 = 50;
+/// Maximum transactions to return in history queries
+pub const MAX_TRANSACTION_HISTORY: u32 = 100;
+/// Maximum transfers to return in beneficiary queries
+pub const MAX_BENEFICIARY_TRANSFERS: u32 = 50;
+/// Maximum transfers to scan in cleanup
+pub const MAX_CLEANUP_SCAN: u32 = 200;
 
 #[contract]
 pub struct CashTransfer;
@@ -55,7 +66,12 @@ impl CashTransfer {
         purpose: String,
     ) {
         creator.require_auth();
-        
+        rbac::require_role(&env, &creator, ROLE_NGO);
+
+        // #239 — gated by the shared incident pause so a paused platform stops
+        // taking on new transfer obligations, not just new disbursements.
+        require_not_paused(&env);
+
         // Check for duplicate transfer
         let transfers_key = Symbol::new(&env, "transfers");
         let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -89,6 +105,12 @@ impl CashTransfer {
         let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
         let transactions: Map<String, Transaction> = Map::new(&env);
         env.storage().instance().set(&transactions_key, &transactions);
+
+        // Emit transfer created event
+        env.events().publish(
+            (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "transfer_created")),
+            (transfer_id, beneficiary_id, amount),
+        );
     }
 
     /// Attempt to spend from conditional transfer
@@ -102,7 +124,10 @@ impl CashTransfer {
         location: String,
     ) -> bool {
         beneficiary.require_auth();
-        
+
+        // #239 — spending is the primary path a pause must stop.
+        require_not_paused(&env);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)
@@ -127,7 +152,7 @@ impl CashTransfer {
         let (is_approved, rejection_reason) = Self::validate_spending_rules(&env, &transfer, amount, &category, &location);
         
         // Create transaction record
-        let transaction_id = format!("txn_{}_{}", transfer_id, env.ledger().timestamp());
+        let transaction_id = generate_cash_transfer_txn_id(&env, &transfer_id);
         let transaction = Transaction {
             id: transaction_id.clone(),
             transfer_id: transfer_id.clone(),
@@ -154,8 +179,14 @@ impl CashTransfer {
             transfer.spent_amount += amount;
             transfer.remaining_amount -= amount;
             
-            // Update spending rule usage
+            // Update spending rule usage (bounded iteration)
+            let mut rules_checked = 0u32;
             for mut rule in transfer.spending_rules.iter() {
+                if rules_checked >= MAX_SPENDING_RULES_CHECK {
+                    break; // Bound the iteration for performance
+                }
+                rules_checked += 1;
+                
                 if rule.rule_type == "category_limit" {
                     if let Some(rule_category) = rule.parameters.get(&String::from_str(&env, "category")) {
                         if rule_category == &category {
@@ -165,16 +196,21 @@ impl CashTransfer {
                 }
             }
             
-            transfers.set(transfer_id, transfer);
+            transfers.set(transfer_id.clone(), transfer);
             env.storage().instance().set(&transfers_key, &transfers);
             
+            env.events().publish(
+                (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "transfer_spent")),
+                (transfer_id, merchant_id, amount),
+            );
+
             true
         } else {
             false
         }
     }
 
-    /// Validate spending against rules
+    /// Validate spending against rules (bounded iteration for performance)
     fn validate_spending_rules(
         env: &Env,
         transfer: &ConditionalTransfer,
@@ -182,7 +218,13 @@ impl CashTransfer {
         category: &String,
         location: &String,
     ) -> (bool, String) {
+        let mut rules_checked = 0u32;
         for rule in transfer.spending_rules.iter() {
+            if rules_checked >= MAX_SPENDING_RULES_CHECK {
+                break; // Bound the iteration for performance
+            }
+            rules_checked += 1;
+            
             match rule.rule_type.to_string().as_str() {
                 "category_limit" => {
                     if let Some(rule_category) = rule.parameters.get(&String::from_str(env, "category")) {
@@ -233,7 +275,7 @@ impl CashTransfer {
         transfers.get(transfer_id)
     }
 
-    /// Get transaction history for a transfer
+    /// Get transaction history for a transfer (bounded results)
     pub fn get_transactions(env: Env, transfer_id: String) -> Vec<Transaction> {
         let transactions_key = Symbol::new(&env, &format!("transactions_{}", transfer_id));
         let transactions: Map<String, Transaction> = env.storage().instance()
@@ -241,8 +283,14 @@ impl CashTransfer {
             .unwrap_or(Map::new(&env));
         
         let mut result = Vec::new(&env);
+        let mut count = 0u32;
+        
         for (_, transaction) in transactions.iter() {
+            if count >= MAX_TRANSACTION_HISTORY {
+                break; // Bound results for performance
+            }
             result.push_back(transaction);
+            count += 1;
         }
         result
     }
@@ -261,6 +309,10 @@ impl CashTransfer {
             None => return U256::from_u64(0),
         };
         
+        if transfer.creator != creator {
+            panic!("Unauthorized: caller is not the transfer creator");
+        }
+        
         // Check if transfer is expired
         if env.ledger().timestamp() <= transfer.expires_at {
             return U256::from_u64(0);
@@ -270,13 +322,18 @@ impl CashTransfer {
         
         // Deactivate transfer
         transfer.is_active = false;
-        transfers.set(transfer_id, transfer);
+        transfers.set(transfer_id.clone(), transfer);
         env.storage().instance().set(&transfers_key, &transfers);
         
+        env.events().publish(
+            (Symbol::new(&env, "cash_transfer"), Symbol::new(&env, "funds_recalled")),
+            (transfer_id, creator, recall_amount),
+        );
+
         recall_amount
     }
 
-    /// List active transfers for a beneficiary
+    /// List active transfers for a beneficiary (bounded results)
     pub fn list_beneficiary_transfers(env: Env, beneficiary_id: String) -> Vec<ConditionalTransfer> {
         let transfers_key = Symbol::new(&env, "transfers");
         let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -284,9 +341,15 @@ impl CashTransfer {
             .unwrap_or(Map::new(&env));
         
         let mut result = Vec::new(&env);
+        let mut count = 0u32;
+        
         for (_, transfer) in transfers.iter() {
+            if count >= MAX_BENEFICIARY_TRANSFERS {
+                break; // Bound results for performance
+            }
             if transfer.beneficiary_id == beneficiary_id && transfer.is_active {
                 result.push_back(transfer);
+                count += 1;
             }
         }
         result
@@ -300,7 +363,11 @@ impl CashTransfer {
         new_expiry: u64,
     ) {
         creator.require_auth();
-        
+
+        // #239 — extending an expiry keeps funds spendable, so it is gated
+        // with the rest of the value-moving paths.
+        require_not_paused(&env);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)
@@ -315,7 +382,7 @@ impl CashTransfer {
         }
     }
 
-    /// Cleanup expired transfers
+    /// Cleanup expired transfers (bounded scan for performance)
     pub fn cleanup_expired_transfers(env: Env) {
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -323,8 +390,14 @@ impl CashTransfer {
             .unwrap_or(Map::new(&env));
         
         let current_time = env.ledger().timestamp();
+        let mut scanned = 0u32;
         
         for (transfer_id, mut transfer) in transfers.iter() {
+            if scanned >= MAX_CLEANUP_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+            
             if current_time > transfer.expires_at && transfer.is_active {
                 transfer.is_active = false;
                 transfers.set(transfer_id, transfer);

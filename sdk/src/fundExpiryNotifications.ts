@@ -59,7 +59,7 @@ export class FundExpiryNotificationsClient {
       notificationThresholdDays: 7, // Notify 7 days before expiry
       enableAutoNotifications: true,
     },
-    networkPassphrase: string = Networks.TESTNET_NETWORK_PASSPHRASE
+    networkPassphrase: string = Networks.TESTNET
   ) {
     this.contractId = contractId;
     this.signingKey = signingKey;
@@ -81,7 +81,7 @@ export class FundExpiryNotificationsClient {
   ): Promise<{ success: boolean; transactionHash: string; notificationId: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -265,7 +265,7 @@ export class FundExpiryNotificationsClient {
   ): Promise<{ success: boolean; acknowledgedAt: number }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,
@@ -333,7 +333,7 @@ export class FundExpiryNotificationsClient {
   ): Promise<{ success: boolean; transactionHash: string }> {
     try {
       const sourceAccount = await this.server.loadAccount(adminAddress);
-      const contract = new Contract(this.contractId);
+      const contract = new Contract(this.contractId) as any;
 
       const transaction = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE,

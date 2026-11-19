@@ -1,6 +1,20 @@
 /**
  * Core export utilities for transaction history.
  * Pure functions — no DOM side-effects except triggerDownload().
+ *
+ * @privacy NOTICE — Exported files may contain personally identifiable
+ * information (PII) including beneficiary IDs, transfer amounts, remaining
+ * balances, merchant locations, and spending history.  Callers MUST ensure:
+ *
+ * 1. Exports are only accessible to authorised NGO staff.
+ * 2. Files are transmitted over TLS 1.2+ and stored with access controls.
+ * 3. All export events are logged for audit purposes.
+ * 4. Files are deleted after the retention period mandated by applicable
+ *    humanitarian data standards (e.g. ICRC Data Protection Rules,
+ *    OCHA Data Responsibility Guidelines).
+ * 5. Files are never published publicly or shared with unauthorised parties.
+ *
+ * See the "Export Privacy" section in README.md for field-level risk ratings.
  */
 
 export type ExportFormat = 'csv' | 'json';
@@ -55,6 +69,7 @@ export function buildFilename(prefix: string, format: ExportFormat): string {
 /** Trigger a browser file download. No-op in non-browser environments. */
 export function triggerDownload(content: string, filename: string, format: ExportFormat): void {
   if (typeof document === 'undefined') return;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return;
   const mime = format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json';
   const blob = new Blob(['\uFEFF' + content], { type: mime }); // BOM for Excel UTF-8
   const url = URL.createObjectURL(blob);

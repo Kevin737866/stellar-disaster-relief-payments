@@ -1,3 +1,8 @@
+// crypto-js — SHA256 is used for all security-sensitive operations (QR signatures,
+// TOTP, mesh node signatures, paper code hashing).  MD5 is used only for the
+// non-security 8-char display checksum on paper backup codes (human-readable
+// error-detection only; not a security guarantee).  Do not use MD5 for any
+// operation that requires collision or pre-image resistance.
 import { SHA256, MD5 } from 'crypto-js';
 import { 
   OfflineAuthCode, 
@@ -399,7 +404,14 @@ Generated: ${new Date().toISOString()}
   }
 
   /**
-   * Generate checksum for paper codes
+   * Generate checksum for paper codes.
+   *
+   * Uses MD5 to produce an 8-character uppercase display checksum that allows
+   * a field agent to detect typos when entering a paper backup code manually.
+   * This is a human-readable error-detection aid only — it is **not** used for
+   * any security-sensitive operation.  The actual security comes from the
+   * full SHA-256 hash of the code stored in `RecoveryCode.code_hash` on-chain.
+   * MD5 is acceptable here because collision resistance is not required.
    */
   private generateChecksum(code: string): string {
     return MD5(code).toString().substring(0, 8).toUpperCase();
