@@ -45,18 +45,18 @@ describe('privacy-aware exports', () => {
       .toBe(false);
   });
 
-  it('blocks unauthorized exports and does not audit them as successful', () => {
+  it('blocks unauthorized exports and does not audit them as successful', async () => {
     const auditExport = jest.fn();
-    expect(() => exportData([], fields, 'csv', 'beneficiaries', authorization({
+    await expect(exportData([], fields, 'csv', 'beneficiaries', authorization({
       canExport: false,
       auditExport,
-    }))).toThrow('not authorized');
+    }))).rejects.toThrow('not authorized');
     expect(auditExport).not.toHaveBeenCalled();
   });
 
-  it('writes an audit event before export generation', () => {
+  it('writes an audit event before export generation', async () => {
     const auditExport = jest.fn();
-    exportData([], fields, 'json', 'beneficiaries', authorization({ auditExport }));
+    await exportData([], fields, 'json', 'beneficiaries', authorization({ auditExport }));
     expect(auditExport).toHaveBeenCalledWith(expect.objectContaining({
       actorId: 'auditor-17',
       role: 'auditor',
