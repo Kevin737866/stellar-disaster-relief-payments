@@ -247,7 +247,7 @@ impl MerchantNetwork {
         voucher_type: u32, // 0 = beneficiary, 1 = ngo
     ) {
         voucher.require_auth();
-        crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN | crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
