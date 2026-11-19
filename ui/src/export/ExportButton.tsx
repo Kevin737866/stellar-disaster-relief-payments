@@ -29,11 +29,11 @@ export function ExportButton<T>({
   const canRequestPersonalData =
     authorization.role === 'admin' || authorization.role === 'auditor';
 
-  const handleExport = (format: ExportFormat) => {
+  const handleExport = async (format: ExportFormat) => {
     setError(null);
     setExporting(format);
     try {
-      exportData(rows, fields, format, filenamePrefix, authorization, includePersonalData);
+      await exportData(rows, fields, format, filenamePrefix, authorization, includePersonalData);
     } catch {
       setError('Export was blocked or could not be completed. Check your permissions and try again.');
     } finally {
