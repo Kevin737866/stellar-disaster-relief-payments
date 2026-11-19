@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { getTransactionErrorMessage } from '../utils/transactionErrors';
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
@@ -110,8 +111,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       loadBeneficiaries();
       alert('Beneficiary registered successfully! Save your recovery codes.');
     } catch (error) {
-      console.error('Failed to register beneficiary:', error);
-      alert('Failed to register beneficiary');
+      notify({ type: 'error', title: 'Beneficiary registration failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -151,8 +151,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       });
       loadBeneficiaries();
     } catch (error) {
-      console.error('Failed to verify beneficiary:', error);
-      alert('Failed to verify beneficiary');
+      notify({ type: 'error', title: 'Beneficiary verification failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -172,8 +171,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
         alert('Failed to restore access. Check recovery code.');
       }
     } catch (error) {
-      console.error('Failed to restore access:', error);
-      alert('Failed to restore access');
+      notify({ type: 'error', title: 'Access recovery failed', message: getTransactionErrorMessage(error) });
     }
   };
 
