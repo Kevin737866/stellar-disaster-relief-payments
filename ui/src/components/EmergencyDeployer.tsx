@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
+import { getTransactionErrorMessage } from '../utils/transactionErrors';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
@@ -91,8 +92,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       loadActiveFunds();
       notify({ type: 'success', title: 'Emergency fund created', message: `Fund "${fundForm.name}" is now active.` });
     } catch (error) {
-      console.error('Failed to create fund:', error);
-      alert('Failed to create emergency fund');
+      notify({ type: 'error', title: 'Emergency fund creation failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -122,8 +122,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       loadActiveFunds();
       alert(`Created ${fundIds.length} emergency funds for rapid response`);
     } catch (error) {
-      console.error('Failed to deploy rapid response:', error);
-      alert('Failed to deploy rapid response');
+      notify({ type: 'error', title: 'Rapid response deployment failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -136,7 +135,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         setSelectedFund(fund);
       }
     } catch (error) {
-      setError(friendlyError(error));
+      notify({ type: 'error', title: 'Unable to load fund details', message: getTransactionErrorMessage(error) });
     }
   };
 
@@ -147,8 +146,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       loadActiveFunds();
       alert('Expired funds cleaned up successfully');
     } catch (error) {
-      console.error('Failed to cleanup expired funds:', error);
-      alert('Failed to cleanup expired funds');
+      notify({ type: 'error', title: 'Fund cleanup failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
