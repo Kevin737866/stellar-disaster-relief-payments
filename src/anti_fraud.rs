@@ -84,6 +84,7 @@ impl AntiFraud {
     ) -> (bool, String) {
         registrar.require_auth();
         crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         // Check for duplicate registrations using various factors
         let risk_score = Self::calculate_registration_risk(&env, &beneficiary_id, &verification_factors, &location, &device_fingerprint);
         
@@ -426,6 +427,7 @@ impl AntiFraud {
         notes: String,
     ) {
         reviewer.require_auth();
+        crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         
         let suspicious_key = Symbol::new(&env, "suspicious_transactions");
