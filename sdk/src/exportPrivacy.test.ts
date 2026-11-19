@@ -19,6 +19,8 @@ const authorization = (overrides: Partial<ExportAuthorization> = {}): ExportAuth
   actorId: 'auditor-17',
   role: 'auditor',
   canExport: true,
+  consentVerified: true,
+  consentReference: 'consent-record-2026-01',
   auditExport: jest.fn(),
   ...overrides,
 });
@@ -29,9 +31,11 @@ describe('privacy-aware exports', () => {
     expect(selected.map(field => field.key)).toEqual(['id', 'district']);
   });
 
-  it('requires both explicit consent and an eligible role for personal fields', () => {
+  it('requires verified consent and an eligible role for personal fields', () => {
     expect(selectExportFields(fields, true, authorization()).map(field => field.key))
       .toEqual(['id', 'district', 'fullName', 'phone']);
+    expect(selectExportFields(fields, true, authorization({ consentVerified: false })).map(field => field.key))
+      .toEqual(['id', 'district']);
     expect(selectExportFields(fields, true, authorization({ role: 'ngo' })).map(field => field.key))
       .toEqual(['id', 'district']);
   });
