@@ -183,6 +183,7 @@ impl AidRegistry {
         // Verify admin authorization
         admin.require_auth();
         crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Input validation
         if fund_id.len() == 0 {
@@ -340,6 +341,7 @@ impl AidRegistry {
     ) {
         requester.require_auth();
         crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Validate approvers list
         require_non_empty_address_list(&env, &approvers);
@@ -484,6 +486,7 @@ impl AidRegistry {
         min_oracle_confirmations: u32,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Verify fund exists
         let fund_key = Symbol::new(&env, "fund");
@@ -573,6 +576,7 @@ impl AidRegistry {
         confidence: u64,
     ) {
         oracle.require_auth();
+        crate::rbac::require_role(&env, &oracle, crate::rbac::ROLE_ORACLE);
         crate::rbac::require_role(&env, &oracle, crate::rbac::ROLE_ORACLE);
 
         let now = env.ledger().timestamp();
@@ -833,6 +837,7 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) -> Vec<String> {
         requester.require_auth();
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
 
         // ── Validate batch is non-empty ──────────────────────────────────────
         if entries.is_empty() {
@@ -1023,6 +1028,7 @@ impl AidRegistry {
         max_amount: U256,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Validate amount is within min/max bounds
         if amount < min_amount {
@@ -1082,6 +1088,7 @@ impl AidRegistry {
         fund_id: String,
     ) -> U256 {
         donor.require_auth();
+        crate::rbac::require_any_role(&env, &donor, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &donor, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Get fund
@@ -1146,6 +1153,7 @@ impl AidRegistry {
         fund_id: String,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -1167,6 +1175,7 @@ impl AidRegistry {
         trigger_id: String,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
         let mut triggers: Map<String, Trigger> = env.storage().instance()
@@ -1188,6 +1197,7 @@ impl AidRegistry {
         metadata: Map<String, String>,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -1224,6 +1234,7 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
