@@ -128,6 +128,7 @@ impl BeneficiaryManager {
         verification_factors: Vec<VerificationFactor>,
     ) {
         registrar.require_auth();
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Check for duplicate registrations
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
@@ -207,6 +208,7 @@ impl BeneficiaryManager {
         provided_factors: Vec<VerificationFactor>,
     ) -> bool {
         verifier.require_auth();
+        crate::rbac::require_any_role(&env, &verifier, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
         let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
@@ -262,6 +264,7 @@ impl BeneficiaryManager {
         recovery_code: BytesN<32>,
         new_wallet: Address,
     ) -> bool {
+        new_wallet.require_auth();
         let recovery_key = Symbol::new(&env, "recovery_codes");
         let mut recovery_codes: Map<String, Vec<RecoveryCode>> = env.storage().instance()
             .get(&recovery_key)
@@ -425,6 +428,7 @@ impl BeneficiaryManager {
         new_location: String,
     ) {
         beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
         let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
@@ -442,6 +446,7 @@ impl BeneficiaryManager {
     /// Deactivate beneficiary (e.g., when they leave the program)
     pub fn deactivate_beneficiary(env: Env, admin: Address, beneficiary_id: String) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
         let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
@@ -624,6 +629,7 @@ impl BeneficiaryManager {
         duration_seconds: u64,
     ) -> BytesN<32> {
         owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         
         let identities_key = Symbol::new(&env, "identities");
         let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -706,9 +712,12 @@ impl BeneficiaryManager {
     /// Verify identity with duress mode check
     pub fn verify_identity_with_duress(
         env: Env,
+        owner: Address,
         id_hash: BytesN<32>,
         pin: String,
     ) -> (bool, bool) { // (is_valid, is_duress)
+        owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         use soroban_sdk::crypto::sha256;
         
         let identities_key = Symbol::new(&env, "identities");
@@ -784,10 +793,13 @@ impl BeneficiaryManager {
     /// Update trust score based on activity
     pub fn update_trust_score(
         env: Env,
+        reviewer: Address,
         id_hash: BytesN<32>,
         activity_type: String,
         is_positive: bool,
     ) {
+        reviewer.require_auth();
+        crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         let identities_key = Symbol::new(&env, "identities");
         let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
             .get(&identities_key)
