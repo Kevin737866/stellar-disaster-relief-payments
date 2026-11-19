@@ -167,6 +167,7 @@ impl MerchantNetwork {
         emergency_fast_track: bool, // Pre-approved from existing networks
     ) {
         owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_any_role(&env, &owner, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Check for duplicate registration
@@ -247,6 +248,7 @@ impl MerchantNetwork {
     ) {
         voucher.require_auth();
         crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -294,7 +296,9 @@ impl MerchantNetwork {
     ) -> String {
         merchant.require_auth();
         crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         
         // Verify merchant exists and is active
@@ -387,7 +391,9 @@ impl MerchantNetwork {
     ) -> String {
         merchant.require_auth();
         crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         // Verify merchant exists and is active
         let merchants_key = Symbol::new(&env, "merchants");
@@ -438,6 +444,7 @@ impl MerchantNetwork {
         offline_transaction_ids: Vec<String>,
     ) -> u32 {
         merchant.require_auth();
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         let offline_key = Symbol::new(&env, "offline_transactions");
         let mut offline_txs: Map<String, OfflineTransaction> = env.storage().temporary()
@@ -614,6 +621,7 @@ impl MerchantNetwork {
     pub fn settle_balances(env: Env, admin: Address) -> u32 {
         admin.require_auth();
         crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -666,6 +674,7 @@ impl MerchantNetwork {
         approve: bool,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -851,6 +860,7 @@ impl MerchantNetwork {
     /// Reset daily volumes (called at start of each day)
     pub fn reset_daily_volumes(env: Env, admin: Address) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &admin, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -873,6 +883,7 @@ impl MerchantNetwork {
     /// Reset monthly volume (called periodically)
     pub fn reset_monthly_volumes(env: Env, admin: Address) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &admin, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
