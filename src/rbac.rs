@@ -60,6 +60,19 @@ fn save_roles(env: &Env, roles: &Map<Address, u32>) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Initialize the role registry exactly once for this contract instance.
+pub fn initialize(env: &Env, admin: &Address, ngo: &Address, gov: &Address, un: &Address) {
+    let initialized_key = Symbol::new(env, "rbac_initialized");
+    if env.storage().instance().get::<_, bool>(&initialized_key).unwrap_or(false) {
+        panic!("Access control is already initialized");
+    }
+    admin.require_auth();
+    seed_initial_roles(env, admin, ngo, gov, un);
+    env.storage().instance().set(&initialized_key, &true);
+}
+
+
+
 /// Assign `role_mask` to `target`. Caller must be Admin.
 ///
 /// Multiple roles can be assigned in one call by OR-ing role constants:
