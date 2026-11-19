@@ -43,7 +43,7 @@ export function formatTimestamp(ms: number): string {
 export function escapeCsvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   const str = String(value);
-  if (/[",\\r\\n]/.test(str) || str !== str.trim()) {
+  if (/[",\r\n]/.test(str) || str !== str.trim()) {
     return '"' + str.replace(/"/g, '""') + '"';
   }
   return str;
@@ -74,8 +74,8 @@ export function selectExportFields<T>(
 
 export function toCSV<T>(rows: T[], fields: ExportField<T>[]): string {
   const header = fields.map(f => escapeCsvCell(f.label)).join(',');
-  const body = rows.map(row => fields.map(f => escapeCsvCell(f.value(row))).join(',')).join('\\r\\n');
-  return header + '\\r\\n' + body;
+  const body = rows.map(row => fields.map(f => escapeCsvCell(f.value(row))).join(',')).join('\r\n');
+  return header + '\r\n' + body;
 }
 
 export function toJSON<T>(rows: T[], fields: ExportField<T>[]): string {
@@ -96,7 +96,7 @@ export function buildFilename(prefix: string, format: ExportFormat): string {
 export function triggerDownload(content: string, filename: string, format: ExportFormat): void {
   if (typeof document === 'undefined') return;
   const mime = format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json';
-  const blob = new Blob(['\\uFEFF' + content], { type: mime });
+  const blob = new Blob(['\uFEFF' + content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
