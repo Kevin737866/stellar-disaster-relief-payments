@@ -182,6 +182,7 @@ impl AidRegistry {
     ) {
         // Verify admin authorization
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Input validation
         if fund_id.len() == 0 {
@@ -338,6 +339,7 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         requester.require_auth();
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Validate approvers list
         require_non_empty_address_list(&env, &approvers);
@@ -445,7 +447,9 @@ impl AidRegistry {
     }
 
     /// Deactivate expired funds
-    pub fn cleanup_expired_funds(env: Env) {
+    pub fn cleanup_expired_funds(env: Env, operator: Address) {
+        operator.require_auth();
+        crate::rbac::require_any_role(&env, &operator, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
             .get(&fund_key)
@@ -569,6 +573,7 @@ impl AidRegistry {
         confidence: u64,
     ) {
         oracle.require_auth();
+        crate::rbac::require_role(&env, &oracle, crate::rbac::ROLE_ORACLE);
 
         let now = env.ledger().timestamp();
 
@@ -728,9 +733,12 @@ impl AidRegistry {
     /// Execute automated trigger release (called when oracle conditions met)
     pub fn execute_trigger(
         env: Env,
+        operator: Address,
         fund_id: String,
         trigger_id: String,
     ) -> U256 {
+        operator.require_auth();
+        crate::rbac::require_any_role(&env, &operator, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -950,6 +958,7 @@ impl AidRegistry {
         // Verify signatures (require each approver to authorize)
         for approver in approvers.iter() {
             approver.require_auth();
+            crate::rbac::require_any_role(&env, &approver, crate::rbac::ROLE_NGO | crate::rbac::ROLE_GOV | crate::rbac::ROLE_UN);
             
             if !fund.release_triggers.contains(approver) {
                 panic_with_error!(&env, "Unauthorized approver");
@@ -1073,6 +1082,7 @@ impl AidRegistry {
         fund_id: String,
     ) -> U256 {
         donor.require_auth();
+        crate::rbac::require_any_role(&env, &donor, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
