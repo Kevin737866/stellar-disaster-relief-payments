@@ -47,6 +47,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let (s1, s2, s3) = make_signers(&env);
 
         let triggers = Vec::from_array(&env, [s1.clone(), s2.clone(), s3.clone()]);
@@ -88,6 +92,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let s2 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1.clone(), s2.clone()]);
@@ -127,6 +135,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let s2 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1, s2]);
@@ -148,6 +160,7 @@ mod aid_registry_tests {
         // Advance ledger past expiry
         env.ledger().with_mut(|l| l.timestamp = 1_000);
         let operator = Address::generate(&env);
+        client.assign_role(&admin, &operator, &crate::rbac::ROLE_OPERATOR);
         client.cleanup_expired_funds(&operator);
 
         let active = client.list_active_funds();
@@ -162,6 +175,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -201,6 +218,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let ben1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
@@ -238,6 +259,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -268,6 +293,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -295,6 +324,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
