@@ -109,7 +109,7 @@ export function triggerDownload(content: string, filename: string, format: Expor
 }
 
 /** Authorize, minimize, audit, then generate and download an export. */
-export function exportData<T>(
+export async function exportData<T>(
   rows: T[],
   fields: ExportField<T>[],
   format: ExportFormat,
