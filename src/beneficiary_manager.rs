@@ -129,6 +129,7 @@ impl BeneficiaryManager {
     ) {
         registrar.require_auth();
         crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Check for duplicate registrations
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
@@ -208,6 +209,7 @@ impl BeneficiaryManager {
         provided_factors: Vec<VerificationFactor>,
     ) -> bool {
         verifier.require_auth();
+        crate::rbac::require_any_role(&env, &verifier, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &verifier, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
@@ -429,6 +431,7 @@ impl BeneficiaryManager {
     ) {
         beneficiary.require_auth();
         crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
         let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
@@ -446,6 +449,7 @@ impl BeneficiaryManager {
     /// Deactivate beneficiary (e.g., when they leave the program)
     pub fn deactivate_beneficiary(env: Env, admin: Address, beneficiary_id: String) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let beneficiaries_key = Symbol::new(&env, "beneficiaries");
@@ -471,6 +475,7 @@ impl BeneficiaryManager {
         duress_pin: Option<String>,
     ) -> BytesN<32> {
         registrar.require_auth();
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Require at least 3 factors for security
         if factors.len() < 3 {
@@ -538,6 +543,7 @@ impl BeneficiaryManager {
         new_wallet: Address,
     ) -> bool {
         approving_contact.require_auth();
+        crate::rbac::require_role(&env, &approving_contact, crate::rbac::ROLE_RECIPIENT);
         
         let identities_key = Symbol::new(&env, "identities");
         let identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -630,6 +636,7 @@ impl BeneficiaryManager {
     ) -> BytesN<32> {
         owner.require_auth();
         crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         
         let identities_key = Symbol::new(&env, "identities");
         let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -680,6 +687,7 @@ impl BeneficiaryManager {
         new_geofence: Option<GeofenceZone>,
     ) {
         owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         
         let identities_key = Symbol::new(&env, "identities");
         let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
@@ -717,6 +725,7 @@ impl BeneficiaryManager {
         pin: String,
     ) -> (bool, bool) { // (is_valid, is_duress)
         owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
         use soroban_sdk::crypto::sha256;
         
@@ -799,6 +808,7 @@ impl BeneficiaryManager {
         is_positive: bool,
     ) {
         reviewer.require_auth();
+        crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         let identities_key = Symbol::new(&env, "identities");
         let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
