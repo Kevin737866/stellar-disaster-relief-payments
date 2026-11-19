@@ -93,7 +93,28 @@ pub struct SocialRecoveryRequest {
 
 #[contractimpl]
 impl BeneficiaryManager {
-    /// Register a displaced person without traditional ID
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Register a displaced person without traditional ID
     pub fn register_beneficiary(
         env: Env,
         registrar: Address,
