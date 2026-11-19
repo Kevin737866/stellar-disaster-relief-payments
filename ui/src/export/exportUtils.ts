@@ -1,42 +1,78 @@
 /**
- * Core export utilities for transaction history.
- * Pure functions — no DOM side-effects except triggerDownload().
+ * Privacy-aware export helpers.
+ *
+ * Export authorization is supplied by the authenticated application session.
+ * The caller must connect auditExport to a trusted server-side audit endpoint;
+ * browser-only logging is not a security boundary.
  */
-
 export type ExportFormat = 'csv' | 'json';
+export type ExportRole = 'admin' | 'auditor' | 'ngo' | 'government' | 'un';
+
+export type ExportClassification = 'public' | 'operational' | 'personal' | 'sensitive';
 
 export interface ExportField<T> {
   key: string;
   label: string;
+  classification: ExportClassification;
   value: (row: T) => string | number | boolean | null;
 }
 
-/** Format a Unix ms timestamp as ISO-8601 UTC string (timezone-safe). */
+export interface ExportAuthorization {
+  actorId: string;
+  role: ExportRole;
+  canExport: boolean;
+  /** Must persist the audit event server-side before the file is generated. */
+  auditExport: (event: {
+    actorId: string;
+    role: ExportRole;
+    format: ExportFormat;
+    rowCount: number;
+    exportedFields: string[];
+    exportedAt: string;
+  }) => void;
+}
+
 export function formatTimestamp(ms: number): string {
   return new Date(ms).toISOString();
 }
 
-/** Escape a single CSV cell value per RFC 4180. */
 export function escapeCsvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   const str = String(value);
-  // Wrap in quotes if contains comma, quote, newline, or leading/trailing space
-  if (/[",\r\n]/.test(str) || str !== str.trim()) {
+  if (/[",\\r\\n]/.test(str) || str !== str.trim()) {
     return '"' + str.replace(/"/g, '""') + '"';
   }
   return str;
 }
 
-/** Convert an array of records to a CSV string using the provided field definitions. */
-export function toCSV<T>(rows: T[], fields: ExportField<T>[]): string {
-  const header = fields.map(f => escapeCsvCell(f.label)).join(',');
-  const body = rows
-    .map(row => fields.map(f => escapeCsvCell(f.value(row))).join(','))
-    .join('\r\n');
-  return header + '\r\n' + body;
+/**
+ * Default exports include only public/operational fields. Personal fields are
+ * included only after explicit consent from an admin/auditor. Sensitive fields
+ * are never exported by this UI helper.
+ */
+export function selectExportFields<T>(
+  fields: ExportField<T>[],
+  includePersonalData: boolean,
+  authorization: ExportAuthorization
+): ExportField<T>[] {
+  if (!authorization.canExport || !authorization.actorId.trim()) {
+    throw new Error('You are not authorized to export this data.');
+  }
+  const mayExportPersonal =
+    includePersonalData && (authorization.role === 'admin' || authorization.role === 'auditor');
+  return fields.filter(field =>
+    field.classification === 'public' ||
+    field.classification === 'operational' ||
+    (field.classification === 'personal' && mayExportPersonal)
+  );
 }
 
-/** Convert an array of records to a pretty-printed JSON string. */
+export function toCSV<T>(rows: T[], fields: ExportField<T>[]): string {
+  const header = fields.map(f => escapeCsvCell(f.label)).join(',');
+  const body = rows.map(row => fields.map(f => escapeCsvCell(f.value(row))).join(',')).join('\\r\\n');
+  return header + '\\r\\n' + body;
+}
+
 export function toJSON<T>(rows: T[], fields: ExportField<T>[]): string {
   const mapped = rows.map(row => {
     const obj: Record<string, unknown> = {};
@@ -46,17 +82,16 @@ export function toJSON<T>(rows: T[], fields: ExportField<T>[]): string {
   return JSON.stringify(mapped, null, 2);
 }
 
-/** Build a filename like "transfers_2024-01-15T12-30-00Z.csv" */
 export function buildFilename(prefix: string, format: ExportFormat): string {
+  const safePrefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'export';
   const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + 'Z';
-  return `${prefix}_${ts}.${format}`;
+  return `${safePrefix}_${ts}.${format}`;
 }
 
-/** Trigger a browser file download. No-op in non-browser environments. */
 export function triggerDownload(content: string, filename: string, format: ExportFormat): void {
   if (typeof document === 'undefined') return;
   const mime = format === 'csv' ? 'text/csv;charset=utf-8;' : 'application/json';
-  const blob = new Blob(['\uFEFF' + content], { type: mime }); // BOM for Excel UTF-8
+  const blob = new Blob(['\\uFEFF' + content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -68,14 +103,30 @@ export function triggerDownload(content: string, filename: string, format: Expor
   URL.revokeObjectURL(url);
 }
 
-/** High-level export: build content, trigger download, return filename. */
+/** Authorize, minimize, audit, then generate and download an export. */
 export function exportData<T>(
   rows: T[],
   fields: ExportField<T>[],
   format: ExportFormat,
-  filenamePrefix: string
+  filenamePrefix: string,
+  authorization: ExportAuthorization,
+  includePersonalData = false
 ): string {
-  const content = format === 'csv' ? toCSV(rows, fields) : toJSON(rows, fields);
+  const permittedFields = selectExportFields(fields, includePersonalData, authorization);
+  if (permittedFields.length === 0) {
+    throw new Error('There are no fields permitted for this export.');
+  }
+  authorization.auditExport({
+    actorId: authorization.actorId,
+    role: authorization.role,
+    format,
+    rowCount: rows.length,
+    exportedFields: permittedFields.map(field => field.key),
+    exportedAt: new Date().toISOString(),
+  });
+  const content = format === 'csv'
+    ? toCSV(rows, permittedFields)
+    : toJSON(rows, permittedFields);
   const filename = buildFilename(filenamePrefix, format);
   triggerDownload(content, filename, format);
   return filename;
