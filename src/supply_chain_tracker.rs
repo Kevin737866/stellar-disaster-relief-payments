@@ -295,6 +295,7 @@ impl SupplyChainTracker {
     /// Any authenticated address may report a loss (the reporter signs).
     pub fn report_lost(env: Env, reporter: Address, shipment_id: String, reason: String) {
         reporter.require_auth();
+        crate::rbac::require_any_role(&env, &reporter, crate::rbac::ROLE_NGO | crate::rbac::ROLE_TRANSPORTER | crate::rbac::ROLE_RECIPIENT);
 
         let shipments_key = Symbol::new(&env, "shipments");
         let mut shipments: Map<String, SupplyShipment> = env
