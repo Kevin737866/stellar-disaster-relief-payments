@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
-import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
-import { useFocusTrap } from '../accessibility/useFocusTrap';
-
-/** Default page size for the beneficiary list. */
-const PAGE_SIZE = 20;
+import { BeneficiaryClient, BeneficiaryProfile, VerificationFactor, NetworkConfig } from '../../sdk/src/types';
+import { getTransactionErrorMessage } from '../utils/transactionErrors';
 
 interface BeneficiaryRegistrationProps {
   beneficiaryClient: BeneficiaryClient;
@@ -178,8 +174,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       loadBeneficiaries();
       setFormStatus('Beneficiary registered successfully. Save the recovery codes below.');
     } catch (error) {
-      console.error('Failed to register beneficiary:', error);
-      setFormError(friendlyError(error));
+      notify({ type: 'error', title: 'Beneficiary registration failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -227,8 +222,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
       verificationValidation.reset();
       loadBeneficiaries();
     } catch (error) {
-      console.error('Failed to verify beneficiary:', error);
-      setFormError(friendlyError(error));
+      notify({ type: 'error', title: 'Beneficiary verification failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -250,8 +244,7 @@ export const BeneficiaryRegistration: React.FC<BeneficiaryRegistrationProps> = (
         setFormError('Failed to restore access. Check the recovery code.');
       }
     } catch (error) {
-      console.error('Failed to restore access:', error);
-      setFormError(friendlyError(error));
+      notify({ type: 'error', title: 'Access recovery failed', message: getTransactionErrorMessage(error) });
     }
   };
 
