@@ -33,7 +33,7 @@ export interface ExportAuthorization {
     exportedFields: string[];
     exportedAt: string;
     consentReference?: string;
-  }) => void;
+  }) => void | Promise<void>;
 }
 
 export function formatTimestamp(ms: number): string {
@@ -116,12 +116,12 @@ export function exportData<T>(
   filenamePrefix: string,
   authorization: ExportAuthorization,
   includePersonalData = false
-): string {
+): Promise<string> {
   const permittedFields = selectExportFields(fields, includePersonalData, authorization);
   if (permittedFields.length === 0) {
     throw new Error('There are no fields permitted for this export.');
   }
-  authorization.auditExport({
+  await authorization.auditExport({
     actorId: authorization.actorId,
     role: authorization.role,
     format,
