@@ -98,7 +98,28 @@ pub struct RecipientConfirmation {
 
 #[contractimpl]
 impl SupplyChainTracker {
-    /// Create a new supply shipment.
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Create a new supply shipment.
     ///
     /// **Required role:** NGO
     /// 
@@ -330,6 +351,7 @@ impl SupplyChainTracker {
     /// Any authenticated address may report a loss (the reporter signs).
     pub fn report_lost(env: Env, reporter: Address, shipment_id: String, reason: String) {
         reporter.require_auth();
+        crate::rbac::require_any_role(&env, &reporter, crate::rbac::ROLE_NGO | crate::rbac::ROLE_TRANSPORTER | crate::rbac::ROLE_RECIPIENT);
 
         let shipments_key = Symbol::new(&env, "shipments");
         let mut shipments: Map<String, SupplyShipment> = env

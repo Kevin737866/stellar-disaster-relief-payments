@@ -1,10 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AidClient, EmergencyFund, NetworkConfig } from '../../sdk/src/types';
-import { parseAmount, formatAmount as formatBigAmount } from '../format/amounts';
-import { parseExpiryInput } from '../validation/expiry';
-import { ConfirmDialog } from './ConfirmDialog';
-import { ErrorMessage, friendlyError } from './ErrorMessage';
-import { useNotifications } from './NotificationSystem';
+import { getTransactionErrorMessage } from '../utils/transactionErrors';
 
 interface EmergencyDeployerProps {
   aidClient: AidClient;
@@ -143,8 +139,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
       setStatus(`Emergency fund "${fundForm.name}" created and active.`);
       notify({ type: 'success', title: 'Emergency fund created', message: `Fund "${fundForm.name}" is now active.` });
     } catch (error) {
-      console.error('Failed to create fund:', error);
-      setError(friendlyError(error));
+      notify({ type: 'error', title: 'Emergency fund creation failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -187,8 +182,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         message: `${fundIds.length} emergency funds are now active.`,
       });
     } catch (error) {
-      console.error('Failed to deploy rapid response:', error);
-      setError(friendlyError(error));
+      notify({ type: 'error', title: 'Rapid response deployment failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }
@@ -201,7 +195,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         setSelectedFund(fund);
       }
     } catch (error) {
-      setError(friendlyError(error));
+      notify({ type: 'error', title: 'Unable to load fund details', message: getTransactionErrorMessage(error) });
     }
   };
 
@@ -219,8 +213,7 @@ export const EmergencyDeployer: React.FC<EmergencyDeployerProps> = ({
         message: 'Expired emergency funds were removed.',
       });
     } catch (error) {
-      console.error('Failed to cleanup expired funds:', error);
-      setError(friendlyError(error));
+      notify({ type: 'error', title: 'Fund cleanup failed', message: getTransactionErrorMessage(error) });
     } finally {
       setLoading(false);
     }

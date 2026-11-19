@@ -53,7 +53,28 @@ pub struct Transaction {
 
 #[contractimpl]
 impl CashTransfer {
-    /// Create a conditional cash transfer
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Create a conditional cash transfer
     pub fn create_transfer(
         env: Env,
         creator: Address,
@@ -66,12 +87,9 @@ impl CashTransfer {
         purpose: String,
     ) {
         creator.require_auth();
-        rbac::require_role(&env, &creator, ROLE_NGO);
-
-        // #239 — gated by the shared incident pause so a paused platform stops
-        // taking on new transfer obligations, not just new disbursements.
-        require_not_paused(&env);
-
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        
         // Check for duplicate transfer
         let transfers_key = Symbol::new(&env, "transfers");
         let transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -124,10 +142,9 @@ impl CashTransfer {
         location: String,
     ) -> bool {
         beneficiary.require_auth();
-
-        // #239 — spending is the primary path a pause must stop.
-        require_not_paused(&env);
-
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
+        
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)
@@ -298,6 +315,7 @@ impl CashTransfer {
     /// Recall unspent funds after expiry
     pub fn recall_funds(env: Env, creator: Address, transfer_id: String) -> U256 {
         creator.require_auth();
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -363,11 +381,8 @@ impl CashTransfer {
         new_expiry: u64,
     ) {
         creator.require_auth();
-
-        // #239 — extending an expiry keeps funds spendable, so it is gated
-        // with the rest of the value-moving paths.
-        require_not_paused(&env);
-
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)
@@ -382,8 +397,10 @@ impl CashTransfer {
         }
     }
 
-    /// Cleanup expired transfers (bounded scan for performance)
-    pub fn cleanup_expired_transfers(env: Env) {
+    /// Cleanup expired transfers
+    pub fn cleanup_expired_transfers(env: Env, operator: Address) {
+        operator.require_auth();
+        crate::rbac::require_any_role(&env, &operator, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)

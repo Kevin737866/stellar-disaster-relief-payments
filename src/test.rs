@@ -47,6 +47,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let (s1, s2, s3) = make_signers(&env);
 
         let triggers = Vec::from_array(&env, [s1.clone(), s2.clone(), s3.clone()]);
@@ -138,6 +142,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let s2 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1.clone(), s2.clone()]);
@@ -177,6 +185,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let s2 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1, s2]);
@@ -197,7 +209,9 @@ mod aid_registry_tests {
 
         // Advance ledger past expiry
         env.ledger().with_mut(|l| l.timestamp = 1_000);
-        client.cleanup_expired_funds();
+        let operator = Address::generate(&env);
+        client.assign_role(&admin, &operator, &crate::rbac::ROLE_OPERATOR);
+        client.cleanup_expired_funds(&operator);
 
         let active = client.list_active_funds();
         assert_eq!(active.len(), 0);
@@ -211,6 +225,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -250,6 +268,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let ben1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
@@ -287,6 +309,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -317,6 +343,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -344,6 +374,10 @@ mod aid_registry_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let ngo_role = Address::generate(&env);
+        let gov_role = Address::generate(&env);
+        let un_role = Address::generate(&env);
+        client.initialize_access_control(&admin, &ngo_role, &gov_role, &un_role);
         let s1 = Address::generate(&env);
         let triggers = Vec::from_array(&env, [s1]);
 
@@ -734,6 +768,10 @@ mod beneficiary_tests {
         let env = make_env();
         let client = deploy(&env);
         let registrar = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &registrar, &rbac_gov, &rbac_un);
         let wallet = Address::generate(&env);
 
         client.register_beneficiary(
@@ -771,7 +809,12 @@ mod beneficiary_tests {
         let env = make_env();
         let client = deploy(&env);
         let registrar = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &registrar, &rbac_gov, &rbac_un);
         let verifier = Address::generate(&env);
+        client.assign_role(&rbac_admin, &verifier, &crate::rbac::ROLE_NGO);
         let wallet = Address::generate(&env);
         let factors = make_factors(&env);
 
@@ -801,7 +844,12 @@ mod beneficiary_tests {
         let env = make_env();
         let client = deploy(&env);
         let registrar = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &registrar, &rbac_gov, &rbac_un);
         let verifier = Address::generate(&env);
+        client.assign_role(&rbac_admin, &verifier, &crate::rbac::ROLE_NGO);
         let wallet = Address::generate(&env);
 
         client.register_beneficiary(
@@ -834,6 +882,10 @@ mod beneficiary_tests {
         let env = make_env();
         let client = deploy(&env);
         let registrar = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &registrar, &rbac_gov, &rbac_un);
         let w1 = Address::generate(&env);
         let w2 = Address::generate(&env);
         let factors = make_factors(&env);
@@ -1009,6 +1061,10 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
         let rules = Vec::from_array(&env, [food_rule(&env)]);
 
         client.create_transfer(
@@ -1036,7 +1092,12 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
         let beneficiary = Address::generate(&env);
+        client.assign_role(&rbac_admin, &beneficiary, &crate::rbac::ROLE_RECIPIENT);
         let rules = Vec::from_array(&env, [food_rule(&env)]);
 
         client.create_transfer(
@@ -1071,7 +1132,12 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
         let beneficiary = Address::generate(&env);
+        client.assign_role(&rbac_admin, &beneficiary, &crate::rbac::ROLE_RECIPIENT);
 
         client.create_transfer(
             &creator,
@@ -1101,7 +1167,12 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
         let beneficiary = Address::generate(&env);
+        client.assign_role(&rbac_admin, &beneficiary, &crate::rbac::ROLE_RECIPIENT);
 
         // Create transfer that expires at timestamp 100
         client.create_transfer(
@@ -1135,6 +1206,10 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
 
         client.create_transfer(
             &creator,
@@ -1158,6 +1233,10 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
 
         client.create_transfer(
             &creator,
@@ -1179,7 +1258,12 @@ mod cash_transfer_tests {
         let env = make_env();
         let client = deploy(&env);
         let creator = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &creator, &rbac_gov, &rbac_un);
         let beneficiary = Address::generate(&env);
+        client.assign_role(&rbac_admin, &beneficiary, &crate::rbac::ROLE_RECIPIENT);
 
         client.create_transfer(
             &creator,
@@ -1323,6 +1407,10 @@ mod merchant_tests {
         let env = make_env();
         let client = deploy(&env);
         let owner = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &owner, &rbac_gov, &rbac_un);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
         let vouchers = Vec::new(&env);
 
@@ -1405,6 +1493,10 @@ mod merchant_tests {
         let env = make_env();
         let client = deploy(&env);
         let owner = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &owner, &rbac_gov, &rbac_un);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
         let vouchers = Vec::new(&env);
 
@@ -1431,7 +1523,12 @@ mod merchant_tests {
         let env = make_env();
         let client = deploy(&env);
         let owner = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &owner, &rbac_gov, &rbac_un);
         let ngo = Address::generate(&env);
+        client.assign_role(&rbac_admin, &ngo, &crate::rbac::ROLE_NGO);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
 
         client.register_merchant(
@@ -1459,6 +1556,10 @@ mod merchant_tests {
         let env = make_env();
         let client = deploy(&env);
         let owner = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &owner, &rbac_gov, &rbac_un);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
 
         client.register_merchant(
@@ -1476,8 +1577,11 @@ mod merchant_tests {
 
         // Three beneficiary vouches (type 0)
         let b1 = Address::generate(&env);
+        client.assign_role(&rbac_admin, &b1, &crate::rbac::ROLE_RECIPIENT);
         let b2 = Address::generate(&env);
+        client.assign_role(&rbac_admin, &b2, &crate::rbac::ROLE_RECIPIENT);
         let b3 = Address::generate(&env);
+        client.assign_role(&rbac_admin, &b3, &crate::rbac::ROLE_RECIPIENT);
         client.add_vouch(&b1, &str(&env, "merchant_bv"), &0u32);
         client.add_vouch(&b2, &str(&env, "merchant_bv"), &0u32);
         client.add_vouch(&b3, &str(&env, "merchant_bv"), &0u32);
@@ -1679,6 +1783,10 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
 
         client.create_shipment(
             &donor,
@@ -1707,7 +1815,12 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
         let verifier = Address::generate(&env);
+        client.assign_role(&rbac_admin, &verifier, &crate::rbac::ROLE_NGO);
 
         client.create_shipment(
             &donor,
@@ -1748,7 +1861,12 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
         let recipient = Address::generate(&env);
+        client.assign_role(&rbac_admin, &recipient, &crate::rbac::ROLE_RECIPIENT);
 
         client.create_shipment(
             &donor,
@@ -1782,6 +1900,10 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
         let transporter = Address::generate(&env);
 
         client.create_shipment(
@@ -1809,7 +1931,12 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
         let recipient = Address::generate(&env);
+        client.assign_role(&rbac_admin, &recipient, &crate::rbac::ROLE_RECIPIENT);
 
         client.create_shipment(
             &donor,
@@ -1845,7 +1972,12 @@ mod supply_chain_tests {
         let env = make_env();
         let client = deploy(&env);
         let donor = Address::generate(&env);
+        let rbac_admin = Address::generate(&env);
+        let rbac_gov = Address::generate(&env);
+        let rbac_un = Address::generate(&env);
+        client.initialize_access_control(&rbac_admin, &donor, &rbac_gov, &rbac_un);
         let verifier = Address::generate(&env);
+        client.assign_role(&rbac_admin, &verifier, &crate::rbac::ROLE_NGO);
 
         let temp_req = TemperatureRequirements {
             min_temp: 2.0f64,
@@ -1892,23 +2024,34 @@ mod anti_fraud_tests {
         AntiFraudClient::new(env, &id)
     }
 
+    fn setup_roles(env: &Env, client: &AntiFraudClient) -> (Address, Address, Address) {
+        let admin = Address::generate(env);
+        let registrar = Address::generate(env);
+        let monitor = Address::generate(env);
+        let gov = Address::generate(env);
+        let un = Address::generate(env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
+        (admin, registrar, monitor)
+    }
+
     #[test]
     fn test_clean_registration_approved() {
         let env = make_env();
         let client = deploy(&env);
-
+        let (_admin, registrar, _monitor) = setup_roles(&env, &client);
         let factors = Vec::from_array(&env, [
             str(&env, "possession:card_abc"),
             str(&env, "behavioral:morning_arrival"),
         ]);
-
         let (approved, _msg) = client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_clean"),
             &factors,
             &str(&env, "Camp Alpha, Port-au-Prince"),
             &str(&env, "device_fingerprint_ABC123XYZ"),
         );
-
         assert!(approved);
     }
 
@@ -1916,18 +2059,15 @@ mod anti_fraud_tests {
     fn test_suspicious_device_increases_risk() {
         let env = make_env();
         let client = deploy(&env);
-
-        // Short device fingerprint + "bot" in name = suspicious
+        let (_admin, registrar, _monitor) = setup_roles(&env, &client);
         let factors = Vec::new(&env);
         let (approved, _msg) = client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_bot"),
             &factors,
             &str(&env, "Unknown Location"),
-            &str(&env, "bot"), // triggers is_suspicious_device
+            &str(&env, "bot"),
         );
-
-        // Risk score of 30 (from bot device) is below 70 threshold — still approved
-        // but marks the device as suspicious
         assert!(approved);
     }
 
@@ -1935,25 +2075,23 @@ mod anti_fraud_tests {
     fn test_monitor_clean_transaction() {
         let env = make_env();
         let client = deploy(&env);
-
-        // First register the beneficiary to create a risk profile
+        let (_admin, registrar, monitor) = setup_roles(&env, &client);
         client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_monitor"),
             &Vec::new(&env),
             &str(&env, "Camp Beta"),
             &str(&env, "device_XYZ_ABCDEFGHIJK"),
         );
-
         env.ledger().with_mut(|l| l.timestamp = 1_000);
-
         let (is_clean, risk_factors) = client.monitor_transaction(
+            &monitor,
             &str(&env, "ben_monitor"),
             &str(&env, "merchant_001"),
             &u256(50),
             &1_000u64,
             &str(&env, "tx_hash_abc123"),
         );
-
         assert!(is_clean);
         assert!(risk_factors.is_empty() || risk_factors.len() < 3);
     }
@@ -1962,16 +2100,15 @@ mod anti_fraud_tests {
     fn test_get_risk_profile() {
         let env = make_env();
         let client = deploy(&env);
-
+        let (_admin, registrar, _monitor) = setup_roles(&env, &client);
         let factors = Vec::from_array(&env, [str(&env, "possession:id_card")]);
-
         client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_profile"),
             &factors,
             &str(&env, "Camp Gamma"),
             &str(&env, "device_LONGFINGERPRINT123"),
         );
-
         let profile = client.get_risk_profile(&str(&env, "ben_profile"));
         assert!(profile.is_some());
         assert_eq!(profile.unwrap().entity_type, str(&env, "beneficiary"));

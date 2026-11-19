@@ -99,6 +99,19 @@ fn save_roles(env: &Env, roles: &Map<Address, u32>) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
+/// Initialize the role registry exactly once for this contract instance.
+pub fn initialize(env: &Env, admin: &Address, ngo: &Address, gov: &Address, un: &Address) {
+    let initialized_key = Symbol::new(env, "rbac_initialized");
+    if env.storage().instance().get::<_, bool>(&initialized_key).unwrap_or(false) {
+        panic!("Access control is already initialized");
+    }
+    admin.require_auth();
+    seed_initial_roles(env, admin, ngo, gov, un);
+    env.storage().instance().set(&initialized_key, &true);
+}
+
+
+
 /// Assign `role_mask` to `target`. Caller must be Admin.
 ///
 /// Multiple roles can be assigned in one call by OR-ing role constants:
@@ -176,4 +189,35 @@ pub fn seed_initial_roles(
 /// Return the bitmask of roles held by `address` (0 = no roles).
 pub fn get_roles(env: &Env, address: &Address) -> u32 {
     load_roles(env).get(address.clone()).unwrap_or(0)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env};
+
+    #[test]
+    fn role_registry_seeds_assigns_and_revokes_roles() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let ngo = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        let auditor = Address::generate(&env);
+
+        initialize(&env, &admin, &ngo, &gov, &un);
+        assert!(has_role(&env, &admin, ROLE_ADMIN));
+        assert!(has_role(&env, &ngo, ROLE_NGO));
+        assert!(has_role(&env, &gov, ROLE_GOV));
+        assert!(has_role(&env, &un, ROLE_UN));
+
+        assign_role(&env, &admin, &auditor, ROLE_AUDITOR | ROLE_OPERATOR);
+        assert!(has_role(&env, &auditor, ROLE_AUDITOR | ROLE_OPERATOR));
+
+        revoke_role(&env, &admin, &auditor, ROLE_OPERATOR);
+        assert!(has_role(&env, &auditor, ROLE_AUDITOR));
+        assert!(!has_role(&env, &auditor, ROLE_OPERATOR));
+    }
 }

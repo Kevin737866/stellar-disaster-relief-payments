@@ -63,14 +63,39 @@ pub struct SuspiciousTransaction {
 
 #[contractimpl]
 impl AntiFraud {
-    /// Register a new beneficiary with fraud detection
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Register a new beneficiary with fraud detection
     pub fn register_beneficiary_check(
         env: Env,
+        registrar: Address,
         beneficiary_id: String,
         verification_factors: Vec<String>,
         location: String,
         device_fingerprint: String,
     ) -> (bool, String) {
+        registrar.require_auth();
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &registrar, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         // Check for duplicate registrations using various factors
         let risk_score = Self::calculate_registration_risk(&env, &beneficiary_id, &verification_factors, &location, &device_fingerprint);
         
@@ -192,12 +217,15 @@ impl AntiFraud {
     /// Monitor transaction for suspicious patterns
     pub fn monitor_transaction(
         env: Env,
+        monitor: Address,
         beneficiary_id: String,
         merchant_id: String,
         amount: U256,
         timestamp: u64,
         transaction_hash: String,
     ) -> (bool, Vec<String>) {
+        monitor.require_auth();
+        crate::rbac::require_any_role(&env, &monitor, crate::rbac::ROLE_MERCHANT | crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         let mut risk_factors = Vec::new(&env);
         let mut risk_score = 0u32;
         
@@ -442,6 +470,8 @@ impl AntiFraud {
         notes: String,
     ) {
         reviewer.require_auth();
+        crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &reviewer, crate::rbac::ROLE_AUDITOR | crate::rbac::ROLE_ADMIN);
         
         let suspicious_key = Symbol::new(&env, "suspicious_transactions");
         let mut suspicious: Map<String, SuspiciousTransaction> = env.storage().instance()

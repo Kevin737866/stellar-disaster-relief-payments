@@ -203,7 +203,28 @@ pub struct ExpiryNotification {
 
 #[contractimpl]
 impl AidRegistry {
-    /// Create a new emergency fund pool
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Create a new emergency fund pool
     pub fn create_fund(
         env: Env,
         admin: Address,
@@ -220,6 +241,8 @@ impl AidRegistry {
     ) {
         // Verify admin authorization
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Input validation
         if fund_id.len() == 0 {
@@ -382,6 +405,8 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         requester.require_auth();
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
 
         // #239 — no value leaves a fund while the platform is paused.
         require_not_paused(&env);
@@ -529,7 +554,9 @@ impl AidRegistry {
     }
 
     /// Deactivate expired funds
-    pub fn cleanup_expired_funds(env: Env) {
+    pub fn cleanup_expired_funds(env: Env, operator: Address) {
+        operator.require_auth();
+        crate::rbac::require_any_role(&env, &operator, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
             .get(&fund_key)
@@ -564,6 +591,7 @@ impl AidRegistry {
         min_oracle_confirmations: u32,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         // Verify fund exists
         let fund_key = Symbol::new(&env, "fund");
@@ -653,6 +681,8 @@ impl AidRegistry {
         confidence: u64,
     ) {
         oracle.require_auth();
+        crate::rbac::require_role(&env, &oracle, crate::rbac::ROLE_ORACLE);
+        crate::rbac::require_role(&env, &oracle, crate::rbac::ROLE_ORACLE);
 
         let now = env.ledger().timestamp();
 
@@ -848,9 +878,12 @@ impl AidRegistry {
     /// - Recalled funds: If `reserved_for_recall` covers remaining funds, `available` is 0 and trigger release panics.
     pub fn execute_trigger(
         env: Env,
+        operator: Address,
         fund_id: String,
         trigger_id: String,
     ) -> U256 {
+        operator.require_auth();
+        crate::rbac::require_any_role(&env, &operator, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         // #239 — automated releases are paused too. An incident brake that a
         // trigger can drive straight through is not a brake.
         require_not_paused(&env);
@@ -951,6 +984,7 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) -> Vec<String> {
         requester.require_auth();
+        crate::rbac::require_any_role(&env, &requester, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
 
         // #239 — batch disbursement moves value out of the pool, so it is
         // gated by the incident pause.
@@ -1095,6 +1129,7 @@ impl AidRegistry {
         // Verify signatures (require each approver to authorize)
         for approver in approvers.iter() {
             approver.require_auth();
+            crate::rbac::require_any_role(&env, &approver, crate::rbac::ROLE_NGO | crate::rbac::ROLE_GOV | crate::rbac::ROLE_UN);
             
             if !fund.release_triggers.contains(approver) {
                 panic_with_error!(&env, "Unauthorized approver");
@@ -1436,10 +1471,8 @@ impl AidRegistry {
         max_amount: U256,
     ) {
         admin.require_auth();
-
-        // #239 — allocation commits funds to a sector, so it is gated.
-        require_not_paused(&env);
-
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        
         // Validate amount is within min/max bounds
         if amount < min_amount {
             panic_with_error!(&env, "Allocation amount is below minimum threshold");
@@ -1528,6 +1561,8 @@ impl AidRegistry {
         fund_id: String,
     ) -> U256 {
         donor.require_auth();
+        crate::rbac::require_any_role(&env, &donor, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &donor, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
@@ -1595,6 +1630,7 @@ impl AidRegistry {
         fund_id: String,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -1616,6 +1652,7 @@ impl AidRegistry {
         trigger_id: String,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
         let mut triggers: Map<String, Trigger> = env.storage().instance()
@@ -1637,6 +1674,7 @@ impl AidRegistry {
         metadata: Map<String, String>,
     ) {
         admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env.storage().instance()
@@ -1673,10 +1711,8 @@ impl AidRegistry {
         approvers: Vec<Address>,
     ) {
         admin.require_auth();
-
-        // Validate the free-text purpose (non-empty, bounded length).
-        validate_purpose(&env, &purpose);
-
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
         

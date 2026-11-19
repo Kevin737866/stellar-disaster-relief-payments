@@ -203,7 +203,28 @@ pub struct Settlement {
 
 #[contractimpl]
 impl MerchantNetwork {
-    /// Register a local merchant with simplified onboarding (community vouching)
+    
+    /// Initialize this contract's independent RBAC registry (one-time, admin-signed).
+    pub fn initialize_access_control(env: Env, admin: Address, ngo: Address, gov: Address, un: Address) {
+        crate::rbac::initialize(&env, &admin, &ngo, &gov, &un);
+    }
+
+    /// Assign or combine role bits. Only an existing platform admin may call this.
+    pub fn assign_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::assign_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Revoke role bits. Admin self-revocation protection is enforced by RBAC.
+    pub fn revoke_role(env: Env, caller: Address, target: Address, role_mask: u32) {
+        crate::rbac::revoke_role(&env, &caller, &target, role_mask);
+    }
+
+    /// Read the assigned role bitmask for an address.
+    pub fn get_roles(env: Env, address: Address) -> u32 {
+        crate::rbac::get_roles(&env, &address)
+    }
+
+/// Register a local merchant with simplified onboarding (community vouching)
     /// Target: < 15 minutes onboarding time
     /// 
     /// Location is passed as lat,lng string for standardized geographic representation.
@@ -225,6 +246,8 @@ impl MerchantNetwork {
         emergency_fast_track: bool, // Pre-approved from existing networks
     ) {
         owner.require_auth();
+        crate::rbac::require_role(&env, &owner, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_any_role(&env, &owner, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Check for duplicate registration
         let merchants_key = Symbol::new(&env, "merchants");
@@ -345,6 +368,8 @@ impl MerchantNetwork {
         voucher_type: u32, // 0 = beneficiary (weight: 1), 1 = ngo (weight: 3)
     ) {
         voucher.require_auth();
+        crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN | crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_any_role(&env, &voucher, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -393,7 +418,11 @@ impl MerchantNetwork {
         payment_method: u32,
     ) -> String {
         merchant.require_auth();
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         
         // Verify merchant exists and is active
         let merchants_key = Symbol::new(&env, "merchants");
@@ -489,6 +518,8 @@ impl MerchantNetwork {
     /// `docs/offline-flows.md`.
     pub fn process_offline_payment(
         env: Env,
+        merchant: Address,
+        beneficiary: Address,
         merchant_id: String,
         beneficiary_id: String,
         amount: U256,
@@ -496,6 +527,12 @@ impl MerchantNetwork {
         purpose: String,
         signature: String,
     ) -> String {
+        merchant.require_auth();
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         // Verify merchant exists and is active
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
@@ -545,9 +582,13 @@ impl MerchantNetwork {
     /// on this for settlement.
     pub fn sync_offline_transactions(
         env: Env,
+        merchant: Address,
         merchant_id: String,
         offline_transaction_ids: Vec<String>,
     ) -> u32 {
+        merchant.require_auth();
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
+        crate::rbac::require_role(&env, &merchant, crate::rbac::ROLE_MERCHANT);
         let offline_key = Symbol::new(&env, "offline_transactions");
         let mut offline_txs: Map<String, OfflineTransaction> = env.storage().temporary()
             .get(&offline_key)
@@ -610,7 +651,7 @@ impl MerchantNetwork {
     
     /// Fraud detection - Pattern analysis for suspicious merchant activity
     /// Target: < 0.5% fraud rate
-    pub fn fraud_detection(env: Env, merchant_id: String, amount: U256) {
+    fn fraud_detection(env: Env, merchant_id: String, amount: U256) {
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)
@@ -757,7 +798,8 @@ impl MerchantNetwork {
     ///   before they appear in `pending_settlement`.
     pub fn settle_balances(env: Env, admin: Address) -> u32 {
         admin.require_auth();
-        rbac::require_role(&env, &admin, ROLE_OPERATOR);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -816,7 +858,7 @@ impl MerchantNetwork {
         approve: bool,
     ) {
         admin.require_auth();
-        rbac::require_role(&env, &admin, ROLE_ADMIN);
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
         
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
@@ -1187,11 +1229,11 @@ impl MerchantNetwork {
         merchant_settlements
     }
     
-    /// Reset daily volumes (called at start of each day by operator)
-    pub fn reset_daily_volumes(env: Env, caller: Address) {
-        caller.require_auth();
-        rbac::require_role(&env, &caller, ROLE_OPERATOR);
-
+    /// Reset daily volumes (called at start of each day)
+    pub fn reset_daily_volumes(env: Env, admin: Address) {
+        admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &admin, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)
@@ -1211,7 +1253,10 @@ impl MerchantNetwork {
     }
     
     /// Reset monthly volume (called periodically)
-    pub fn reset_monthly_volumes(env: Env) {
+    pub fn reset_monthly_volumes(env: Env, admin: Address) {
+        admin.require_auth();
+        crate::rbac::require_role(&env, &admin, crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &admin, crate::rbac::ROLE_OPERATOR | crate::rbac::ROLE_ADMIN);
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)
