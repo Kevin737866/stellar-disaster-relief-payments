@@ -147,7 +147,8 @@ mod aid_registry_tests {
 
         // Advance ledger past expiry
         env.ledger().with_mut(|l| l.timestamp = 1_000);
-        client.cleanup_expired_funds();
+        let operator = Address::generate(&env);
+        client.cleanup_expired_funds(&operator);
 
         let active = client.list_active_funds();
         assert_eq!(active.len(), 0);
@@ -1119,6 +1120,12 @@ mod anti_fraud_tests {
     fn test_clean_registration_approved() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
 
         let factors = Vec::from_array(&env, [
             str(&env, "possession:card_abc"),
@@ -1126,6 +1133,7 @@ mod anti_fraud_tests {
         ]);
 
         let (approved, _msg) = client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_clean"),
             &factors,
             &str(&env, "Camp Alpha, Port-au-Prince"),
@@ -1139,10 +1147,17 @@ mod anti_fraud_tests {
     fn test_suspicious_device_increases_risk() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
 
         // Short device fingerprint + "bot" in name = suspicious
         let factors = Vec::new(&env);
         let (approved, _msg) = client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_bot"),
             &factors,
             &str(&env, "Unknown Location"),
@@ -1158,9 +1173,16 @@ mod anti_fraud_tests {
     fn test_monitor_clean_transaction() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
 
         // First register the beneficiary to create a risk profile
         client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_monitor"),
             &Vec::new(&env),
             &str(&env, "Camp Beta"),
@@ -1169,7 +1191,10 @@ mod anti_fraud_tests {
 
         env.ledger().with_mut(|l| l.timestamp = 1_000);
 
+        let monitor = Address::generate(&env);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
         let (is_clean, risk_factors) = client.monitor_transaction(
+            &monitor,
             &str(&env, "ben_monitor"),
             &str(&env, "merchant_001"),
             &u256(50),
@@ -1185,10 +1210,17 @@ mod anti_fraud_tests {
     fn test_get_risk_profile() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
 
         let factors = Vec::from_array(&env, [str(&env, "possession:id_card")]);
 
         client.register_beneficiary_check(
+            &registrar,
             &str(&env, "ben_profile"),
             &factors,
             &str(&env, "Camp Gamma"),
@@ -1217,6 +1249,12 @@ mod platform_tests {
         let env = make_env();
         let client = deploy(&env);
         let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        let admin = Address::generate(&env);
         let ngo = Address::generate(&env);
         let gov = Address::generate(&env);
         let un = Address::generate(&env);
@@ -1232,6 +1270,12 @@ mod platform_tests {
     fn test_get_config_returns_signers() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
         let admin = Address::generate(&env);
         let ngo = Address::generate(&env);
         let gov = Address::generate(&env);
