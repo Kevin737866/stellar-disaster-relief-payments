@@ -1122,6 +1122,14 @@ mod anti_fraud_tests {
         let client = deploy(&env);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
         let un = Address::generate(&env);
         client.initialize_access_control(&admin, &registrar, &gov, &un);
@@ -1149,6 +1157,14 @@ mod anti_fraud_tests {
         let client = deploy(&env);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
         let un = Address::generate(&env);
         client.initialize_access_control(&admin, &registrar, &gov, &un);
@@ -1173,6 +1189,14 @@ mod anti_fraud_tests {
     fn test_monitor_clean_transaction() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
@@ -1210,6 +1234,14 @@ mod anti_fraud_tests {
     fn test_get_risk_profile() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
@@ -1250,6 +1282,14 @@ mod platform_tests {
         let client = deploy(&env);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
         let un = Address::generate(&env);
         client.initialize_access_control(&admin, &registrar, &gov, &un);
@@ -1270,6 +1310,14 @@ mod platform_tests {
     fn test_get_config_returns_signers() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
+        let registrar = Address::generate(&env);
+        let monitor = Address::generate(&env);
+        let gov = Address::generate(&env);
+        let un = Address::generate(&env);
+        client.initialize_access_control(&admin, &registrar, &gov, &un);
+        client.assign_role(&admin, &registrar, &crate::rbac::ROLE_NGO);
+        client.assign_role(&admin, &monitor, &crate::rbac::ROLE_MERCHANT);
         let admin = Address::generate(&env);
         let registrar = Address::generate(&env);
         let gov = Address::generate(&env);
