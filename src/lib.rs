@@ -25,6 +25,7 @@ mod merchant_network;
 mod cash_transfer;
 mod supply_chain_tracker;
 mod anti_fraud;
+pub mod rbac;
 
 #[cfg(test)]
 mod test;
@@ -42,7 +43,9 @@ pub struct DisasterReliefPlatform;
 #[contractimpl]
 impl DisasterReliefPlatform {
     /// Initialize the disaster relief platform with admin addresses
+    /// Initialize the platform and seed its admin/NGO/government/UN roles. One-time and admin-signed.
     pub fn initialize(env: Env, admin: Address, ngo_signer: Address, gov_signer: Address, un_signer: Address) {
+        rbac::initialize(&env, &admin, &ngo_signer, &gov_signer, &un_signer);
         // Store multi-sig signers for emergency fund release
         env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
         env.storage().instance().set(&Symbol::new(&env, "ngo_sig"), &ngo_signer);
