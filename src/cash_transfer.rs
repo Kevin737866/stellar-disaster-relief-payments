@@ -77,6 +77,7 @@ impl CashTransfer {
     ) {
         creator.require_auth();
         crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         // Check for duplicate transfer
         let transfers_key = Symbol::new(&env, "transfers");
@@ -124,6 +125,7 @@ impl CashTransfer {
         location: String,
     ) -> bool {
         beneficiary.require_auth();
+        crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         crate::rbac::require_role(&env, &beneficiary, crate::rbac::ROLE_RECIPIENT);
         
         let transfers_key = Symbol::new(&env, "transfers");
@@ -273,6 +275,7 @@ impl CashTransfer {
     /// Recall unspent funds after expiry
     pub fn recall_funds(env: Env, creator: Address, transfer_id: String) -> U256 {
         creator.require_auth();
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
@@ -323,6 +326,7 @@ impl CashTransfer {
         new_expiry: u64,
     ) {
         creator.require_auth();
+        crate::rbac::require_any_role(&env, &creator, crate::rbac::ROLE_NGO | crate::rbac::ROLE_ADMIN);
         
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
