@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { TransferClient } from '../../sdk/src/transferClient';
 import { ConditionalTransfer, SpendingRule, NetworkConfig } from '../../sdk/src/types';
 import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
+import { u256Amount } from '../validation/validators';
+import { parseExpiryInput } from '../validation/expiry';
 
 interface TransferCardProps {
   transferClient: TransferClient;
@@ -77,16 +79,28 @@ export const TransferCard: React.FC<TransferCardProps> = ({
     try {
       setLoading(true);
       
+      const amountError = u256Amount(createForm.amount);
+      if (amountError) throw new Error(amountError);
+      const expiry = parseExpiryInput(createForm.expiresAt);
+      if (!expiry.ok) throw new Error(expiry.reason);
+
       // Create spending rules
       const spendingRules: SpendingRule[] = [];
       
       createForm.rules.forEach(rule => {
         if (rule.type === 'category_limit' && rule.category && rule.limit) {
+          const limitError = u256Amount(rule.limit);
+          if (limitError) throw new Error(`Invalid ${rule.category} category limit: ${limitError}`);
           spendingRules.push(transferClient.createCategoryLimitRule(rule.category, rule.limit));
         } else if (rule.type === 'time_window' && rule.startTime && rule.endTime) {
+          const start = new Date(rule.startTime).getTime();
+          const end = new Date(rule.endTime).getTime();
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+            throw new Error('Each spending time window must have a valid start before its end.');
+          }
           spendingRules.push(transferClient.createTimeWindowRule(
-            Math.floor(new Date(rule.startTime).getTime() / 1000),
-            Math.floor(new Date(rule.endTime).getTime() / 1000)
+            Math.floor(start / 1000),
+            Math.floor(end / 1000)
           ));
         } else if (rule.type === 'location_based' && rule.location) {
           spendingRules.push(transferClient.createLocationRule(rule.location));
@@ -99,7 +113,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
         createForm.beneficiaryId,
         createForm.amount,
         createForm.token,
-        Math.floor(new Date(createForm.expiresAt).getTime() / 1000),
+        Math.floor(expiry.timestamp / 1000),
         spendingRules,
         createForm.purpose
       );
@@ -123,7 +137,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
       alert('Conditional transfer created successfully!');
     } catch (error) {
       console.error('Failed to create transfer:', error);
-      alert('Failed to create transfer');
+      alert(error instanceof Error ? error.message : 'Failed to create transfer');
     } finally {
       setLoading(false);
     }
@@ -132,6 +146,8 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   const handleSpend = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const amountError = u256Amount(spendForm.amount);
+      if (amountError) throw new Error(amountError);
       setLoading(true);
       
       const success = await transferClient.spend(
@@ -160,7 +176,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
       }
     } catch (error) {
       console.error('Failed to process payment:', error);
-      alert('Failed to process payment');
+      alert(error instanceof Error ? error.message : 'Failed to process payment');
     } finally {
       setLoading(false);
     }
