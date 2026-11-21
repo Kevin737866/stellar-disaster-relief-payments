@@ -47,7 +47,7 @@ export function parseExpiryInput(value: string, now: number = Date.now()): Expir
   }
 
   const normalized = value.trim();
-  if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2})?$/.test(normalized)) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(normalized)) {
     return { ok: false, reason: 'Expiry is not a valid date and time.' };
   }
   const date = new Date(normalized);
