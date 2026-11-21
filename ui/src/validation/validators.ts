@@ -1,3 +1,5 @@
+import { StrKey } from 'stellar-sdk';
+
 /**
  * Core validation functions for the Stellar Disaster Relief platform.
  * Each validator returns null on success or an error message string on failure.
@@ -49,6 +51,23 @@ export const isPositiveNumber =
     return null;
   };
 
+const MAX_U256 = (1n << 256n) - 1n;
+
+/** Validate a positive base-10 integer that fits the Soroban u256 range. */
+export const u256Amount: Validator = (value) => {
+  if (!value || value.trim() === '') return null;
+  const normalized = value.trim();
+  if (!/^\\d+$/.test(normalized)) return 'Amount must be a whole-number integer.';
+  try {
+    const amount = BigInt(normalized);
+    if (amount <= 0n) return 'Amount must be greater than 0.';
+    if (amount > MAX_U256) return 'Amount exceeds the maximum supported value.';
+    return null;
+  } catch {
+    return 'Amount must be a valid integer.';
+  }
+};
+
 export const isInteger =
   (label = 'Value'): Validator =>
   (value) => {
@@ -83,7 +102,7 @@ export const maxValue =
 export const stellarAddress: Validator = (value) => {
   if (!value || value.trim() === '') return null;
   const v = value.trim();
-  if (!/^G[A-Z2-7]{55}$/.test(v))
+  if (!StrKey.isValidEd25519PublicKey(v))
     return 'Stellar address must start with G and be 56 characters (A-Z, 2-7).';
   return null;
 };
@@ -136,8 +155,11 @@ export const futureDate =
   (label = 'Date'): Validator =>
   (value) => {
     if (!value || value.trim() === '') return null;
-    const ts = new Date(value.trim()).getTime();
-    if (isNaN(ts)) return `${label} must be a valid date.`;
+    const raw = value.trim();
+    if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2})?$/.test(raw)) return `${label} must be a valid date.`;
+    const date = new Date(raw);
+    const ts = date.getTime();
+    if (!Number.isFinite(ts) || date.getFullYear() !== Number(raw.slice(0, 4)) || date.getMonth() + 1 !== Number(raw.slice(5, 7)) || date.getDate() !== Number(raw.slice(8, 10)) || date.getHours() !== Number(raw.slice(11, 13)) || date.getMinutes() !== Number(raw.slice(14, 16))) return `${label} must be a valid date.`;
     if (ts <= Date.now()) return `${label} must be in the future.`;
     return null;
   };
