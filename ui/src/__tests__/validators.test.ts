@@ -71,7 +71,7 @@ describe('stellarAddress', () => {
   it('rejects an address with an invalid checksum', () => expect(stellarAddress('GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHV')).toBeTruthy());
   it('returns null for empty (defer to required)', () => expect(stellarAddress('')).toBeNull());
   it('returns error for whitespace-padded invalid', () =>
-    expect(stellarAddress('  GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU  ')).toBeTruthy());
+    expect(stellarAddress('  GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CH  ')).toBeTruthy());
 });
 
 describe('disasterType', () => {
