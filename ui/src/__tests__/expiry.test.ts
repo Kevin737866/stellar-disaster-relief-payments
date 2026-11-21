@@ -45,6 +45,11 @@ describe('parseExpiryInput', () => {
     }
   });
 
+  it('rejects impossible calendar dates instead of normalizing them', () => {
+    expect(parseExpiryInput('2026-02-30T09:00', NOW).ok).toBe(false);
+    expect(parseExpiryInput('2026-13-01T09:00', NOW).ok).toBe(false);
+  });
+
   it('rejects a date in the past', () => {
     const result = parseExpiryInput('2026-01-01T09:00', NOW);
     expect(result.ok).toBe(false);
