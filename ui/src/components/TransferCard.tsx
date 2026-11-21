@@ -7,15 +7,19 @@ interface TransferCardProps {
   transferClient: TransferClient;
   config: StellarNetworkConfig | NetworkConfig;
   creatorKey: string;
+  /** Beneficiary identifier used to load the on-chain transfer list. */
+  beneficiaryId?: string;
 }
 
 export const TransferCard: React.FC<TransferCardProps> = ({
   transferClient,
   config,
-  creatorKey
+  creatorKey,
+  beneficiaryId
 }) => {
   const [transfers, setTransfers] = useState<ConditionalTransfer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [showSpendForm, setShowSpendForm] = useState(false);
   const [selectedTransfer, setSelectedTransfer] = useState<ConditionalTransfer | null>(null);
@@ -48,16 +52,21 @@ export const TransferCard: React.FC<TransferCardProps> = ({
 
   useEffect(() => {
     loadTransfers();
-  }, []);
+  }, [beneficiaryId, transferClient]);
 
   const loadTransfers = async () => {
     try {
       setLoading(true);
-      // Load transfers for a sample beneficiary
-      const beneficiaryTransfers = await transferClient.listBeneficiaryTransfers('sample_beneficiary_001');
+      setLoadError(null);
+      if (!beneficiaryId?.trim()) {
+        setTransfers([]);
+        return;
+      }
+      const beneficiaryTransfers = await transferClient.listBeneficiaryTransfers(beneficiaryId.trim());
       setTransfers(beneficiaryTransfers);
     } catch (error) {
       console.error('Failed to load transfers:', error);
+      setLoadError('Unable to load transfers. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -76,8 +85,8 @@ export const TransferCard: React.FC<TransferCardProps> = ({
           spendingRules.push(transferClient.createCategoryLimitRule(rule.category, rule.limit));
         } else if (rule.type === 'time_window' && rule.startTime && rule.endTime) {
           spendingRules.push(transferClient.createTimeWindowRule(
-            new Date(rule.startTime).getTime(),
-            new Date(rule.endTime).getTime()
+            Math.floor(new Date(rule.startTime).getTime() / 1000),
+            Math.floor(new Date(rule.endTime).getTime() / 1000)
           ));
         } else if (rule.type === 'location_based' && rule.location) {
           spendingRules.push(transferClient.createLocationRule(rule.location));
@@ -90,7 +99,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
         createForm.beneficiaryId,
         createForm.amount,
         createForm.token,
-        new Date(createForm.expiresAt).getTime(),
+        Math.floor(new Date(createForm.expiresAt).getTime() / 1000),
         spendingRules,
         createForm.purpose
       );
@@ -177,7 +186,11 @@ export const TransferCard: React.FC<TransferCardProps> = ({
       if (!newExpiry) return;
 
       setLoading(true);
-      await transferClient.extendExpiry(creatorKey, transferId, new Date(newExpiry).getTime());
+      const expiryDate = new Date(`${newExpiry}T23:59:59`);
+      if (!Number.isFinite(expiryDate.getTime()) || expiryDate.getTime() <= Date.now()) {
+        throw new Error('Expiry must be a valid future date.');
+      }
+      await transferClient.extendExpiry(creatorKey, transferId, Math.floor(expiryDate.getTime() / 1000));
       alert('Transfer expiry extended successfully!');
       loadTransfers();
     } catch (error) {
@@ -189,29 +202,31 @@ export const TransferCard: React.FC<TransferCardProps> = ({
   };
 
   const getStatusColor = (transfer: ConditionalTransfer) => {
-    const now = Date.now();
+    const now = Math.floor(Date.now() / 1000);
     if (!transfer.isActive) return 'text-gray-600';
     if (now > transfer.expiresAt) return 'text-red-600';
-    if (now > transfer.expiresAt - (7 * 24 * 60 * 60 * 1000)) return 'text-yellow-600';
+    if (now > transfer.expiresAt - (7 * 24 * 60 * 60)) return 'text-yellow-600';
     return 'text-green-600';
   };
 
   const getStatusText = (transfer: ConditionalTransfer) => {
-    const now = Date.now();
+    const now = Math.floor(Date.now() / 1000);
     if (!transfer.isActive) return 'Inactive';
     if (now > transfer.expiresAt) return 'Expired';
-    if (now > transfer.expiresAt - (7 * 24 * 60 * 60 * 1000)) return 'Expiring Soon';
+    if (now > transfer.expiresAt - (7 * 24 * 60 * 60)) return 'Expiring Soon';
     return 'Active';
   };
 
   const getUtilizationRate = (transfer: ConditionalTransfer) => {
     const spent = BigInt(transfer.spentAmount);
     const total = BigInt(transfer.amount);
-    return Number((spent * BigInt(100)) / total);
+    if (total <= 0n) return 0;
+    const rate = Number((spent * 100n) / total);
+    return Math.max(0, Math.min(100, rate));
   };
 
   const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString();
+    return new Date(timestamp * 1000).toLocaleDateString();
   };
 
   return (
@@ -505,8 +520,12 @@ export const TransferCard: React.FC<TransferCardProps> = ({
           
           {loading ? (
             <div className="text-center py-4">Loading...</div>
+          ) : loadError ? (
+            <div role="alert" className="text-red-600 text-center py-4">{loadError}</div>
+          ) : !beneficiaryId?.trim() ? (
+            <div className="text-gray-500 text-center py-4">Provide a beneficiaryId to load that beneficiary&apos;s transfers.</div>
           ) : transfers.length === 0 ? (
-            <div className="text-gray-500 text-center py-4">No active transfers found</div>
+            <div className="text-gray-500 text-center py-4">No active transfers found for this beneficiary</div>
           ) : (
             <div className="grid gap-4">
               {transfers.map((transfer) => (
@@ -527,7 +546,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                         <div className="flex flex-wrap gap-2">
                           {transfer.spendingRules.map((rule, index) => (
                             <span key={index} className="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs">
-                              {rule.ruleType}: {rule.limit}
+                              {rule.ruleType}: {rule.currentUsage} / {rule.limit}
                             </span>
                           ))}
                         </div>
@@ -559,7 +578,7 @@ export const TransferCard: React.FC<TransferCardProps> = ({
                         >
                           QR Code
                         </button>
-                        {Date.now() > transfer.expiresAt && (
+                        {Math.floor(Date.now() / 1000) > transfer.expiresAt && (
                           <button
                             onClick={() => handleRecallFunds(transfer.id)}
                             className="bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600"
