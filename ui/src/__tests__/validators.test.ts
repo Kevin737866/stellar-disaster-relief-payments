@@ -2,7 +2,7 @@ import {
   required, minLength, maxLength, isPositiveNumber, isInteger,
   minValue, maxValue, stellarAddress, disasterType, businessType,
   tokenType, identifier, futureDate, latitude, longitude,
-  commaSeparatedRequired, compose,
+  commaSeparatedRequired, compose, u256Amount,
 } from '../validation/validators';
 
 describe('required', () => {
@@ -60,17 +60,18 @@ describe('maxValue', () => {
 });
 
 describe('stellarAddress', () => {
-  const valid = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA';
+  const valid = 'GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU';
   it('returns null for valid G... address', () => expect(stellarAddress(valid)).toBeNull());
   it('returns error for wrong prefix', () =>
-    expect(stellarAddress('BAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA')).toBeTruthy());
+    expect(stellarAddress('BAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU')).toBeTruthy());
   it('returns error for too short', () =>
     expect(stellarAddress('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOC')).toBeTruthy());
   it('returns error for lowercase', () =>
-    expect(stellarAddress('gaazi4tcr3ty5ojhctjc2a4qsy6cjwjh5iajtgkin2er7lbnvkoccwna')).toBeTruthy());
+    expect(stellarAddress('gaaacaqdaqcqmbyibefawdanbyhraeiscmkbkfqxdamrugy4dupb6chu')).toBeTruthy());
+  it('rejects an address with an invalid checksum', () => expect(stellarAddress('GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHV')).toBeTruthy());
   it('returns null for empty (defer to required)', () => expect(stellarAddress('')).toBeNull());
   it('returns error for whitespace-padded invalid', () =>
-    expect(stellarAddress('  GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOC  ')).toBeTruthy());
+    expect(stellarAddress('  GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CH  ')).toBeTruthy());
 });
 
 describe('disasterType', () => {
@@ -162,4 +163,24 @@ describe('compose', () => {
     const v = compose(required('F'), minLength(2, 'F'));
     expect(v('   ')).toBeTruthy();
   });
+});
+
+
+describe('u256Amount', () => {
+  it('accepts positive integer amounts beyond JavaScript safe integer range', () => {
+    expect(u256Amount('9007199254740993')).toBeNull();
+  });
+  it('accepts the maximum unsigned 256-bit amount', () => {
+    expect(u256Amount(((1n << 256n) - 1n).toString())).toBeNull();
+  });
+  it('rejects zero and negative amounts', () => {
+    expect(u256Amount('0')).toMatch(/greater than 0/i);
+    expect(u256Amount('-1')).toBeTruthy();
+  });
+  it('rejects decimals, exponent notation, and values above u256', () => {
+    expect(u256Amount('1.5')).toBeTruthy();
+    expect(u256Amount('1e6')).toBeTruthy();
+    expect(u256Amount((1n << 256n).toString())).toMatch(/maximum/i);
+  });
+  it('defers empty values to required()', () => expect(u256Amount('')).toBeNull());
 });
