@@ -90,7 +90,7 @@ export class TransferClient {
    * @param beneficiaryId - Beneficiary identifier
    * @param amount - U256 decimal integer string representing transfer amount
    * @param token - Token symbol/address
-   * @param expiresAt - Expiry timestamp
+   * @param expiresAt - Expiry timestamp in Unix seconds
    * @param spendingRules - Spending rule restrictions
    * @param purpose - Purpose of transfer
    * @throws {ValidationError} If amount is not a valid U256 decimal string
@@ -311,7 +311,7 @@ export class TransferClient {
     
     if (result.status === 'SUCCESS') {
       this.cache.invalidate(`transfer:${transferId}`);
-      return `Transfer ${transferId} expiry extended to ${new Date(newExpiry).toISOString()}`;
+      return `Transfer ${transferId} expiry extended to ${new Date(newExpiry * 1000).toISOString()}`;
     } else {
       throw new TransactionError(transferId, result.status, { operation: 'extend expiry' });
     }
@@ -478,7 +478,8 @@ export class TransferClient {
     }
 
     const transferId = `emergency_${beneficiaryId}_${Date.now()}`;
-    const expiresAt = Date.now() + (7 * 24 * 60 * 60 * 1000); // 7 days
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const expiresAt = nowSeconds + (7 * 24 * 60 * 60); // 7 days
 
     // Default emergency spending rules
     // Medicine (30%) and Shelter (10%) computed via integer division;
@@ -492,8 +493,8 @@ export class TransferClient {
       this.createCategoryLimitRule('medicine', medicineLimit.toString()),
       this.createCategoryLimitRule('shelter', shelterLimit.toString()),
       this.createTimeWindowRule(
-        Date.now(),
-        Date.now() + (7 * 24 * 60 * 60 * 1000)
+        nowSeconds,
+        expiresAt
       )
     ];
 
@@ -502,7 +503,7 @@ export class TransferClient {
       beneficiaryId,
       amount,
       token: 'XLM',
-      createdAt: Date.now(),
+      createdAt: nowSeconds,
       expiresAt,
       spendingRules,
       isActive: true,
@@ -577,7 +578,7 @@ export class TransferClient {
         };
       }
 
-      const now = Date.now();
+      const now = Math.floor(Date.now() / 1000);
 
       // 3. Filter for active and non-expired transfers
       const activeTransfers = transfers.filter(
@@ -675,7 +676,7 @@ export class TransferClient {
         }
 
         // Favor transfers expiring sooner so funds are utilized before expiry
-        score += Math.max(0, 100 - Math.floor((transfer.expiresAt - now) / (1000 * 60 * 60 * 24)));
+        score += Math.max(0, 100 - Math.floor((transfer.expiresAt - now) / (60 * 60 * 24)));
 
         return { transfer, score, eligible, reason };
       });
@@ -749,7 +750,7 @@ export class TransferClient {
     const averageTransaction = transactionCount > 0
       ? (BigInt(totalSpent) / BigInt(transactionCount)).toString()
       : '0';
-    const isExpired = Date.now() > transfer.expiresAt;
+    const isExpired = Math.floor(Date.now() / 1000) > transfer.expiresAt;
 
     return {
       totalSpent,
@@ -775,7 +776,7 @@ export class TransferClient {
 
     for (const beneficiaryId of beneficiaryIds) {
       const transferId = `batch_${beneficiaryId}_${Date.now()}`;
-      const expiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
+      const expiresAt = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60); // 30 days
 
       try {
         const result = await this.createTransfer(
