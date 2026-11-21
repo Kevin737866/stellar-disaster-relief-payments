@@ -46,9 +46,20 @@ export function parseExpiryInput(value: string, now: number = Date.now()): Expir
     return { ok: false, reason: 'Expiry is required.' };
   }
 
-  const timestamp = new Date(value.trim()).getTime();
+  const normalized = value.trim();
+  if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(?::\\d{2})?$/.test(normalized)) {
+    return { ok: false, reason: 'Expiry is not a valid date and time.' };
+  }
+  const date = new Date(normalized);
+  const timestamp = date.getTime();
+  const matchesInput = Number.isFinite(timestamp)
+    && date.getFullYear() === Number(normalized.slice(0, 4))
+    && date.getMonth() + 1 === Number(normalized.slice(5, 7))
+    && date.getDate() === Number(normalized.slice(8, 10))
+    && date.getHours() === Number(normalized.slice(11, 13))
+    && date.getMinutes() === Number(normalized.slice(14, 16));
 
-  if (!Number.isFinite(timestamp)) {
+  if (!matchesInput) {
     return { ok: false, reason: 'Expiry is not a valid date and time.' };
   }
 
