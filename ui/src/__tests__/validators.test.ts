@@ -2,7 +2,7 @@ import {
   required, minLength, maxLength, isPositiveNumber, isInteger,
   minValue, maxValue, stellarAddress, disasterType, businessType,
   tokenType, identifier, futureDate, latitude, longitude,
-  commaSeparatedRequired, compose,
+  commaSeparatedRequired, compose, u256Amount,
 } from '../validation/validators';
 
 describe('required', () => {
@@ -162,4 +162,24 @@ describe('compose', () => {
     const v = compose(required('F'), minLength(2, 'F'));
     expect(v('   ')).toBeTruthy();
   });
+});
+
+
+describe('u256Amount', () => {
+  it('accepts positive integer amounts beyond JavaScript safe integer range', () => {
+    expect(u256Amount('9007199254740993')).toBeNull();
+  });
+  it('accepts the maximum unsigned 256-bit amount', () => {
+    expect(u256Amount(((1n << 256n) - 1n).toString())).toBeNull();
+  });
+  it('rejects zero and negative amounts', () => {
+    expect(u256Amount('0')).toMatch(/greater than 0/i);
+    expect(u256Amount('-1')).toBeTruthy();
+  });
+  it('rejects decimals, exponent notation, and values above u256', () => {
+    expect(u256Amount('1.5')).toBeTruthy();
+    expect(u256Amount('1e6')).toBeTruthy();
+    expect(u256Amount((1n << 256n).toString())).toMatch(/maximum/i);
+  });
+  it('defers empty values to required()', () => expect(u256Amount('')).toBeNull());
 });
