@@ -60,17 +60,18 @@ describe('maxValue', () => {
 });
 
 describe('stellarAddress', () => {
-  const valid = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA';
+  const valid = 'GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU';
   it('returns null for valid G... address', () => expect(stellarAddress(valid)).toBeNull());
   it('returns error for wrong prefix', () =>
-    expect(stellarAddress('BAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWNA')).toBeTruthy());
+    expect(stellarAddress('BAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU')).toBeTruthy());
   it('returns error for too short', () =>
     expect(stellarAddress('GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOC')).toBeTruthy());
   it('returns error for lowercase', () =>
-    expect(stellarAddress('gaazi4tcr3ty5ojhctjc2a4qsy6cjwjh5iajtgkin2er7lbnvkoccwna')).toBeTruthy());
+    expect(stellarAddress('gaaacaqdaqcqmbyibefawdanbyhraeiscmkbkfqxdamrugy4dupb6chu')).toBeTruthy());
+  it('rejects an address with an invalid checksum', () => expect(stellarAddress('GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHV')).toBeTruthy());
   it('returns null for empty (defer to required)', () => expect(stellarAddress('')).toBeNull());
   it('returns error for whitespace-padded invalid', () =>
-    expect(stellarAddress('  GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOC  ')).toBeTruthy());
+    expect(stellarAddress('  GAAACAQDAQCQMBYIBEFAWDANBYHRAEISCMKBKFQXDAMRUGY4DUPB6CHU  ')).toBeTruthy());
 });
 
 describe('disasterType', () => {
