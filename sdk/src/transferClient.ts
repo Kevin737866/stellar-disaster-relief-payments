@@ -279,7 +279,8 @@ export class TransferClient {
   }
 
   /**
-   * Extend transfer expiry
+   * Extend transfer expiry.
+   * @param newExpiry New contract expiry as a Unix timestamp in seconds.
    */
   async extendExpiry(
     creatorKey: string,
@@ -350,7 +351,7 @@ export class TransferClient {
   }
 
   /**
-   * Create time window rule
+   * Create time window rule. Both timestamps are Unix seconds, matching the Soroban ledger clock.
    */
   createTimeWindowRule(startTime: number, endTime: number): SpendingRule {
     return {
