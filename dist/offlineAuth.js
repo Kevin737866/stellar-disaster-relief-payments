@@ -1,6 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.OfflineAuthClient = void 0;
+// crypto-js — SHA256 is used for all security-sensitive operations (QR signatures,
+// TOTP, mesh node signatures, paper code hashing).  MD5 is used only for the
+// non-security 8-char display checksum on paper backup codes (human-readable
+// error-detection only; not a security guarantee).  Do not use MD5 for any
+// operation that requires collision or pre-image resistance.
 const crypto_js_1 = require("crypto-js");
 /**
  * Offline Authentication Module
@@ -293,7 +298,14 @@ Generated: ${new Date().toISOString()}
         return header + codesList + footer;
     }
     /**
-     * Generate checksum for paper codes
+     * Generate checksum for paper codes.
+     *
+     * Uses MD5 to produce an 8-character uppercase display checksum that allows
+     * a field agent to detect typos when entering a paper backup code manually.
+     * This is a human-readable error-detection aid only — it is **not** used for
+     * any security-sensitive operation.  The actual security comes from the
+     * full SHA-256 hash of the code stored in `RecoveryCode.code_hash` on-chain.
+     * MD5 is acceptable here because collision resistance is not required.
      */
     generateChecksum(code) {
         return (0, crypto_js_1.MD5)(code).toString().substring(0, 8).toUpperCase();

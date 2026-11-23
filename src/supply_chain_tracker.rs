@@ -1,7 +1,7 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256};
+use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Symbol, Vec, U256};
 
-use crate::rbac::{self, ROLE_NGO, ROLE_TRANSPORTER, ROLE_RECIPIENT};
-use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
+use crate::geo::{GeoBounds, GeoFormatter, GeoPoint};
+use crate::rbac::{self, ROLE_NGO, ROLE_RECIPIENT, ROLE_TRANSPORTER};
 
 #[contract]
 pub struct SupplyChainTracker;
@@ -38,15 +38,38 @@ pub struct Location {
 
 impl Location {
     /// Create a new Location with coordinates
-    pub fn new(latitude: f64, longitude: f64, address: String, facility_name: String, contact_person: String, env: &Env) -> Result<Self, String> {
+    pub fn new(
+        latitude: f64,
+        longitude: f64,
+        address: String,
+        facility_name: String,
+        contact_person: String,
+        env: &Env,
+    ) -> Result<Self, String> {
         let coordinates = GeoPoint::new(latitude, longitude)?;
-        Ok(Location { coordinates, address, facility_name, contact_person })
+        Ok(Location {
+            coordinates,
+            address,
+            facility_name,
+            contact_person,
+        })
     }
 
     /// Create from legacy string format "lat,lng"
-    pub fn from_string(lat_lng: String, address: String, facility_name: String, contact_person: String, env: &Env) -> Result<Self, String> {
+    pub fn from_string(
+        lat_lng: String,
+        address: String,
+        facility_name: String,
+        contact_person: String,
+        env: &Env,
+    ) -> Result<Self, String> {
         let coordinates = GeoPoint::from_string(env, &lat_lng)?;
-        Ok(Location { coordinates, address, facility_name, contact_person })
+        Ok(Location {
+            coordinates,
+            address,
+            facility_name,
+            contact_person,
+        })
     }
 
     /// Get latitude
@@ -101,7 +124,7 @@ impl SupplyChainTracker {
     /// Create a new supply shipment.
     ///
     /// **Required role:** NGO
-    /// 
+    ///
     /// Coordinates are passed as lat,lng strings for standardized geographic representation.
     pub fn create_shipment(
         env: Env,
@@ -138,10 +161,22 @@ impl SupplyChainTracker {
         }
 
         // Create standardized locations
-        let origin = Location::from_string(origin_lat_lng, origin_address, origin_facility, origin_contact, &env)
-            .unwrap_or_else(|_| panic!("Invalid origin coordinates"));
-        let destination = Location::from_string(destination_lat_lng, destination_address, destination_facility, destination_contact, &env)
-            .unwrap_or_else(|_| panic!("Invalid destination coordinates"));
+        let origin = Location::from_string(
+            origin_lat_lng,
+            origin_address,
+            origin_facility,
+            origin_contact,
+            &env,
+        )
+        .unwrap_or_else(|_| panic!("Invalid origin coordinates"));
+        let destination = Location::from_string(
+            destination_lat_lng,
+            destination_address,
+            destination_facility,
+            destination_contact,
+            &env,
+        )
+        .unwrap_or_else(|_| panic!("Invalid destination coordinates"));
 
         let shipment = SupplyShipment {
             id: shipment_id.clone(),
@@ -168,7 +203,7 @@ impl SupplyChainTracker {
     /// Add a checkpoint to a shipment's journey.
     ///
     /// **Required role:** NGO
-    /// 
+    ///
     /// Location is passed as lat,lng string with address/facility/contact for standardized geographic representation.
     pub fn add_checkpoint(
         env: Env,
@@ -217,8 +252,9 @@ impl SupplyChainTracker {
                 location_address,
                 location_facility,
                 location_contact,
-                &env
-            ).unwrap_or_else(|_| panic!("Invalid checkpoint coordinates")),
+                &env,
+            )
+            .unwrap_or_else(|_| panic!("Invalid checkpoint coordinates")),
             timestamp: env.ledger().timestamp(),
             verified_by: verifier,
             quantity_verified,
@@ -240,12 +276,7 @@ impl SupplyChainTracker {
     /// Assign a transporter to a shipment.
     ///
     /// Only the shipment creator (NGO) may assign a transporter.
-    pub fn assign_transporter(
-        env: Env,
-        donor: Address,
-        shipment_id: String,
-        transporter: Address,
-    ) {
+    pub fn assign_transporter(env: Env, donor: Address, shipment_id: String, transporter: Address) {
         donor.require_auth();
         rbac::require_role(&env, &donor, ROLE_NGO);
 
@@ -318,7 +349,9 @@ impl SupplyChainTracker {
             .get(&confirmations_key)
             .unwrap_or(Map::new(&env));
         confirmations.set(shipment_id.clone(), confirmation);
-        env.storage().instance().set(&confirmations_key, &confirmations);
+        env.storage()
+            .instance()
+            .set(&confirmations_key, &confirmations);
 
         shipment.current_status = String::from_str(&env, "delivered");
         shipments.set(shipment_id, shipment);
@@ -433,7 +466,7 @@ impl SupplyChainTracker {
     ) -> Vec<SupplyShipment> {
         let center = GeoPoint::new(latitude, longitude).unwrap();
         let bounds = GeoBounds::from_radius(&center, radius_km);
-        
+
         let shipments_key = Symbol::new(&env, "shipments");
         let shipments: Map<String, SupplyShipment> = env
             .storage()
@@ -441,7 +474,7 @@ impl SupplyChainTracker {
             .get(&shipments_key)
             .unwrap_or(Map::new(&env));
         let mut nearby = Vec::new(&env);
-        
+
         for (_, shipment) in shipments.iter() {
             if let Some(latest) = shipment.checkpoints.get(shipment.checkpoints.len() - 1) {
                 let checkpoint_point = &latest.location.coordinates;
@@ -466,9 +499,7 @@ impl SupplyChainTracker {
         let mut alerts = Vec::new(&env);
         for (shipment_id, shipment) in shipments.iter() {
             if let Some(temp_req) = &shipment.temperature_requirements {
-                if let Some(latest) =
-                    shipment.checkpoints.get(shipment.checkpoints.len() - 1)
-                {
+                if let Some(latest) = shipment.checkpoints.get(shipment.checkpoints.len() - 1) {
                     if let Some(current_temp) = latest.temperature {
                         if current_temp < temp_req.min_temp || current_temp > temp_req.max_temp {
                             let alert_msg = format!(
