@@ -2,11 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BeneficiaryIdentityClient = void 0;
 const stellar_sdk_1 = require("stellar-sdk");
+const { Server } = stellar_sdk_1.SorobanRpc;
+const retry_1 = require("./retry");
 const crypto_js_1 = require("crypto-js");
+const validation_1 = require("./validation");
 class BeneficiaryIdentityClient {
     constructor(config) {
         this.config = config;
-        this.server = new stellar_sdk_1.Server(config.rpcUrl);
+        this.server = new Server(config.rpcUrl);
         this.contract = new stellar_sdk_1.Contract(config.contractIds.beneficiaryManager);
     }
     /**
@@ -18,8 +21,10 @@ class BeneficiaryIdentityClient {
         if (factors.length < 3) {
             throw new Error('Minimum 3 identity factors required for security');
         }
+        (0, validation_1.validateAddressList)(recoveryContacts, 'recoveryContacts');
+        (0, validation_1.validateAddress)(walletAddress, 'walletAddress');
         const registrarKeypair = stellar_sdk_1.Keypair.fromSecret(registrarKey);
-        const registrarAccount = await this.server.getAccount(registrarKeypair.publicKey());
+        const registrarAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(registrarKeypair.publicKey()));
         // Hash factors for privacy
         const hashedFactors = factors.map(f => ({
             ...f,
@@ -40,7 +45,7 @@ class BeneficiaryIdentityClient {
             .setTimeout(30)
             .build();
         tx.sign(registrarKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             const idHash = (0, stellar_sdk_1.scValToNative)(result.result.retval);
             return idHash;
@@ -197,7 +202,7 @@ class BeneficiaryIdentityClient {
      */
     async restoreIdentity(idHash, approvingContactKey, newWalletAddress) {
         const contactKeypair = stellar_sdk_1.Keypair.fromSecret(approvingContactKey);
-        const contactAccount = await this.server.getAccount(contactKeypair.publicKey());
+        const contactAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(contactKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(contactAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -210,7 +215,7 @@ class BeneficiaryIdentityClient {
             .setTimeout(30)
             .build();
         tx.sign(contactKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
@@ -309,7 +314,7 @@ class BeneficiaryIdentityClient {
      */
     async createTemporaryCredentials(idHash, ownerKey, deviceFingerprint, durationMinutes = 60) {
         const ownerKeypair = stellar_sdk_1.Keypair.fromSecret(ownerKey);
-        const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+        const ownerAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(ownerKeypair.publicKey()));
         const durationSeconds = durationMinutes * 60;
         const tx = new stellar_sdk_1.TransactionBuilder(ownerAccount, {
             fee: '100',
@@ -324,7 +329,7 @@ class BeneficiaryIdentityClient {
             .setTimeout(30)
             .build();
         tx.sign(ownerKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
@@ -337,7 +342,7 @@ class BeneficiaryIdentityClient {
      */
     async transferIdentity(idHash, ownerKey, newCampLocation, newGeofence) {
         const ownerKeypair = stellar_sdk_1.Keypair.fromSecret(ownerKey);
-        const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+        const ownerAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(ownerKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(ownerAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -351,7 +356,7 @@ class BeneficiaryIdentityClient {
             .setTimeout(30)
             .build();
         tx.sign(ownerKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status !== 'SUCCESS') {
             throw new Error(`Failed to transfer identity: ${result.status}`);
         }
@@ -398,7 +403,7 @@ class BeneficiaryIdentityClient {
      */
     async getIdentity(idHash) {
         try {
-            const result = await this.contract.call("get_identity", (0, stellar_sdk_1.nativeToScVal)(idHash));
+            const result = await (0, retry_1.withRetry)(() => this.contract.call("get_identity", (0, stellar_sdk_1.nativeToScVal)(idHash)));
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
         catch (error) {
@@ -407,13 +412,23 @@ class BeneficiaryIdentityClient {
         }
     }
     /**
-     * Hash a factor value for privacy
+     * Hash a factor value for privacy.
+     *
+     * Uses SHA-256 via `crypto-js`, which produces a lowercase hex digest.
+     * This **must** match the algorithm used on-chain in `beneficiary_manager.rs`
+     * (`sha2::Sha256` + `hex::encode`).  Both produce identical lowercase hex
+     * for the same input string.  Do not switch to a different algorithm without
+     * updating the Soroban contract simultaneously.
      */
     hashFactor(value) {
         return (0, crypto_js_1.SHA256)(value).toString();
     }
     /**
-     * Sign QR data for verification
+     * Sign QR data for offline verification.
+     *
+     * Uses SHA-256 via `crypto-js` to create a short-lived signature over the
+     * idHash + expiry + contract address.  Not sent to the contract; used only
+     * for offline QR code validation by the `offlineAuth` module.
      */
     signQRData(idHash, expiresAt) {
         const data = `${idHash}_${expiresAt}_${this.config.contractIds.beneficiaryManager}`;

@@ -39,6 +39,31 @@ export interface SupportMessage {
     isFromMerchant: boolean;
     status: 'pending' | 'sent' | 'read' | 'resolved';
 }
+/**
+ * One line of an itemized sale.
+ * `itemId` must match an `InventoryItem.id` already in inventory.
+ */
+export interface SaleLineItem {
+    itemId: string;
+    quantity: number;
+}
+/**
+ * Returned by `updateInventoryAfterSale` so callers can inspect
+ * what was decremented and what was rejected, without throwing on
+ * soft errors like unknown items or insufficient stock.
+ */
+export interface InventoryUpdateResult {
+    /** Items whose stock was successfully decremented. */
+    decremented: SaleLineItem[];
+    /** Items not found in inventory. */
+    unknownItems: string[];
+    /** Items found but with stock below the requested quantity. */
+    insufficientStock: Array<{
+        itemId: string;
+        requested: number;
+        available: number;
+    }>;
+}
 export declare class MerchantApp {
     private sdk;
     private config;
@@ -55,8 +80,14 @@ export declare class MerchantApp {
     /**
      * Process payment with multiple payment methods
      * Supports: QR, USSD, NFC, Offline
+     *
+     * @param lineItems - Explicit inventory items and quantities consumed by this
+     *   sale. Stock is only decremented after the payment is confirmed on-chain.
+     *   Omit or pass an empty array to skip inventory tracking.
+     * @returns Transaction ID on success. For offline payments returns a local
+     *   queue ID prefixed with `offline_`.
      */
-    processPayment(beneficiaryId: string, amount: string, token?: string, purpose?: string, paymentMethod?: number): Promise<string>;
+    processPayment(beneficiaryId: string, amount: string, token?: string, purpose?: string, paymentMethod?: number, lineItems?: SaleLineItem[]): Promise<string>;
     /**
      * Queue offline payment for later sync
      */
@@ -99,9 +130,20 @@ export declare class MerchantApp {
      */
     updateInventoryItem(itemId: string, updates: Partial<InventoryItem>): void;
     /**
-     * Update inventory after sale
+     * Decrement inventory quantities after a confirmed sale.
+     *
+     * Rules:
+     * - Each `SaleLineItem.itemId` must resolve to an existing `InventoryItem`.
+     * - Decrement is applied only when the item is found **and** has sufficient stock.
+     * - Unknown items and insufficient-stock items are collected in the result and
+     *   do **not** throw — the caller decides how to surface them.
+     * - Persistence (`saveInventory`) is called once after all valid decrements are
+     *   applied, so either all valid changes land or none do if `saveInventory` throws.
+     *
+     * @param lineItems - Items and quantities consumed by the confirmed sale.
+     * @returns `InventoryUpdateResult` describing what was decremented and what was rejected.
      */
-    private updateInventoryAfterSale;
+    updateInventoryAfterSale(lineItems: SaleLineItem[]): InventoryUpdateResult;
     /**
      * Get inventory items by category
      */

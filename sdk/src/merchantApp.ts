@@ -45,6 +45,29 @@ export interface SupportMessage {
   status: 'pending' | 'sent' | 'read' | 'resolved';
 }
 
+/**
+ * One line of an itemized sale.
+ * `itemId` must match an `InventoryItem.id` already in inventory.
+ */
+export interface SaleLineItem {
+  itemId: string;
+  quantity: number;
+}
+
+/**
+ * Returned by `updateInventoryAfterSale` so callers can inspect
+ * what was decremented and what was rejected, without throwing on
+ * soft errors like unknown items or insufficient stock.
+ */
+export interface InventoryUpdateResult {
+  /** Items whose stock was successfully decremented. */
+  decremented: SaleLineItem[];
+  /** Items not found in inventory. */
+  unknownItems: string[];
+  /** Items found but with stock below the requested quantity. */
+  insufficientStock: Array<{ itemId: string; requested: number; available: number }>;
+}
+
 export class MerchantApp {
   private sdk: MerchantNetworkSDK;
   private config: MerchantAppConfig;
@@ -87,13 +110,20 @@ export class MerchantApp {
   /**
    * Process payment with multiple payment methods
    * Supports: QR, USSD, NFC, Offline
+   *
+   * @param lineItems - Explicit inventory items and quantities consumed by this
+   *   sale. Stock is only decremented after the payment is confirmed on-chain.
+   *   Omit or pass an empty array to skip inventory tracking.
+   * @returns Transaction ID on success. For offline payments returns a local
+   *   queue ID prefixed with `offline_`.
    */
   async processPayment(
     beneficiaryId: string,
     amount: string,
     token: string = 'USDC',
     purpose: string = 'Aid Purchase',
-    paymentMethod: number = PAYMENT_QR
+    paymentMethod: number = PAYMENT_QR,
+    lineItems: SaleLineItem[] = []
   ): Promise<string> {
     // Check online status
     if (!this.isOnline) {
@@ -113,8 +143,10 @@ export class MerchantApp {
         paymentMethod
       );
       
-      // Update inventory
-      this.updateInventoryAfterSale(amount, purpose);
+      // Decrement stock only after confirmed payment success
+      if (lineItems.length > 0) {
+        this.updateInventoryAfterSale(lineItems);
+      }
       
       return transactionId;
     } catch (error) {
@@ -328,16 +360,66 @@ export class MerchantApp {
   }
 
   /**
-   * Update inventory after sale
+   * Decrement inventory quantities after a confirmed sale.
+   *
+   * Rules:
+   * - Each `SaleLineItem.itemId` must resolve to an existing `InventoryItem`.
+   * - Decrement is applied only when the item is found **and** has sufficient stock.
+   * - Unknown items and insufficient-stock items are collected in the result and
+   *   do **not** throw — the caller decides how to surface them.
+   * - Persistence (`saveInventory`) is called once after all valid decrements are
+   *   applied, so either all valid changes land or none do if `saveInventory` throws.
+   *
+   * @param lineItems - Items and quantities consumed by the confirmed sale.
+   * @returns `InventoryUpdateResult` describing what was decremented and what was rejected.
    */
-  private updateInventoryAfterSale(amount: string, purpose: string): void {
-    // In production, map purpose to inventory items and decrement quantity
-    // This is a simplified implementation
-    const amountNum = parseFloat(amount);
-    if (amountNum > 0) {
-      // Update inventory tracking
-      console.log(`Sale recorded: ${amount} for ${purpose}`);
+  updateInventoryAfterSale(lineItems: SaleLineItem[]): InventoryUpdateResult {
+    const result: InventoryUpdateResult = {
+      decremented: [],
+      unknownItems: [],
+      insufficientStock: [],
+    };
+
+    if (lineItems.length === 0) {
+      return result;
     }
+
+    let changed = false;
+
+    for (const line of lineItems) {
+      const index = this.inventory.findIndex(item => item.id === line.itemId);
+
+      if (index === -1) {
+        result.unknownItems.push(line.itemId);
+        continue;
+      }
+
+      const item = this.inventory[index];
+
+      if (item.quantity < line.quantity) {
+        result.insufficientStock.push({
+          itemId: line.itemId,
+          requested: line.quantity,
+          available: item.quantity,
+        });
+        continue;
+      }
+
+      this.inventory[index] = {
+        ...item,
+        quantity: item.quantity - line.quantity,
+        lastUpdated: Date.now(),
+      };
+
+      result.decremented.push({ itemId: line.itemId, quantity: line.quantity });
+      changed = true;
+    }
+
+    if (changed) {
+      this.saveInventory();
+    }
+
+    return result;
   }
 
   /**
