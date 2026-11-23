@@ -31,8 +31,18 @@ pub struct GeoPoint {
 }
 
 impl GeoPoint {
-    /// Create a new GeoPoint with validation
+    /// Create a new GeoPoint with validation.
+    ///
+    /// Rejects NaN and positive/negative infinity for both coordinates
+    /// before performing range checks.  Valid edge coordinates
+    /// (-90/90 latitude, -180/180 longitude) remain accepted.
     pub fn new(latitude: f64, longitude: f64) -> Result<Self, String> {
+        if !latitude.is_finite() {
+            return Err(String::from_str(&Env::default(), "Latitude must be a finite number (not NaN or infinity)"));
+        }
+        if !longitude.is_finite() {
+            return Err(String::from_str(&Env::default(), "Longitude must be a finite number (not NaN or infinity)"));
+        }
         if latitude < MIN_LATITUDE || latitude > MAX_LATITUDE {
             return Err(String::from_str(&Env::default(), "Latitude out of range [-90, 90]"));
         }
@@ -311,5 +321,77 @@ mod tests {
         let parsed = GeoFormatter::parse_point(&env, &formatted).unwrap();
         assert!((parsed.latitude - point.latitude).abs() < 0.000001);
         assert!((parsed.longitude - point.longitude).abs() < 0.000001);
+    }
+
+    // ── Non-finite coordinate rejection ───────────────────────────────────
+
+    #[test]
+    fn test_nan_latitude_rejected() {
+        assert!(GeoPoint::new(f64::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn test_nan_longitude_rejected() {
+        assert!(GeoPoint::new(0.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn test_nan_both_coordinates_rejected() {
+        assert!(GeoPoint::new(f64::NAN, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn test_positive_infinity_latitude_rejected() {
+        assert!(GeoPoint::new(f64::INFINITY, 0.0).is_err());
+    }
+
+    #[test]
+    fn test_negative_infinity_latitude_rejected() {
+        assert!(GeoPoint::new(f64::NEG_INFINITY, 0.0).is_err());
+    }
+
+    #[test]
+    fn test_positive_infinity_longitude_rejected() {
+        assert!(GeoPoint::new(0.0, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_negative_infinity_longitude_rejected() {
+        assert!(GeoPoint::new(0.0, f64::NEG_INFINITY).is_err());
+    }
+
+    // ── Valid edge coordinates accepted ────────────────────────────────────
+
+    #[test]
+    fn test_max_latitude_accepted() {
+        let point = GeoPoint::new(90.0, 0.0).unwrap();
+        assert!((point.latitude - 90.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_min_latitude_accepted() {
+        let point = GeoPoint::new(-90.0, 0.0).unwrap();
+        assert!((point.latitude - (-90.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_max_longitude_accepted() {
+        let point = GeoPoint::new(0.0, 180.0).unwrap();
+        assert!((point.longitude - 180.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_min_longitude_accepted() {
+        let point = GeoPoint::new(0.0, -180.0).unwrap();
+        assert!((point.longitude - (-180.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_all_extrema_combinations_accepted() {
+        // All four corner combinations of valid bounds
+        assert!(GeoPoint::new(90.0, 180.0).is_ok());
+        assert!(GeoPoint::new(90.0, -180.0).is_ok());
+        assert!(GeoPoint::new(-90.0, 180.0).is_ok());
+        assert!(GeoPoint::new(-90.0, -180.0).is_ok());
     }
 }
