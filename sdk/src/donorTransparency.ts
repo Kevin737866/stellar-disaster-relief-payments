@@ -1,13 +1,61 @@
 import axios from 'axios';
-// NOTE: crypto-js is intentionally not imported here — donorTransparency uses
-// Math.random() + Date.now() for non-security IDs and certificate numbers.
-// No cryptographic hashing is required in this module.
+import { SHA256 } from 'crypto-js';
+import { ValidationError } from './errors';
+
+/** Transaction types accepted by {@link DonorTransparencyClient.createTransparencyEntry}. */
+export const VALID_TRANSACTION_TYPES = [
+  'fund_created',
+  'allocation',
+  'disbursement',
+  'recall',
+] as const;
+type TransactionType = (typeof VALID_TRANSACTION_TYPES)[number];
+
+/** Maximum 256-bit unsigned integer value: 2^256 - 1. */
+const MAX_U256 = (1n << 256n) - 1n;
+
+/**
+ * Validate that an amount string is a non-negative integer that fits in a
+ * 256-bit unsigned integer (the representation used by Soroban and by the
+ * BigInt-based balance calculations in this module).
+ *
+ * Rejects empty strings, fractions, negatives, and values exceeding U256.
+ * @internal
+ */
+function validateAmount(amount: string, field = 'amount'): string {
+  if (typeof amount !== 'string') {
+    throw new ValidationError(field, 'Amount must be a string');
+  }
+  const trimmed = amount.trim();
+  if (!trimmed) {
+    throw new ValidationError(field, 'Amount string must not be empty');
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ValidationError(
+      field,
+      'Amount must be a non-negative decimal integer string without decimals, fractions, or signs'
+    );
+  }
+  try {
+    const val = BigInt(trimmed);
+    if (val < 0n || val > MAX_U256) {
+      throw new ValidationError(
+        field,
+        'Amount must fit within a 256-bit unsigned integer (0 <= amount <= 2^256 - 1)'
+      );
+    }
+    return val.toString();
+  } catch (err: any) {
+    if (err instanceof ValidationError) throw err;
+    throw new ValidationError(field, `Failed to parse amount as U256: ${err?.message || err}`);
+  }
+}
 
 export interface TransparencyEntry {
   id: string;
   fundId: string;
   timestamp: number;
-  transactionType: 'fund_created' | 'allocation' | 'disbursement' | 'recall';
+  transactionType: TransactionType;
   amount: string;
   description: string;
   beneficiary?: string;
@@ -36,6 +84,45 @@ export interface ProofOfImpact {
   verificationStatus: 'pending' | 'verified' | 'disputed';
   verifiedBy?: string;
   signature: string;
+  /** Public key of the field worker who signed the proof (Ed25519, base58 or hex). */
+  fieldWorkerPublicKey?: string;
+}
+
+/**
+ * Registry of identities authorised to verify proofs-of-impact.
+ * Each entry maps a verifier identifier to a public key used for
+ * signature verification.
+ */
+export interface TrustedVerifier {
+  verifierId: string;
+  /** Ed25519 public key (hex or base58-encoded) used to verify proof signatures. */
+  publicKey: string;
+  /** When set to false the verifier is temporarily disabled. */
+  active?: boolean;
+}
+
+/**
+ * Result returned by {@link DonorTransparencyClient.verifyProof}.
+ *
+ * A proof is only considered verified when `success` is true.  On failure
+ * `error` provides a machine-readable reason and `message` a human-readable
+ * explanation so callers can surface actionable feedback.
+ */
+export interface ProofVerificationResult {
+  success: boolean;
+  error?:
+    | 'PROOF_NOT_FOUND'
+    | 'MISSING_SIGNATURE'
+    | 'MISSING_PUBLIC_KEY'
+    | 'INVALID_SIGNATURE'
+    | 'UNAUTHORIZED_VERIFIER'
+    | 'INACTIVE_VERIFIER'
+    | 'VERIFIER_SERVICE_UNAVAILABLE'
+    | 'PROOF_ALREADY_VERIFIED';
+  message: string;
+  proofId: string;
+  verifierId: string;
+  verificationStatus: 'pending' | 'verified' | 'disputed';
 }
 
 export interface FundFlow {
@@ -92,13 +179,152 @@ export interface DonorDashboard {
 export class DonorTransparencyClient {
   private ipfsGateway: string;
   private donorDataKey: string = 'donor_transparency_';
+  /** Map of verifierId → TrustedVerifier, the authoritative authorization list. */
+  private trustedVerifiers: Map<string, TrustedVerifier> = new Map();
+  /**
+   * Pluggable verifier service used during signature validation.
+   * When set, {@link verifyProof} delegates the cryptographic check to this
+   * callback instead of using the built-in fallback.  When unset, the
+   * built-in fallback is used (which requires the signature to equal the
+   * SHA-256 hash of the canonical proof message — useful for testing but
+   * not suitable for production use without a real Ed25519 implementation).
+   */
+  private verifierService?: (
+    messageHash: string,
+    signature: string,
+    publicKey: string
+  ) => Promise<boolean>;
+
+  /**
+   * Inject (or replace) the verifier-service callback used for
+   * signature validation.  Pass `undefined` to revert to the built-in
+   * fallback.
+   */
+  setVerifierService(
+    service?: (messageHash: string, signature: string, publicKey: string) => Promise<boolean>
+  ): void {
+    this.verifierService = service;
+  }
 
   constructor(ipfsGateway: string = 'https://ipfs.io/ipfs/') {
     this.ipfsGateway = ipfsGateway;
   }
 
+  // ── Trusted-verifier management ──────────────────────────────────────
+
   /**
-   * Creates complete transparency record for fund deployment
+   * Register a verifier as trusted.  Only verifiers in this registry are
+   * allowed to mark proofs as verified.
+   */
+  registerTrustedVerifier(verifier: TrustedVerifier): void {
+    this.trustedVerifiers.set(verifier.verifierId, verifier);
+  }
+
+  /**
+   * Remove a verifier from the trusted set.
+   */
+  revokeTrustedVerifier(verifierId: string): void {
+    this.trustedVerifiers.delete(verifierId);
+  }
+
+  /**
+   * Look up a trusted verifier by ID.
+   * Returns `undefined` when the verifier is not registered.
+   * @internal
+   */
+  private resolveTrustedVerifier(verifierId: string): TrustedVerifier | undefined {
+    return this.trustedVerifiers.get(verifierId);
+  }
+
+  // ── Signature verification ────────────────────────────────────────────
+
+  /**
+   * Compute the canonical message string that the field worker signed.
+   *
+   * The signature is expected to be over the SHA-256 hash of a canonical
+   * JSON representation of the proof **excluding** the signature and
+   * verificationStatus fields (which are set after signing).
+   *
+   * @internal
+   */
+  private buildProofMessage(proof: ProofOfImpact): string {
+    const payload = {
+      id: proof.id,
+      fundId: proof.fundId,
+      disbursementId: proof.disbursementId,
+      fieldWorkerId: proof.fieldWorkerId,
+      timestamp: proof.timestamp,
+      location: proof.location,
+      beneficiaryCount: proof.beneficiaryCount,
+      description: proof.description,
+      mediaHash: proof.mediaHash,
+    };
+    return JSON.stringify(payload, Object.keys(payload).sort());
+  }
+
+  /**
+   * Verify the Ed25519 signature on a proof-of-impact using a
+   * verifier-service callback.
+   *
+   * The callback receives the canonical message hash, the signature, and
+   * the public key.  It must return a boolean indicating whether the
+   * signature is valid.  If the callback throws, it is treated as a
+   * verifier-service failure.
+   *
+   * @internal
+   */
+  private async verifyProofSignature(
+    proof: ProofOfImpact,
+    verifier: TrustedVerifier
+  ): Promise<boolean> {
+    // Build the canonical message and its SHA-256 hash.
+    const message = this.buildProofMessage(proof);
+    const messageHash = SHA256(message).toString();
+
+    // Use the injected verifier service when available.
+    if (this.verifierService) {
+      try {
+        return await this.verifierService(messageHash, proof.signature, verifier.publicKey);
+      } catch {
+        throw new Error('VERIFIER_SERVICE_UNAVAILABLE');
+      }
+    }
+
+    // Fallback: constant-time string comparison against a precomputed hash.
+    // This is not real cryptographic verification, but it lets the class
+    // operate in environments where a verifier service is not configured
+    // while still enforcing that the signature field is present and
+    // corresponds to the proof data.
+    if (!proof.signature || proof.signature.trim() === '') {
+      return false;
+    }
+    return this.constantTimeCompare(proof.signature, messageHash);
+  }
+
+  /**
+   * Compare two strings in constant time to avoid timing side-channels.
+   * @internal
+   */
+  private constantTimeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    let result = 0;
+    for (let i = 0; i < a.length; i++) {
+      result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    }
+    return result === 0;
+  }
+
+  /**
+   * Creates complete transparency record for fund deployment.
+   *
+   * Validates the fund ID, transaction type, and amount before persisting.
+   * Only `fund_created`, `allocation`, `disbursement`, and `recall` are
+   * accepted as transaction types.  Amounts must be non-negative integer
+   * strings that fit within a 256-bit unsigned integer.
+   *
+   * @throws {ValidationError} if `fundId` is empty, `transactionType` is
+   *   not one of the supported values, or `amount` is malformed, negative,
+   *   or exceeds U256.
    */
   async createTransparencyEntry(
     fundId: string,
@@ -109,12 +335,28 @@ export class DonorTransparencyClient {
     location?: { latitude: number; longitude: number; precision?: number },
     proof?: string
   ): Promise<TransparencyEntry> {
+    // Validate fund ID.
+    if (!fundId || typeof fundId !== 'string' || fundId.trim() === '') {
+      throw new ValidationError('fundId', 'Fund ID must be a non-empty string');
+    }
+
+    // Validate transaction type against the declared union.
+    if (!VALID_TRANSACTION_TYPES.includes(transactionType as TransactionType)) {
+      throw new ValidationError(
+        'transactionType',
+        `Unsupported transaction type: "${transactionType}". Must be one of: ${VALID_TRANSACTION_TYPES.join(', ')}`
+      );
+    }
+
+    // Validate amount — non-negative integer, U256-safe.
+    const normalizedAmount = validateAmount(amount);
+
     const entry: TransparencyEntry = {
       id: this.generateId(),
-      fundId,
+      fundId: fundId.trim(),
       timestamp: Date.now(),
-      transactionType: transactionType as any,
-      amount,
+      transactionType: transactionType as TransactionType,
+      amount: normalizedAmount,
       description,
       beneficiary,
       location,
@@ -130,6 +372,11 @@ export class DonorTransparencyClient {
   /**
    * Records proof-of-impact attestation from field workers
    * Includes geolocation and media evidence
+   *
+   * @param signature  Ed25519 signature over the canonical proof message
+   *                   (see {@link buildProofMessage}), hex-encoded.
+   * @param fieldWorkerPublicKey  Public key of the signing field worker,
+   *                   hex or base58-encoded.
    */
   async submitProofOfImpact(
     fundId: string,
@@ -143,7 +390,8 @@ export class DonorTransparencyClient {
     beneficiaryCount: number,
     description: string,
     mediaHash: string,
-    signature: string
+    signature: string,
+    fieldWorkerPublicKey?: string
   ): Promise<ProofOfImpact> {
     const proof: ProofOfImpact = {
       id: this.generateId(),
@@ -157,6 +405,7 @@ export class DonorTransparencyClient {
       mediaHash,
       verificationStatus: 'pending',
       signature,
+      fieldWorkerPublicKey,
     };
 
     // Store proof
@@ -169,29 +418,140 @@ export class DonorTransparencyClient {
   }
 
   /**
-   * Verifies proof-of-impact with blockchain attestation
+   * Verifies proof-of-impact with blockchain attestation.
+   *
+   * A proof is only transitioned to `verified` when **all** of the
+   * following hold:
+   *
+   * 1. The proof exists in storage.
+   * 2. The caller-supplied `verifierId` is present in the trusted-verifier
+   *    registry and is active.
+   * 3. The proof carries a non-empty signature.
+   * 4. The signature validates against the canonical proof message.
+   *
+   * On any failure the proof's `verificationStatus` is left unchanged
+   * (or set to `'disputed'` when the signature is present but invalid) and
+   * a `ProofVerificationResult` with `success: false` is returned.
    */
-  async verifyProof(proofId: string, verifierId: string): Promise<boolean> {
+  async verifyProof(proofId: string, verifierId: string): Promise<ProofVerificationResult> {
+    const baseResult: ProofVerificationResult = {
+      success: false,
+      message: '',
+      proofId,
+      verifierId,
+      verificationStatus: 'pending',
+    };
+
+    // 1. Retrieve proof ----------------------------------------------------
+    let proof: ProofOfImpact | null;
     try {
-      // Retrieve proof
-      const proof = await this.retrieveProofOfImpact(proofId);
-
-      if (!proof) {
-        throw new Error('Proof not found');
-      }
-
-      // Update verification status
-      proof.verificationStatus = 'verified';
-      proof.verifiedBy = verifierId;
-
-      // Store updated proof
-      await this.storeProofOfImpact(proof);
-
-      return true;
-    } catch (error) {
-      console.error('Proof verification failed:', error);
-      return false;
+      proof = await this.retrieveProofOfImpact(proofId);
+    } catch {
+      return {
+        ...baseResult,
+        error: 'VERIFIER_SERVICE_UNAVAILABLE',
+        message: 'Unable to retrieve proof from storage.',
+      };
     }
+
+    if (!proof) {
+      return {
+        ...baseResult,
+        error: 'PROOF_NOT_FOUND',
+        message: `Proof '${proofId}' not found.`,
+      };
+    }
+
+    // Guard: a proof that is already verified cannot be re-verified by a
+    // different verifier.
+    if (proof.verificationStatus === 'verified' && proof.verifiedBy !== verifierId) {
+      return {
+        ...baseResult,
+        verificationStatus: proof.verificationStatus,
+        error: 'PROOF_ALREADY_VERIFIED',
+        message: `Proof already verified by '${proof.verifiedBy}'.`,
+      };
+    }
+
+    // 2. Authorize the verifier --------------------------------------------
+    const verifier = this.resolveTrustedVerifier(verifierId);
+    if (!verifier) {
+      return {
+        ...baseResult,
+        verificationStatus: proof.verificationStatus,
+        error: 'UNAUTHORIZED_VERIFIER',
+        message: `Verifier '${verifierId}' is not in the trusted verifier registry.`,
+      };
+    }
+    if (verifier.active === false) {
+      return {
+        ...baseResult,
+        verificationStatus: proof.verificationStatus,
+        error: 'INACTIVE_VERIFIER',
+        message: `Verifier '${verifierId}' is registered but inactive.`,
+      };
+    }
+
+    // 3. Check that the proof carries a signature --------------------------
+    if (!proof.signature || proof.signature.trim() === '') {
+      return {
+        ...baseResult,
+        verificationStatus: proof.verificationStatus,
+        error: 'MISSING_SIGNATURE',
+        message: 'Proof has no signature to verify.',
+      };
+    }
+
+    // 4. Validate the signature -------------------------------------------
+    let signatureValid: boolean;
+    try {
+      signatureValid = await this.verifyProofSignature(proof, verifier);
+    } catch (err: any) {
+      // Verifier service threw — treat as a service failure, not a
+      // signature failure.  Do NOT transition the proof.
+      return {
+        ...baseResult,
+        verificationStatus: proof.verificationStatus,
+        error: 'VERIFIER_SERVICE_UNAVAILABLE',
+        message: `Verifier service error: ${err?.message ?? 'unknown error'}`,
+      };
+    }
+
+    if (!signatureValid) {
+      // Mark as disputed so the proof is not silently treated as pending.
+      proof.verificationStatus = 'disputed';
+      try {
+        await this.storeProofOfImpact(proof);
+      } catch {
+        // Best-effort persistence; still report the invalid signature.
+      }
+      return {
+        ...baseResult,
+        verificationStatus: 'disputed',
+        error: 'INVALID_SIGNATURE',
+        message: 'Signature does not match the proof data.',
+      };
+    }
+
+    // 5. All checks passed — transition to verified -----------------------
+    proof.verificationStatus = 'verified';
+    proof.verifiedBy = verifierId;
+
+    try {
+      await this.storeProofOfImpact(proof);
+    } catch {
+      // Even if persistence fails we report the verification result so
+      // the caller can retry storage.  The in-memory proof is already
+      // updated.
+    }
+
+    return {
+      success: true,
+      message: 'Proof verified successfully.',
+      proofId,
+      verifierId,
+      verificationStatus: 'verified',
+    };
   }
 
   /**
@@ -220,8 +580,15 @@ export class DonorTransparencyClient {
       transactions
         .filter(t => t.transactionType === 'allocation')
         .forEach(t => {
-          const key = t.description.split(':')[0] || 'Other';
-          allocationBreakdown[key] = t.amount;
+          // Normalize the category from the description.  Descriptions are
+          // expected to follow "Category: detail" format.  Entries with no
+          // description or no colon prefix are grouped under 'Uncategorized'.
+          const prefix = t.description.split(':')[0].trim();
+          const key = prefix || 'Uncategorized';
+          allocationBreakdown[key] = this.addBigNumbers(
+            allocationBreakdown[key] || '0',
+            t.amount
+          );
         });
 
       return {
