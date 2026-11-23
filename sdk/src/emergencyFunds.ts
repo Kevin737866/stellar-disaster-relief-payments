@@ -9,6 +9,7 @@ import {
   xdr,
   Keypair,
   BASE_FEE,
+  scValToNative,
 } from 'stellar-sdk';
 import {
   FundCreationError,
@@ -118,6 +119,79 @@ export interface FundStatus {
   releasedAmount: string;
   availableAmount: string;
   beneficiaryCount: number;
+}
+
+/**
+ * Decodes the recalled amount from a Soroban transaction response.
+ *
+ * The `recall_unused_funds` contract function returns an i128 representing the
+ * number of stroops recalled. `scValToNative` converts it to a BigInt; we
+ * stringify it to preserve exact integer semantics across all magnitudes.
+ *
+ * Throws if the return value is absent or is not a numeric type, so callers
+ * always see an explicit error rather than a silent zero.
+ */
+export function decodeRecalledAmount(response: any): string {
+  try {
+    const meta = response.resultMetaXdr;
+    if (!meta) {
+      throw new Error('resultMetaXdr is absent from transaction response');
+    }
+
+    // TransactionMeta v3 carries per-operation Soroban return values.
+    const v3 = typeof meta.v3 === 'function' ? meta.v3() : meta.v3;
+    if (!v3) {
+      throw new Error('resultMetaXdr has no v3 field');
+    }
+
+    const sorobanMeta =
+      typeof v3.sorobanMeta === 'function' ? v3.sorobanMeta() : v3.sorobanMeta;
+    if (!sorobanMeta) {
+      throw new Error('v3 metadata has no sorobanMeta field');
+    }
+
+    const returnVal =
+      typeof sorobanMeta.returnValue === 'function'
+        ? sorobanMeta.returnValue()
+        : sorobanMeta.returnValue;
+    if (returnVal === undefined || returnVal === null) {
+      throw new Error('sorobanMeta has no returnValue');
+    }
+
+    const native = scValToNative(returnVal);
+
+    if (typeof native === 'bigint') {
+      return native.toString();
+    }
+    if (typeof native === 'number') {
+      // Guard against floating-point imprecision for large amounts.
+      if (!Number.isInteger(native)) {
+        throw new Error(
+          `contract returned non-integer numeric value: ${native}`
+        );
+      }
+      return String(native);
+    }
+    if (typeof native === 'string') {
+      // Accept a string only when it represents a valid integer.
+      if (!/^-?\d+$/.test(native)) {
+        throw new Error(
+          `contract returned non-integer string value: "${native}"`
+        );
+      }
+      return native;
+    }
+
+    throw new Error(
+      `unexpected return value type: ${typeof native} (value: ${native})`
+    );
+  } catch (error: any) {
+    throw new NetworkError(
+      'decode recalled amount',
+      error.message,
+      { responseHash: response?.hash }
+    );
+  }
 }
 
 /**
@@ -578,7 +652,11 @@ export class EmergencyFundsClient {
   }
 
   /**
-   * Recalls unused funds after 12 month period
+   * Recalls unused funds after 12 month period.
+   * Returns the amount confirmed by the contract, decoded from the transaction
+   * result metadata. Throws NetworkError when the transaction fails or when
+   * the contract return value cannot be decoded (a failed recall is never
+   * silently reported as a zero recall).
    */
   async recallUnusedFunds(
     donorAddress: string,
@@ -605,12 +683,25 @@ export class EmergencyFundsClient {
       transaction.sign(this.signingKey);
       const response = await withRetry<any>(() => this.server.submitTransaction(transaction));
 
+      // A non-successful status means the recall did not execute; never report
+      // that as a zero amount.
+      if (response.status && response.status !== 'SUCCESS') {
+        throw new NetworkError(
+          'recall unused funds',
+          `transaction status ${response.status}`,
+          { fundId, donorAddress }
+        );
+      }
+
+      const recalledAmount = decodeRecalledAmount(response);
+
       return {
         success: true,
-        recalledAmount: '0',
+        recalledAmount,
         transactionHash: response.hash,
       };
     } catch (error: any) {
+      if (error instanceof NetworkError) throw error;
       throw new NetworkError('recall unused funds', error.message, { fundId, donorAddress });
     }
   }
