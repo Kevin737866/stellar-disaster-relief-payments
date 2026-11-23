@@ -37,7 +37,14 @@ import { TrackerClient } from './trackerClient';
 
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
-export { DonorTransparencyClient } from './donorTransparency';
+export { DonorTransparencyClient, InvalidProofTransitionError } from './donorTransparency';
+export type {
+  ProofOfImpact,
+  ProofVerificationStatus,
+  ProofReviewAction,
+  ProofReviewRecord,
+  ProofDispute,
+} from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 

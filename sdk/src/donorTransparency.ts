@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { UnauthorizedError, ValidationError } from './errors';
 // NOTE: crypto-js is intentionally not imported here — donorTransparency uses
 // Math.random() + Date.now() for non-security IDs and certificate numbers.
 // No cryptographic hashing is required in this module.
@@ -19,6 +20,26 @@ export interface TransparencyEntry {
   proof?: string;
 }
 
+export type ProofVerificationStatus = 'pending' | 'verified' | 'disputed';
+
+export type ProofReviewAction = 'verified' | 'disputed';
+
+export interface ProofReviewRecord {
+  action: ProofReviewAction;
+  actor: string;
+  fromStatus: ProofVerificationStatus;
+  toStatus: ProofVerificationStatus;
+  timestamp: number;
+  reason?: string;
+}
+
+export interface ProofDispute {
+  reason: string;
+  disputedBy: string;
+  timestamp: number;
+  previousStatus: Exclude<ProofVerificationStatus, 'disputed'>;
+}
+
 export interface ProofOfImpact {
   id: string;
   fundId: string;
@@ -33,9 +54,26 @@ export interface ProofOfImpact {
   beneficiaryCount: number;
   description: string;
   mediaHash: string; // IPFS hash or similar
-  verificationStatus: 'pending' | 'verified' | 'disputed';
+  verificationStatus: ProofVerificationStatus;
   verifiedBy?: string;
   signature: string;
+  dispute?: ProofDispute;
+  reviewHistory?: ProofReviewRecord[];
+}
+
+export class InvalidProofTransitionError extends Error {
+  readonly code = 'INVALID_PROOF_TRANSITION';
+  readonly proofId: string;
+  readonly fromStatus: string;
+  readonly toStatus: string;
+
+  constructor(proofId: string, fromStatus: string, toStatus: string) {
+    super(`Invalid proof transition for '${proofId}': cannot move from '${fromStatus}' to '${toStatus}'`);
+    this.name = 'InvalidProofTransitionError';
+    this.proofId = proofId;
+    this.fromStatus = fromStatus;
+    this.toStatus = toStatus;
+  }
 }
 
 export interface FundFlow {
@@ -92,9 +130,35 @@ export interface DonorDashboard {
 export class DonorTransparencyClient {
   private ipfsGateway: string;
   private donorDataKey: string = 'donor_transparency_';
+  private authorizedReviewers: Set<string>;
 
-  constructor(ipfsGateway: string = 'https://ipfs.io/ipfs/') {
+  constructor(ipfsGateway: string = 'https://ipfs.io/ipfs/', authorizedReviewers: string[] = []) {
     this.ipfsGateway = ipfsGateway;
+    this.authorizedReviewers = new Set(
+      authorizedReviewers
+        .filter((reviewer): reviewer is string => typeof reviewer === 'string' && reviewer.trim().length > 0)
+        .map(reviewer => reviewer.trim())
+    );
+  }
+
+  addAuthorizedReviewer(reviewerId: string): void {
+    const normalized = typeof reviewerId === 'string' ? reviewerId.trim() : '';
+    if (!normalized) {
+      throw new ValidationError('reviewerId', 'must be a non-empty string');
+    }
+    this.authorizedReviewers.add(normalized);
+  }
+
+  removeAuthorizedReviewer(reviewerId: string): void {
+    this.authorizedReviewers.delete(typeof reviewerId === 'string' ? reviewerId.trim() : reviewerId);
+  }
+
+  isAuthorizedReviewer(reviewerId: string): boolean {
+    return typeof reviewerId === 'string' && this.authorizedReviewers.has(reviewerId.trim());
+  }
+
+  getAuthorizedReviewers(): string[] {
+    return Array.from(this.authorizedReviewers);
   }
 
   /**
@@ -157,6 +221,7 @@ export class DonorTransparencyClient {
       mediaHash,
       verificationStatus: 'pending',
       signature,
+      reviewHistory: [],
     };
 
     // Store proof
@@ -180,11 +245,20 @@ export class DonorTransparencyClient {
         throw new Error('Proof not found');
       }
 
-      // Update verification status
+      const fromStatus = proof.verificationStatus;
       proof.verificationStatus = 'verified';
       proof.verifiedBy = verifierId;
+      proof.reviewHistory = [
+        ...(proof.reviewHistory ?? []),
+        {
+          action: 'verified',
+          actor: verifierId,
+          fromStatus,
+          toStatus: 'verified',
+          timestamp: Date.now(),
+        },
+      ];
 
-      // Store updated proof
       await this.storeProofOfImpact(proof);
 
       return true;
@@ -192,6 +266,69 @@ export class DonorTransparencyClient {
       console.error('Proof verification failed:', error);
       return false;
     }
+  }
+
+  async disputeProof(proofId: string, reviewerId: string, reason: string): Promise<ProofOfImpact> {
+    const proof = await this.retrieveProofOfImpact(proofId);
+
+    if (!proof) {
+      throw new Error(`Proof not found: ${proofId}`);
+    }
+
+    const trimmedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!trimmedReason) {
+      throw new ValidationError('reason', 'must be a non-empty string', { proofId });
+    }
+
+    const trimmedReviewer = typeof reviewerId === 'string' ? reviewerId.trim() : '';
+    if (!trimmedReviewer) {
+      throw new ValidationError('reviewerId', 'must be a non-empty string', { proofId });
+    }
+
+    if (!this.isAuthorizedReviewer(trimmedReviewer)) {
+      throw new UnauthorizedError('dispute proof', trimmedReviewer, { proofId });
+    }
+
+    const fromStatus = proof.verificationStatus;
+    if (fromStatus !== 'pending' && fromStatus !== 'verified') {
+      throw new InvalidProofTransitionError(proofId, fromStatus, 'disputed');
+    }
+
+    const timestamp = Date.now();
+    const dispute: ProofDispute = {
+      reason: trimmedReason,
+      disputedBy: trimmedReviewer,
+      timestamp,
+      previousStatus: fromStatus,
+    };
+    const reviewRecord: ProofReviewRecord = {
+      action: 'disputed',
+      actor: trimmedReviewer,
+      fromStatus,
+      toStatus: 'disputed',
+      timestamp,
+      reason: trimmedReason,
+    };
+
+    proof.verificationStatus = 'disputed';
+    proof.dispute = dispute;
+    proof.reviewHistory = [...(proof.reviewHistory ?? []), reviewRecord];
+
+    await this.storeProofOfImpact(proof);
+
+    return proof;
+  }
+
+  async getProofOfImpact(proofId: string): Promise<ProofOfImpact | null> {
+    return this.retrieveProofOfImpact(proofId);
+  }
+
+  async getProofReviewHistory(proofId: string): Promise<ProofReviewRecord[]> {
+    const proof = await this.retrieveProofOfImpact(proofId);
+    if (!proof) {
+      throw new Error(`Proof not found: ${proofId}`);
+    }
+    return [...(proof.reviewHistory ?? [])];
   }
 
   /**
