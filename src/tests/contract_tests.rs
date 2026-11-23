@@ -8,7 +8,7 @@ use crate::rbac::{self, ROLE_ADMIN, ROLE_AUDITOR, ROLE_NGO, ROLE_OPERATOR};
 
 mod beneficiary_tests {
     use super::*;
-    use crate::{BeneficiaryManager, beneficiary_manager::VerificationFactor};
+    use crate::{beneficiary_manager::VerificationFactor, BeneficiaryManager};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -46,7 +46,9 @@ mod beneficiary_tests {
             &Vec::new(&env),
             &make_factors(&env),
         );
-        assert!(client.get_beneficiary(&String::from_str(&env, "b1")).is_some());
+        assert!(client
+            .get_beneficiary(&String::from_str(&env, "b1"))
+            .is_some());
     }
 
     #[test]
@@ -85,7 +87,9 @@ mod beneficiary_tests {
             &make_factors(&env),
         );
         client.deactivate_beneficiary(&admin, &String::from_str(&env, "b3"));
-        let profile = client.get_beneficiary(&String::from_str(&env, "b3")).unwrap();
+        let profile = client
+            .get_beneficiary(&String::from_str(&env, "b3"))
+            .unwrap();
         assert!(!profile.is_active);
     }
 
@@ -126,8 +130,14 @@ mod beneficiary_tests {
             &Vec::new(&env),
             &make_factors(&env),
         );
-        client.update_location(&wallet, &String::from_str(&env, "b5"), &String::from_str(&env, "camp_f"));
-        let profile = client.get_beneficiary(&String::from_str(&env, "b5")).unwrap();
+        client.update_location(
+            &wallet,
+            &String::from_str(&env, "b5"),
+            &String::from_str(&env, "camp_f"),
+        );
+        let profile = client
+            .get_beneficiary(&String::from_str(&env, "b5"))
+            .unwrap();
         assert_eq!(profile.location, String::from_str(&env, "camp_f"));
     }
 
@@ -150,7 +160,11 @@ mod beneficiary_tests {
             &Vec::new(&env),
             &make_factors(&env),
         );
-        client.update_location(&impostor, &String::from_str(&env, "b6"), &String::from_str(&env, "camp_h"));
+        client.update_location(
+            &impostor,
+            &String::from_str(&env, "b6"),
+            &String::from_str(&env, "camp_h"),
+        );
     }
 }
 
@@ -158,7 +172,7 @@ mod beneficiary_tests {
 
 mod cash_transfer_tests {
     use super::*;
-    use crate::{CashTransfer, cash_transfer::SpendingRule};
+    use crate::{cash_transfer::SpendingRule, CashTransfer};
     use soroban_sdk::{Map, U256};
 
     fn setup() -> (Env, Address, Address) {
@@ -250,7 +264,7 @@ mod cash_transfer_tests {
 
 mod merchant_tests {
     use super::*;
-    use crate::{MerchantNetwork, merchant_network::Location};
+    use crate::{merchant_network::Location, MerchantNetwork};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -413,7 +427,7 @@ mod merchant_tests {
 
 mod supply_chain_tests {
     use super::*;
-    use crate::{SupplyChainTracker, supply_chain_tracker::Location};
+    use crate::{supply_chain_tracker::Location, SupplyChainTracker};
     use soroban_sdk::U256;
 
     fn setup() -> (Env, Address, Address) {
@@ -611,7 +625,7 @@ mod anti_fraud_tests {
 mod batch_disbursement_tests {
     use super::*;
     use crate::AidRegistry;
-    use soroban_sdk::{U256, Vec};
+    use soroban_sdk::{Vec, U256};
 
     fn setup_fund(env: &Env) -> (Address, Address, String) {
         let admin = Address::generate(env);
@@ -702,11 +716,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         let empty: Vec<(Address, U256, String)> = Vec::new(&env);
@@ -728,11 +747,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 100), // only 100 available
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         // Try to disburse 3 × 100 = 300 from a 100-unit fund
@@ -755,11 +779,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &2u32, // require 2 sigs
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &2u32, // require 2 sigs
         );
 
         let entries = make_entries(&env, 1, 100);
@@ -781,11 +810,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         let entries = make_entries(&env, 1, 100);
@@ -807,17 +841,30 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         let dup = Address::generate(&env);
         let mut entries: Vec<(Address, U256, String)> = Vec::new(&env);
-        entries.push_back((dup.clone(), U256::from_u64(&env, 100), String::from_str(&env, "p1")));
-        entries.push_back((dup.clone(), U256::from_u64(&env, 100), String::from_str(&env, "p2")));
+        entries.push_back((
+            dup.clone(),
+            U256::from_u64(&env, 100),
+            String::from_str(&env, "p1"),
+        ));
+        entries.push_back((
+            dup.clone(),
+            U256::from_u64(&env, 100),
+            String::from_str(&env, "p2"),
+        ));
 
         let mut approvers: Vec<Address> = Vec::new(&env);
         approvers.push_back(signer);
@@ -838,11 +885,16 @@ mod batch_disbursement_tests {
         signers.push_back(signer.clone());
         // Create fund that is already expired
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
         // Archive it to make it inactive
         client.archive_fund(&admin, &fund_id, &String::from_str(&env, "test"));
@@ -865,11 +917,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         let entries = make_entries(&env, 2, 50);
@@ -893,11 +950,16 @@ mod batch_disbursement_tests {
         let mut signers: Vec<Address> = Vec::new(&env);
         signers.push_back(signer.clone());
         client.create_fund(
-            &admin, &fund_id,
-            &String::from_str(&env, "F"), &String::from_str(&env, "D"),
+            &admin,
+            &fund_id,
+            &String::from_str(&env, "F"),
+            &String::from_str(&env, "D"),
             &U256::from_u64(&env, 10_000),
-            &String::from_str(&env, "manual"), &String::from_str(&env, "global"),
-            &(env.ledger().timestamp() + 86_400), &signers, &1u32,
+            &String::from_str(&env, "manual"),
+            &String::from_str(&env, "global"),
+            &(env.ledger().timestamp() + 86_400),
+            &signers,
+            &1u32,
         );
 
         // Batch first
@@ -911,7 +973,9 @@ mod batch_disbursement_tests {
         let mut single_approvers: Vec<Address> = Vec::new(&env);
         single_approvers.push_back(signer.clone());
         client.submit_disbursement(
-            &admin, &fund_id, &beneficiary,
+            &admin,
+            &fund_id,
+            &beneficiary,
             &U256::from_u64(&env, 50),
             &String::from_str(&env, "single"),
             &single_approvers,

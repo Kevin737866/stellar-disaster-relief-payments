@@ -4,8 +4,8 @@
 //! Offline capture/sync guarantees, reconciliation steps, expiry, and known
 //! abuse-resistance gaps are documented in `docs/offline-flows.md`.
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
 use crate::unique_id::*;
+use soroban_sdk::{contract, contractimpl, u64, Address, Env, Map, String, Symbol, Vec, U256};
 
 // Merchant categories for spending rules (stored as u32)
 pub const CATEGORY_FOOD: u32 = 0;
@@ -60,12 +60,12 @@ pub struct MerchantNetwork;
 #[derive(Clone)]
 pub struct Merchant {
     pub id: String,
-    pub name: String,           // Plain text on-chain; ensure merchant consent
+    pub name: String, // Plain text on-chain; ensure merchant consent
     pub owner: Address,
     pub business_type: String,
-    pub category: u32, // MerchantCategory enum value
-    pub location: Location,     // lat/lng rounded to ≤2dp for public QR; consent required
-    pub contact_info: String,   // Plain text on-chain; ensure merchant consent
+    pub category: u32,        // MerchantCategory enum value
+    pub location: Location,   // lat/lng rounded to ≤2dp for public QR; consent required
+    pub contact_info: String, // Plain text on-chain; ensure merchant consent
     pub registration_date: u64,
     pub status: u32, // MerchantStatus enum value
     pub is_verified: bool,
@@ -111,15 +111,42 @@ pub struct Location {
 
 impl Location {
     /// Create a new Location with coordinates
-    pub fn new(latitude: f64, longitude: f64, address: String, city: String, country: String, postal_code: String, env: &Env) -> Result<Self, String> {
+    pub fn new(
+        latitude: f64,
+        longitude: f64,
+        address: String,
+        city: String,
+        country: String,
+        postal_code: String,
+        env: &Env,
+    ) -> Result<Self, String> {
         let coordinates = GeoPoint::new(latitude, longitude)?;
-        Ok(Location { coordinates, address, city, country, postal_code })
+        Ok(Location {
+            coordinates,
+            address,
+            city,
+            country,
+            postal_code,
+        })
     }
 
     /// Create from lat,lng string format
-    pub fn from_string(lat_lng: String, address: String, city: String, country: String, postal_code: String, env: &Env) -> Result<Self, String> {
+    pub fn from_string(
+        lat_lng: String,
+        address: String,
+        city: String,
+        country: String,
+        postal_code: String,
+        env: &Env,
+    ) -> Result<Self, String> {
         let coordinates = GeoPoint::from_string(env, &lat_lng)?;
-        Ok(Location { coordinates, address, city, country, postal_code })
+        Ok(Location {
+            coordinates,
+            address,
+            city,
+            country,
+            postal_code,
+        })
     }
 
     /// Get latitude
@@ -205,7 +232,7 @@ pub struct Settlement {
 impl MerchantNetwork {
     /// Register a local merchant with simplified onboarding (community vouching)
     /// Target: < 15 minutes onboarding time
-    /// 
+    ///
     /// Location is passed as lat,lng string for standardized geographic representation.
     pub fn register_merchant(
         env: Env,
@@ -225,17 +252,19 @@ impl MerchantNetwork {
         emergency_fast_track: bool, // Pre-approved from existing networks
     ) {
         owner.require_auth();
-        
+
         // Check for duplicate registration
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         if merchants.contains_key(merchant_id.clone()) {
             panic_with_error!(&env, "Merchant already registered");
         }
-        
+
         // Determine initial status based on fast-track
         let (status, daily_limit, trial_days) = if emergency_fast_track {
             // Emergency fast-track: immediate activation with higher limits
@@ -244,9 +273,9 @@ impl MerchantNetwork {
             // Standard: trial period with $100/day limit
             (STATUS_TRIAL, U256::from_u64(100), 7u64)
         };
-        
+
         let current_time = env.ledger().timestamp();
-        
+
         // Create standardized location
         let location = Location::from_string(
             location_lat_lng,
@@ -254,9 +283,10 @@ impl MerchantNetwork {
             location_city,
             location_country,
             location_postal_code,
-            &env
-        ).unwrap_or_else(|_| panic!("Invalid location coordinates"));
-        
+            &env,
+        )
+        .unwrap_or_else(|_| panic!("Invalid location coordinates"));
+
         // Create merchant profile with simplified onboarding
         let merchant = Merchant {
             id: merchant_id.clone(),
@@ -281,7 +311,7 @@ impl MerchantNetwork {
             current_month_volume: U256::from_u64(0),
             current_day_volume: U256::from_u64(0),
             last_reset_date: current_time,
-            reputation_score: 50, // Initial reputation
+            reputation_score: 50,            // Initial reputation
             is_active: emergency_fast_track, // Activate immediately for fast-track
             emergency_fast_track,
             accepts_qr: true,
@@ -291,29 +321,34 @@ impl MerchantNetwork {
             pending_settlement: U256::from_u64(0),
             last_settlement_date: current_time,
         };
-        
+
         merchants.set(merchant_id.clone(), merchant.clone());
         env.storage().instance().set(&merchants_key, &merchants);
-        
+
         // Add to secondary indexes for fast lookups
         Self::index_merchant(&env, &merchant_id, &merchant);
-        
+
         // Add to onboarding queue for vouching
         let onboarding_key = Symbol::new(&env, "onboarding_queue");
-        let mut queue: Vec<String> = env.storage().instance()
+        let mut queue: Vec<String> = env
+            .storage()
+            .instance()
             .get(&onboarding_key)
             .unwrap_or(Vec::new(&env));
-        
+
         queue.push_back(merchant_id.clone());
         env.storage().instance().set(&onboarding_key, &queue);
 
         // Emit merchant registration event
         env.events().publish(
-            (Symbol::new(&env, "merchant"), Symbol::new(&env, "registered")),
+            (
+                Symbol::new(&env, "merchant"),
+                Symbol::new(&env, "registered"),
+            ),
             (merchant_id, owner),
         );
     }
-    
+
     /// Add community vouches for a merchant to satisfy onboarding verification.
     ///
     /// # Policy Semantics: Community Vouching Arithmetic
@@ -345,27 +380,29 @@ impl MerchantNetwork {
         voucher_type: u32, // 0 = beneficiary (weight: 1), 1 = ngo (weight: 3)
     ) {
         voucher.require_auth();
-        
+
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
             // Add voucher
             let voucher_id = format!("vouch_{}", voucher.to_string());
             merchant.vouchers.push_back(voucher_id);
-            
+
             // NGO vouch counts as 3
             if voucher_type == 1 {
                 merchant.current_vouches += 3;
             } else {
                 merchant.current_vouches += 1;
             }
-            
+
             // Check if threshold met
             let threshold_met = merchant.current_vouches >= merchant.vouching_threshold;
-            
+
             if threshold_met && merchant.status == STATUS_PENDING {
                 merchant.status = STATUS_TRIAL;
                 merchant.is_verified = true;
@@ -373,12 +410,12 @@ impl MerchantNetwork {
                 // Update active status in index
                 Self::update_merchant_active_status(&env, &merchant_id, true);
             }
-            
+
             merchants.set(merchant_id, merchant);
             env.storage().instance().set(&merchants_key, &merchants);
         }
     }
-    
+
     /// Process payment from beneficiary to merchant
     /// Sub-3 second processing for online, < 1 hour for offline sync
     pub fn process_payment(
@@ -394,48 +431,50 @@ impl MerchantNetwork {
     ) -> String {
         merchant.require_auth();
         beneficiary.require_auth();
-        
+
         // Verify merchant exists and is active
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut merchant_profile = match merchants.get(merchant_id.clone()) {
             Some(m) => m,
             None => panic_with_error!(&env, "Merchant not found"),
         };
-        
+
         if merchant != merchant_profile.owner {
             panic!("Unauthorized: signer is not the merchant owner");
         }
-        
+
         if !merchant_profile.is_active {
             panic_with_error!(&env, "Merchant is not active");
         }
-        
+
         // Check if token is accepted
         if !merchant_profile.accepted_tokens.contains(&token) {
             panic_with_error!(&env, "Token not accepted by merchant");
         }
-        
+
         // Get appropriate daily limit based on status
         let daily_limit = match merchant_profile.status {
             STATUS_TRIAL => merchant_profile.trial_daily_limit,
             STATUS_GRADUATED => merchant_profile.daily_volume_limit * U256::from_u64(2),
             _ => merchant_profile.daily_volume_limit,
         };
-        
+
         // Check daily limit
         if merchant_profile.current_day_volume + amount > daily_limit {
             panic_with_error!(&env, "Amount exceeds daily limit");
         }
-        
+
         // Check monthly limit
         if merchant_profile.current_month_volume + amount > merchant_profile.monthly_limit {
             panic_with_error!(&env, "Amount exceeds monthly limit");
         }
-        
+
         // Create transaction record
         let transaction_id = generate_merchant_txn_id(&env, &merchant_id);
         let transaction = Transaction {
@@ -451,36 +490,43 @@ impl MerchantNetwork {
             is_settled: false,
             payment_method,
         };
-        
+
         // Store transaction in temporary storage (high-frequency data)
         let transactions_key = Symbol::new(&env, "transactions");
-        let mut transactions: Map<String, Transaction> = env.storage().temporary()
+        let mut transactions: Map<String, Transaction> = env
+            .storage()
+            .temporary()
             .get(&transactions_key)
             .unwrap_or(Map::new(&env));
-        
+
         transactions.set(transaction_id.clone(), transaction);
-        env.storage().temporary().set(&transactions_key, &transactions);
-        
+        env.storage()
+            .temporary()
+            .set(&transactions_key, &transactions);
+
         // Update merchant volume
         merchant_profile.current_day_volume += amount;
         merchant_profile.current_month_volume += amount;
         merchant_profile.pending_settlement += amount;
-        
+
         merchants.set(merchant_id.clone(), merchant_profile);
         env.storage().instance().set(&merchants_key, &merchants);
-        
+
         // Emit payment processed event
         env.events().publish(
-            (Symbol::new(&env, "merchant"), Symbol::new(&env, "payment_processed")),
+            (
+                Symbol::new(&env, "merchant"),
+                Symbol::new(&env, "payment_processed"),
+            ),
             (merchant_id.clone(), beneficiary_id, amount),
         );
 
         // Run fraud detection
         Self::fraud_detection(env.clone(), merchant_id.clone(), amount);
-        
+
         transaction_id
     }
-    
+
     /// Process offline transaction (batched and synced when connectivity returns).
     ///
     /// This only stores the record for later sync. It does **not** verify the
@@ -498,19 +544,21 @@ impl MerchantNetwork {
     ) -> String {
         // Verify merchant exists and is active
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let merchant_profile = match merchants.get(merchant_id.clone()) {
             Some(m) => m,
             None => panic_with_error!(&env, "Merchant not found"),
         };
-        
+
         if !merchant_profile.is_active || !merchant_profile.accepts_offline {
             panic_with_error!(&env, "Merchant does not accept offline payments");
         }
-        
+
         // Create offline transaction
         let transaction_id = generate_offline_txn_id(&env, &merchant_id);
         let offline_tx = OfflineTransaction {
@@ -524,19 +572,21 @@ impl MerchantNetwork {
             signature,
             is_synced: false,
         };
-        
+
         // Store offline transactions
         let offline_key = Symbol::new(&env, "offline_transactions");
-        let mut offline_txs: Map<String, OfflineTransaction> = env.storage().temporary()
+        let mut offline_txs: Map<String, OfflineTransaction> = env
+            .storage()
+            .temporary()
             .get(&offline_key)
             .unwrap_or(Map::new(&env));
-        
+
         offline_txs.set(transaction_id.clone(), offline_tx);
         env.storage().temporary().set(&offline_key, &offline_txs);
-        
+
         transaction_id
     }
-    
+
     /// Sync offline transactions (when connectivity returns).
     ///
     /// Idempotent per transaction ID: `is_synced` prevents double-counting.
@@ -549,22 +599,26 @@ impl MerchantNetwork {
         offline_transaction_ids: Vec<String>,
     ) -> u32 {
         let offline_key = Symbol::new(&env, "offline_transactions");
-        let mut offline_txs: Map<String, OfflineTransaction> = env.storage().temporary()
+        let mut offline_txs: Map<String, OfflineTransaction> = env
+            .storage()
+            .temporary()
             .get(&offline_key)
             .unwrap_or(Map::new(&env));
-        
+
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut synced_count = 0u32;
-        
+
         for tx_id in offline_transaction_ids.iter() {
             if let Some(mut offline_tx) = offline_txs.get(tx_id.clone()) {
                 if !offline_tx.is_synced {
                     offline_tx.is_synced = true;
-                    
+
                     // Update merchant volume
                     if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
                         merchant.current_day_volume += offline_tx.amount;
@@ -572,7 +626,7 @@ impl MerchantNetwork {
                         merchant.pending_settlement += offline_tx.amount;
                         merchants.set(merchant_id.clone(), merchant);
                     }
-                    
+
                     // Create settled transaction record
                     let transaction_id = format!("tx_{}_{}", merchant_id, offline_tx.timestamp);
                     let transaction = Transaction {
@@ -588,46 +642,52 @@ impl MerchantNetwork {
                         is_settled: false,
                         payment_method: PAYMENT_OFFLINE,
                     };
-                    
+
                     let transactions_key = Symbol::new(&env, "transactions");
-                    let mut transactions: Map<String, Transaction> = env.storage().temporary()
+                    let mut transactions: Map<String, Transaction> = env
+                        .storage()
+                        .temporary()
                         .get(&transactions_key)
                         .unwrap_or(Map::new(&env));
-                    
+
                     transactions.set(transaction_id, transaction);
-                    env.storage().temporary().set(&transactions_key, &transactions);
-                    
+                    env.storage()
+                        .temporary()
+                        .set(&transactions_key, &transactions);
+
                     synced_count += 1;
                 }
             }
         }
-        
+
         env.storage().temporary().set(&offline_key, &offline_txs);
         env.storage().instance().set(&merchants_key, &merchants);
-        
+
         synced_count
     }
-    
+
     /// Fraud detection - Pattern analysis for suspicious merchant activity
     /// Target: < 0.5% fraud rate
     pub fn fraud_detection(env: Env, merchant_id: String, amount: U256) {
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let merchant = match merchants.get(merchant_id.clone()) {
             Some(m) => m,
             None => return,
         };
-        
+
         let mut alerts: Vec<FraudAlert> = Vec::new(&env);
         let alerts_key = Symbol::new(&env, "fraud_alerts");
-        
+
         if let Some(existing) = env.storage().instance().get(&alerts_key) {
             alerts = existing;
         }
-        
+
         // Pattern 1: Unusually large transaction
         let amount_u64: u64 = amount.into();
         if amount_u64 > 5000 {
@@ -642,24 +702,26 @@ impl MerchantNetwork {
             };
             alerts.push_back(alert);
         }
-        
+
         // Pattern 2: High velocity (many transactions in short time) - bounded scan
         let transactions_key = Symbol::new(&env, "transactions");
-        let transactions: Map<String, Transaction> = env.storage().temporary()
+        let transactions: Map<String, Transaction> = env
+            .storage()
+            .temporary()
             .get(&transactions_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut recent_count = 0u32;
         let mut scanned = 0u32;
         let current_time = env.ledger().timestamp();
         let one_hour_ago = current_time - 3600;
-        
+
         for (_, tx) in transactions.iter() {
             if scanned >= MAX_FRAUD_VELOCITY_SCAN {
                 break; // Bound the scan for performance
             }
             scanned += 1;
-            
+
             if tx.merchant_id == merchant_id && tx.timestamp > one_hour_ago {
                 recent_count += 1;
                 if recent_count > 20 {
@@ -667,7 +729,7 @@ impl MerchantNetwork {
                 }
             }
         }
-        
+
         if recent_count > 20 {
             let alert = FraudAlert {
                 id: generate_fraud_alert_id(&env, &merchant_id, "velocity"),
@@ -680,7 +742,7 @@ impl MerchantNetwork {
             };
             alerts.push_back(alert);
         }
-        
+
         // Pattern 3: Round amount transactions (potential testing)
         if amount_u64 % 100 == 0 && amount_u64 > 100 {
             let alert = FraudAlert {
@@ -694,7 +756,7 @@ impl MerchantNetwork {
             };
             alerts.push_back(alert);
         }
-        
+
         // Pattern 4: New merchant with high volume
         if merchant.status == STATUS_TRIAL && merchant.current_month_volume > U256::from_u64(1000) {
             let alert = FraudAlert {
@@ -702,23 +764,28 @@ impl MerchantNetwork {
                 merchant_id: merchant_id.clone(),
                 alert_type: String::from_str(&env, "new_merchant_high_volume"),
                 severity: 6,
-                description: String::from_str(&env, "Trial period merchant exceeding expected volume"),
+                description: String::from_str(
+                    &env,
+                    "Trial period merchant exceeding expected volume",
+                ),
                 timestamp: current_time,
                 is_resolved: false,
             };
             alerts.push_back(alert);
         }
-        
+
         env.storage().instance().set(&alerts_key, &alerts);
     }
-    
+
     /// Get fraud alerts for a merchant
     pub fn get_fraud_alerts(env: Env, merchant_id: String) -> Vec<FraudAlert> {
         let alerts_key = Symbol::new(&env, "fraud_alerts");
-        let all_alerts: Vec<FraudAlert> = env.storage().instance()
+        let all_alerts: Vec<FraudAlert> = env
+            .storage()
+            .instance()
             .get(&alerts_key)
             .unwrap_or(Vec::new(&env));
-        
+
         let mut merchant_alerts = Vec::new(&env);
         for alert in all_alerts.iter() {
             if alert.merchant_id == merchant_id {
@@ -727,7 +794,7 @@ impl MerchantNetwork {
         }
         merchant_alerts
     }
-    
+
     /// Settle outstanding merchant balances and record settlement history.
     ///
     /// # Policy Semantics: Settlement & Settlement Token
@@ -758,15 +825,17 @@ impl MerchantNetwork {
     pub fn settle_balances(env: Env, admin: Address) -> u32 {
         admin.require_auth();
         rbac::require_role(&env, &admin, ROLE_OPERATOR);
-        
+
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut settlement_count = 0u32;
         let current_time = env.ledger().timestamp();
-        
+
         for (merchant_id, mut merchant) in merchants.iter() {
             if merchant.pending_settlement > U256::from_u64(0) {
                 // Create settlement record
@@ -779,50 +848,52 @@ impl MerchantNetwork {
                     timestamp: current_time,
                     transaction_count: 0,
                 };
-                
+
                 // Store settlement
                 let settlements_key = Symbol::new(&env, "settlements");
-                let mut settlements: Map<String, Settlement> = env.storage().instance()
+                let mut settlements: Map<String, Settlement> = env
+                    .storage()
+                    .instance()
                     .get(&settlements_key)
                     .unwrap_or(Map::new(&env));
-                
+
                 settlements.set(settlement_id.clone(), settlement);
                 env.storage().instance().set(&settlements_key, &settlements);
-                
+
                 // Reset pending settlement
                 merchant.pending_settlement = U256::from_u64(0);
                 merchant.last_settlement_date = current_time;
-                
+
                 merchants.set(merchant_id, merchant);
                 settlement_count += 1;
             }
         }
-        
+
         env.storage().instance().set(&merchants_key, &merchants);
 
         env.events().publish(
-            (Symbol::new(&env, "merchant"), Symbol::new(&env, "balances_settled")),
+            (
+                Symbol::new(&env, "merchant"),
+                Symbol::new(&env, "balances_settled"),
+            ),
             (settlement_count, current_time),
         );
 
         settlement_count
     }
-    
+
     /// Review trial merchant for graduation
-    pub fn review_trial_merchant(
-        env: Env,
-        admin: Address,
-        merchant_id: String,
-        approve: bool,
-    ) {
+    pub fn review_trial_merchant(env: Env, admin: Address, merchant_id: String, approve: bool) {
         admin.require_auth();
         rbac::require_role(&env, &admin, ROLE_ADMIN);
-        
+
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut merchant) = merchants.get(merchant_id.clone()) {
             if merchant.status == STATUS_TRIAL {
                 let was_active = merchant.is_active;
@@ -837,33 +908,38 @@ impl MerchantNetwork {
                     merchant.status = STATUS_SUSPENDED;
                     merchant.is_active = false;
                 }
-                
+
                 // Update active status in index if changed
                 if merchant.is_active != was_active {
                     Self::update_merchant_active_status(&env, &merchant_id, merchant.is_active);
                 }
-                
+
                 merchants.set(merchant_id.clone(), merchant);
                 env.storage().instance().set(&merchants_key, &merchants);
 
                 env.events().publish(
-                    (Symbol::new(&env, "merchant"), Symbol::new(&env, "trial_reviewed")),
+                    (
+                        Symbol::new(&env, "merchant"),
+                        Symbol::new(&env, "trial_reviewed"),
+                    ),
                     (merchant_id, approve),
                 );
             }
         }
     }
-    
+
     /// Generate static QR code for shop.
     ///
     /// The payload is unsigned public directory data (`merchant_id|category|lat|lng|name`)
     /// and carries no expiry. It is not a payment authorisation.
     pub fn generate_shop_qr(env: Env, merchant_id: String) -> String {
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(merchant) = merchants.get(merchant_id) {
             // Return QR data in format: merchant_id|category|lat|lng|name
             format!(
@@ -878,7 +954,7 @@ impl MerchantNetwork {
             String::from_str(&env, "")
         }
     }
-    
+
     /// Generate dynamic QR code for transaction.
     ///
     /// Includes the merchant, amount, transfer code, and ledger timestamp. The
@@ -898,7 +974,7 @@ impl MerchantNetwork {
             env.ledger().timestamp()
         )
     }
-    
+
     /// Parse USSD code: `*merchant_code*amount#`.
     ///
     /// This is a string-splitting helper used by the demo flow. It performs no
@@ -916,17 +992,19 @@ impl MerchantNetwork {
         }
         (String::from_str(&env, ""), U256::from_u64(0))
     }
-    
+
     /// Get merchant details
     pub fn get_merchant(env: Env, merchant_id: String) -> Option<Merchant> {
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         merchants.get(merchant_id)
     }
-    
+
     /// Find merchants by location (geographic search) - optimized with spatial grid index
     pub fn find_merchants_by_location(
         env: Env,
@@ -936,32 +1014,34 @@ impl MerchantNetwork {
     ) -> Vec<Merchant> {
         let center = GeoPoint::new(latitude, longitude).unwrap();
         let bounds = GeoBounds::from_radius(&center, radius_km);
-        
+
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let index = Self::get_merchant_index(&env);
-        
+
         // Calculate grid range to search
         // 1 degree lat ~= 111km, 1 degree lon ~= 111km * cos(lat)
         let lat_delta = radius_km / 111.0;
         let lon_delta = radius_km / (111.0 * latitude.cos().max(0.1));
-        
+
         let grid_lat_start = ((latitude - lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
         let grid_lat_end = ((latitude + lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
         let grid_lon_start = ((longitude - lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
         let grid_lon_end = ((longitude + lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
-        
+
         let mut nearby_merchants = Vec::new(&env);
         let mut count = 0u32;
-        
+
         // Iterate over grid cells in range
         for grid_lat in grid_lat_start..=grid_lat_end {
             for grid_lon in grid_lon_start..=grid_lon_end {
                 let grid_key = String::from_str(&env, &format!("grid_{}_{}", grid_lat, grid_lon));
-                
+
                 if let Some(grid_merchant_ids) = index.by_location_grid.get(grid_key) {
                     for merchant_id in grid_merchant_ids.iter() {
                         if count >= MAX_MERCHANT_RESULTS {
@@ -970,10 +1050,12 @@ impl MerchantNetwork {
                         if let Some(merchant) = merchants.get(merchant_id) {
                             if merchant.is_active {
                                 let distance = Self::calculate_distance(
-                                    latitude, longitude,
-                                    merchant.location.latitude, merchant.location.longitude
+                                    latitude,
+                                    longitude,
+                                    merchant.location.latitude,
+                                    merchant.location.longitude,
                                 );
-                                
+
                                 if distance <= radius_km {
                                     nearby_merchants.push_back(merchant);
                                     count += 1;
@@ -984,28 +1066,26 @@ impl MerchantNetwork {
                 }
             }
         }
-        
+
         nearby_merchants
     }
-    
+
     /// Find merchants by category (optimized with secondary index)
-    pub fn find_merchants_by_category(
-        env: Env,
-        category: u32,
-    ) -> Vec<Merchant> {
+    pub fn find_merchants_by_category(env: Env, category: u32) -> Vec<Merchant> {
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let index = Self::get_merchant_index(&env);
-        let category_merchant_ids: Vec<String> = index.by_category
-            .get(category)
-            .unwrap_or(Vec::new(&env));
-        
+        let category_merchant_ids: Vec<String> =
+            index.by_category.get(category).unwrap_or(Vec::new(&env));
+
         let mut category_merchants = Vec::new(&env);
         let mut count = 0u32;
-        
+
         for merchant_id in category_merchant_ids.iter() {
             if count >= MAX_MERCHANT_RESULTS {
                 break;
@@ -1017,18 +1097,17 @@ impl MerchantNetwork {
                 }
             }
         }
-        
+
         category_merchants
     }
-    
+
     /// Simple distance calculation (Haversine formula approximation)
     fn calculate_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
         let r = 6371.0; // Earth's radius in km
         let dlat = (lat2 - lat1).to_radians();
         let dlon = (lon2 - lon1).to_radians();
-        let a = (dlat / 2.0).sin().powi(2) +
-                lat1.to_radians().cos() * lat2.to_radians().cos() *
-                (dlon / 2.0).sin().powi(2);
+        let a = (dlat / 2.0).sin().powi(2)
+            + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
         let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
         r * c
     }
@@ -1044,7 +1123,8 @@ impl MerchantNetwork {
     /// Get or create merchant index
     fn get_merchant_index(env: &Env) -> MerchantIndex {
         let index_key = Symbol::new(env, "merchant_index");
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&index_key)
             .unwrap_or(MerchantIndex {
                 by_category: Map::new(env),
@@ -1062,34 +1142,37 @@ impl MerchantNetwork {
     /// Add merchant to secondary indexes
     fn index_merchant(env: &Env, merchant_id: &String, merchant: &Merchant) {
         let mut index = Self::get_merchant_index(env);
-        
+
         // Index by category
-        let mut category_vec: Vec<String> = index.by_category
+        let mut category_vec: Vec<String> = index
+            .by_category
             .get(merchant.category)
             .unwrap_or(Vec::new(env));
         category_vec.push_back(merchant_id.clone());
         index.by_category.set(merchant.category, category_vec);
-        
+
         // Index by location grid
-        let grid_key = Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
-        let mut grid_vec: Vec<String> = index.by_location_grid
+        let grid_key =
+            Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
+        let mut grid_vec: Vec<String> = index
+            .by_location_grid
             .get(grid_key.clone())
             .unwrap_or(Vec::new(env));
         grid_vec.push_back(merchant_id.clone());
         index.by_location_grid.set(grid_key, grid_vec);
-        
+
         // Track active merchants
         if merchant.is_active {
             index.active_merchants.push_back(merchant_id.clone());
         }
-        
+
         Self::save_merchant_index(env, &index);
     }
 
     /// Remove merchant from secondary indexes
     fn unindex_merchant(env: &Env, merchant_id: &String, merchant: &Merchant) {
         let mut index = Self::get_merchant_index(env);
-        
+
         // Remove from category index
         if let Some(mut category_vec) = index.by_category.get(merchant.category) {
             let mut new_vec = Vec::new(env);
@@ -1100,9 +1183,10 @@ impl MerchantNetwork {
             }
             index.by_category.set(merchant.category, new_vec);
         }
-        
+
         // Remove from location grid index
-        let grid_key = Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
+        let grid_key =
+            Self::location_grid_key(merchant.location.latitude, merchant.location.longitude);
         if let Some(mut grid_vec) = index.by_location_grid.get(grid_key.clone()) {
             let mut new_vec = Vec::new(env);
             for id in grid_vec.iter() {
@@ -1112,7 +1196,7 @@ impl MerchantNetwork {
             }
             index.by_location_grid.set(grid_key, new_vec);
         }
-        
+
         // Remove from active merchants
         let mut new_active = Vec::new(env);
         for id in index.active_merchants.iter() {
@@ -1121,14 +1205,14 @@ impl MerchantNetwork {
             }
         }
         index.active_merchants = new_active;
-        
+
         Self::save_merchant_index(env, &index);
     }
 
     /// Update merchant active status in index
     fn update_merchant_active_status(env: &Env, merchant_id: &String, is_active: bool) {
         let mut index = Self::get_merchant_index(env);
-        
+
         if is_active {
             // Add to active if not already present
             let mut found = false;
@@ -1151,17 +1235,19 @@ impl MerchantNetwork {
             }
             index.active_merchants = new_active;
         }
-        
+
         Self::save_merchant_index(env, &index);
     }
-    
+
     /// Get merchant transaction history
     pub fn get_merchant_transactions(env: Env, merchant_id: String) -> Vec<Transaction> {
         let transactions_key = Symbol::new(&env, "transactions");
-        let transactions: Map<String, Transaction> = env.storage().temporary()
+        let transactions: Map<String, Transaction> = env
+            .storage()
+            .temporary()
             .get(&transactions_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut merchant_transactions = Vec::new(&env);
         for (_, transaction) in transactions.iter() {
             if transaction.merchant_id == merchant_id {
@@ -1170,14 +1256,16 @@ impl MerchantNetwork {
         }
         merchant_transactions
     }
-    
+
     /// Get settlement history for a merchant
     pub fn get_settlement_history(env: Env, merchant_id: String) -> Vec<Settlement> {
         let settlements_key = Symbol::new(&env, "settlements");
-        let settlements: Map<String, Settlement> = env.storage().instance()
+        let settlements: Map<String, Settlement> = env
+            .storage()
+            .instance()
             .get(&settlements_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut merchant_settlements = Vec::new(&env);
         for (_, settlement) in settlements.iter() {
             if settlement.merchant_id == merchant_id {
@@ -1186,19 +1274,21 @@ impl MerchantNetwork {
         }
         merchant_settlements
     }
-    
+
     /// Reset daily volumes (called at start of each day by operator)
     pub fn reset_daily_volumes(env: Env, caller: Address) {
         caller.require_auth();
         rbac::require_role(&env, &caller, ROLE_OPERATOR);
 
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         let current_date = env.ledger().timestamp() / 86400; // Days since epoch
-        
+
         for (merchant_id, mut merchant) in merchants.iter() {
             if merchant.last_reset_date / 86400 < current_date {
                 merchant.current_day_volume = U256::from_u64(0);
@@ -1206,46 +1296,51 @@ impl MerchantNetwork {
                 merchants.set(merchant_id, merchant);
             }
         }
-        
+
         env.storage().instance().set(&merchants_key, &merchants);
     }
-    
+
     /// Reset monthly volume (called periodically)
     pub fn reset_monthly_volumes(env: Env) {
         let merchants_key = Symbol::new(&env, "merchants");
-        let mut merchants: Map<String, Merchant> = env.storage().instance()
+        let mut merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         for (merchant_id, mut merchant) in merchants.iter() {
             merchant.current_month_volume = U256::from_u64(0);
             merchants.set(merchant_id, merchant);
         }
-        
+
         env.storage().instance().set(&merchants_key, &merchants);
     }
-    
+
     /// Get onboarding queue
     pub fn get_onboarding_queue(env: Env) -> Vec<String> {
         let onboarding_key = Symbol::new(&env, "onboarding_queue");
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&onboarding_key)
             .unwrap_or(Vec::new(&env))
     }
-    
+
     /// Get merchant statistics
     pub fn get_merchant_stats(env: Env, merchant_id: String) -> (u32, U256, U256, u32) {
         let merchants_key = Symbol::new(&env, "merchants");
-        let merchants: Map<String, Merchant> = env.storage().instance()
+        let merchants: Map<String, Merchant> = env
+            .storage()
+            .instance()
             .get(&merchants_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(merchant) = merchants.get(merchant_id) {
             (
                 merchant.reputation_score,
                 merchant.current_day_volume,
                 merchant.current_month_volume,
-                merchant.current_vouches
+                merchant.current_vouches,
             )
         } else {
             (0, U256::from_u64(0), U256::from_u64(0), 0)

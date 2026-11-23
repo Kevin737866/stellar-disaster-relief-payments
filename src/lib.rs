@@ -1,8 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, Vec, panic_with_error};
+use soroban_sdk::{contract, contractimpl, panic_with_error, Address, Env, Symbol, Vec};
 
 pub mod validation {
-    use soroban_sdk::{Address, Env, Vec, panic_with_error};
+    use soroban_sdk::{panic_with_error, Address, Env, Vec};
 
     /// Panics if the address list is empty.
     pub fn require_non_empty_address_list(env: &Env, addresses: &Vec<Address>) {
@@ -19,13 +19,13 @@ pub mod validation {
     }
 }
 
-pub mod rbac;
 mod aid_registry;
-mod beneficiary_manager;
-mod merchant_network;
-mod cash_transfer;
-mod supply_chain_tracker;
 mod anti_fraud;
+mod beneficiary_manager;
+mod cash_transfer;
+mod merchant_network;
+pub mod rbac;
+mod supply_chain_tracker;
 mod unique_id;
 
 #[cfg(test)]
@@ -33,13 +33,13 @@ mod test;
 #[cfg(test)]
 mod tests;
 
-pub use rbac::*;
 pub use aid_registry::*;
-pub use beneficiary_manager::*;
-pub use merchant_network::*;
-pub use cash_transfer::*;
-pub use supply_chain_tracker::*;
 pub use anti_fraud::*;
+pub use beneficiary_manager::*;
+pub use cash_transfer::*;
+pub use merchant_network::*;
+pub use rbac::*;
+pub use supply_chain_tracker::*;
 pub use unique_id::*;
 
 #[contract]
@@ -48,21 +48,37 @@ pub struct DisasterReliefPlatform;
 #[contractimpl]
 impl DisasterReliefPlatform {
     /// Initialize the disaster relief platform with admin addresses
-    pub fn initialize(env: Env, admin: Address, ngo_signer: Address, gov_signer: Address, un_signer: Address) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        ngo_signer: Address,
+        gov_signer: Address,
+        un_signer: Address,
+    ) {
         // Store multi-sig signers for emergency fund release
-        env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
-        env.storage().instance().set(&Symbol::new(&env, "ngo_sig"), &ngo_signer);
-        env.storage().instance().set(&Symbol::new(&env, "gov_sig"), &gov_signer);
-        env.storage().instance().set(&Symbol::new(&env, "un_sig"), &un_signer);
-        
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "admin"), &admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "ngo_sig"), &ngo_signer);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "gov_sig"), &gov_signer);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "un_sig"), &un_signer);
+
         // Initialize contract state
-        env.storage().instance().set(&Symbol::new(&env, "initialized"), &true);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "initialized"), &true);
     }
 
     /// Get platform configuration
     pub fn get_config(env: Env) -> Vec<Address> {
         let mut config = Vec::new(&env);
-        
+
         if let Some(admin) = env.storage().instance().get(&Symbol::new(&env, "admin")) {
             config.push_back(admin);
         }
@@ -75,13 +91,14 @@ impl DisasterReliefPlatform {
         if let Some(un) = env.storage().instance().get(&Symbol::new(&env, "un_sig")) {
             config.push_back(un);
         }
-        
+
         config
     }
 
     /// Check if platform is initialized
     pub fn is_initialized(env: Env) -> bool {
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&Symbol::new(&env, "initialized"))
             .unwrap_or(false)
     }
