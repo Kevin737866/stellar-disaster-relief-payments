@@ -35,14 +35,71 @@ export interface NotificationLog {
   notificationType: 'email' | 'sms' | 'in-app' | 'webhook';
   recipient: string;
   sentAt: number;
-  status: 'sent' | 'failed' | 'bounced';
+  status: 'sent' | 'failed' | 'bounced' | 'acknowledged';
   message: string;
   retryCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// Notification store
+// ---------------------------------------------------------------------------
+
+/**
+ * Pluggable persistence layer for notification log records.
+ *
+ * The default implementation (`InMemoryNotificationStore`) is suitable for
+ * testing and single-process deployments. Production callers should provide
+ * a database-backed implementation and pass it to the constructor.
+ *
+ * Both methods must be scoped to `fundId`:
+ * - `append` persists one record; throws on write failure.
+ * - `getByFund` returns all records for the given fund in ascending `sentAt`
+ *   order; throws on read failure; returns `[]` only when the fund truly has
+ *   no history.
+ */
+export interface NotificationStore {
+  append(log: NotificationLog): Promise<void>;
+  getByFund(fundId: string): Promise<NotificationLog[]>;
+}
+
+/**
+ * In-memory notification store ordered by insertion time.
+ * Records are stored in a `Map<fundId, NotificationLog[]>`.
+ */
+export class InMemoryNotificationStore implements NotificationStore {
+  private readonly store = new Map<string, NotificationLog[]>();
+
+  async append(log: NotificationLog): Promise<void> {
+    const existing = this.store.get(log.fundId) ?? [];
+    existing.push(log);
+    this.store.set(log.fundId, existing);
+  }
+
+  /**
+   * Returns records for `fundId` sorted ascending by `sentAt`.
+   * Returns an empty array — not an error — when no records exist.
+   */
+  async getByFund(fundId: string): Promise<NotificationLog[]> {
+    const records = this.store.get(fundId) ?? [];
+    return records.slice().sort((a, b) => a.sentAt - b.sentAt);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
 /**
  * Fund Expiry Notifications Client
- * Manages notifications to admins when funds are about to expire
+ * Manages notifications to admins when funds are about to expire.
+ *
+ * @param contractId         Soroban contract address.
+ * @param signingKey         Keypair used to sign transactions.
+ * @param server             Horizon server instance.
+ * @param notificationConfig Threshold and channel configuration.
+ * @param networkPassphrase  Stellar network passphrase.
+ * @param notificationStore  Persistence layer for notification logs.
+ *                           Defaults to `InMemoryNotificationStore`.
  */
 export class FundExpiryNotificationsClient {
   private contractId: string;
@@ -50,6 +107,7 @@ export class FundExpiryNotificationsClient {
   private server: any;
   private networkPassphrase: string;
   private notificationConfig: ExpiryNotificationConfig;
+  private readonly store: NotificationStore;
 
   constructor(
     contractId: string,
@@ -59,13 +117,15 @@ export class FundExpiryNotificationsClient {
       notificationThresholdDays: 7, // Notify 7 days before expiry
       enableAutoNotifications: true,
     },
-    networkPassphrase: string = Networks.TESTNET
+    networkPassphrase: string = Networks.TESTNET,
+    notificationStore: NotificationStore = new InMemoryNotificationStore()
   ) {
     this.contractId = contractId;
     this.signingKey = signingKey;
     this.server = server;
     this.networkPassphrase = networkPassphrase;
     this.notificationConfig = notificationConfig;
+    this.store = notificationStore;
   }
 
   /**
@@ -134,8 +194,8 @@ export class FundExpiryNotificationsClient {
   }
 
   /**
-   * Sends expiry notifications to fund administrators
-   * Supports multiple notification channels
+   * Sends expiry notifications to fund administrators and persists each log
+   * record to the notification store so it is visible via `getNotificationHistory`.
    */
   async sendExpiryNotifications(
     notifications: ExpiryNotification[],
@@ -148,9 +208,9 @@ export class FundExpiryNotificationsClient {
 
       for (const notification of notifications) {
         for (const channel of channels) {
+          let log: NotificationLog;
           try {
-            const log = await this.sendNotificationViaChannel(notification, channel);
-            logs.push(log);
+            log = await this.sendNotificationViaChannel(notification, channel);
             if (log.status === 'sent') {
               sentCount++;
             } else {
@@ -158,7 +218,7 @@ export class FundExpiryNotificationsClient {
             }
           } catch (error: any) {
             failedCount++;
-            logs.push({
+            log = {
               id: `${notification.fundId}_${channel}_${Date.now()}`,
               fundId: notification.fundId,
               notificationType: channel as 'email' | 'sms' | 'webhook',
@@ -167,8 +227,13 @@ export class FundExpiryNotificationsClient {
               status: 'failed',
               message: error.message,
               retryCount: 0,
-            });
+            };
           }
+
+          // Persist the log before collecting it; a store write failure
+          // surfaces as an error rather than a silent data loss.
+          await this.store.append(log);
+          logs.push(log);
         }
       }
 
@@ -294,13 +359,15 @@ export class FundExpiryNotificationsClient {
   }
 
   /**
-   * Gets notification history for a fund
+   * Returns all notification log records for `fundId`, ordered by `sentAt`
+   * ascending (oldest first).
+   *
+   * - Returns an empty array when the fund has no history (not an error).
+   * - Throws when the underlying store fails to read.
    */
   async getNotificationHistory(fundId: string): Promise<NotificationLog[]> {
     try {
-      // Query notification history from contract or backend
-      // This would typically retrieve from storage
-      return [];
+      return await this.store.getByFund(fundId);
     } catch (error: any) {
       throw new Error(`Failed to retrieve notification history: ${error.message}`);
     }
