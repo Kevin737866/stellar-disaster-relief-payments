@@ -81,7 +81,14 @@ export declare class OfflineAuthClient {
      */
     generatePrintableBackup(idHash: string, identity: BeneficiaryIdentity, paperCodes: PaperBackupCode[]): string;
     /**
-     * Generate checksum for paper codes
+     * Generate checksum for paper codes.
+     *
+     * Uses MD5 to produce an 8-character uppercase display checksum that allows
+     * a field agent to detect typos when entering a paper backup code manually.
+     * This is a human-readable error-detection aid only — it is **not** used for
+     * any security-sensitive operation.  The actual security comes from the
+     * full SHA-256 hash of the code stored in `RecoveryCode.code_hash` on-chain.
+     * MD5 is acceptable here because collision resistance is not required.
      */
     private generateChecksum;
     /**

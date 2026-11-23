@@ -17,6 +17,7 @@ export interface EmergencyFund {
     currentStatus: 'active' | 'triggered' | 'released' | 'recalled' | 'expired';
     fundAllocation: FundAllocation[];
     reservedForRecall: string;
+    metadata: Record<string, string>;
 }
 export interface Trigger {
     id: string;
@@ -40,6 +41,8 @@ export interface FundAllocation {
     beneficiaries: string[];
     proofOfNeed: string;
     allocatedAt: number;
+    minAmount: string;
+    maxAmount: string;
 }
 export interface OracleData {
     source: string;
@@ -62,6 +65,11 @@ export interface DisbursementRecord {
     triggerId?: string;
     isAutoReleased: boolean;
 }
+export interface PaginatedDisbursements {
+    records: DisbursementRecord[];
+    totalCount: number;
+    hasMore: boolean;
+}
 export interface TriggerExecutionResult {
     success: boolean;
     fundId: string;
@@ -79,6 +87,17 @@ export interface FundStatus {
     beneficiaryCount: number;
 }
 /**
+ * Decodes the recalled amount from a Soroban transaction response.
+ *
+ * The `recall_unused_funds` contract function returns an i128 representing the
+ * number of stroops recalled. `scValToNative` converts it to a BigInt; we
+ * stringify it to preserve exact integer semantics across all magnitudes.
+ *
+ * Throws if the return value is absent or is not a numeric type, so callers
+ * always see an explicit error rather than a silent zero.
+ */
+export declare function decodeRecalledAmount(response: any): string;
+/**
  * Emergency Fund SDK Client
  * Manages creation, deployment, monitoring, and execution of emergency funds
  * with multi-sig releases and automated trigger execution
@@ -93,7 +112,7 @@ export declare class EmergencyFundsClient {
      * Creates an emergency fund with pre-positioned capital and defined triggers
      * Enables rapid response to disasters
      */
-    createFund(adminAddress: string, fundId: string, name: string, description: string, totalAmount: string, disasterType: string, geographicScope: string, expiresAt: number, signersArray: string[], requiredSignatures: number): Promise<{
+    createFund(adminAddress: string, fundId: string, name: string, description: string, totalAmount: string, disasterType: string, geographicScope: string, expiresAt: number, signersArray: string[], requiredSignatures: number, metadata?: Record<string, string>): Promise<{
         success: boolean;
         transactionHash: string;
         fundId: string;
@@ -120,6 +139,23 @@ export declare class EmergencyFundsClient {
      */
     executeTrigger(fundId: string, triggerId: string, signerAddress: string): Promise<TriggerExecutionResult>;
     /**
+     * Executes batch multi-sig release for multiple beneficiaries atomically.
+     * All entries succeed or all fail.
+     *
+     * @param fundId    Fund to draw from
+     * @param entries   Array of { beneficiary, amount, purpose }
+     * @param approvers Keypairs of multi-sig approvers
+     */
+    executeBatchMultiSigRelease(fundId: string, entries: Array<{
+        beneficiary: string;
+        amount: string;
+        purpose: string;
+    }>, approvers: Keypair[]): Promise<{
+        success: boolean;
+        transactionHash: string;
+        count: number;
+    }>;
+    /**
      * Executes multi-sig manual release requiring 2-of-3 approvals
      * Requires authorization from NGO, government, or UN representatives
      */
@@ -130,7 +166,7 @@ export declare class EmergencyFundsClient {
     /**
      * Allocates funds to specific sectors with beneficiary tracking
      */
-    allocateFunds(adminAddress: string, fundId: string, sector: string, amount: string, beneficiaries: string[], proofOfNeed: string): Promise<{
+    allocateFunds(adminAddress: string, fundId: string, sector: string, amount: string, beneficiaries: string[], proofOfNeed: string, minAmount: string, maxAmount: string): Promise<{
         success: boolean;
         transactionHash: string;
     }>;
@@ -147,11 +183,15 @@ export declare class EmergencyFundsClient {
      */
     getFundAllocations(fundId: string): Promise<FundAllocation[]>;
     /**
-     * Gets disbursement history for a fund
+     * Gets disbursement history for a fund with pagination
      */
-    getDisbursementHistory(fundId: string): Promise<DisbursementRecord[]>;
+    getDisbursementHistory(fundId: string, offset?: number, limit?: number): Promise<PaginatedDisbursements>;
     /**
-     * Recalls unused funds after 12 month period
+     * Recalls unused funds after 12 month period.
+     * Returns the amount confirmed by the contract, decoded from the transaction
+     * result metadata. Throws NetworkError when the transaction fails or when
+     * the contract return value cannot be decoded (a failed recall is never
+     * silently reported as a zero recall).
      */
     recallUnusedFunds(donorAddress: string, fundId: string): Promise<{
         success: boolean;
@@ -173,6 +213,17 @@ export declare class EmergencyFundsClient {
         transactionHash: string;
     }>;
     /**
+     * Updates metadata for a fund
+     */
+    updateMetadata(adminAddress: string, fundId: string, metadata: Record<string, string>): Promise<{
+        success: boolean;
+        transactionHash: string;
+    }>;
+    /**
+     * Gets metadata for a fund
+     */
+    getMetadata(fundId: string): Promise<Record<string, string>>;
+    /**
      * Monitors oracle data feeds for trigger validation
      * Implements multi-source verification to prevent manipulation
      */
@@ -186,6 +237,15 @@ export declare class EmergencyFundsClient {
         sectorBreakdown: Record<string, number>;
         amountDistributed: string;
         transactionCount: number;
+    }>;
+    /**
+     * Transfers unused funds from one disaster fund to another
+     * Enables reallocation of resources to more pressing needs
+     */
+    transferFundsBetweenDisasters(adminAddress: string, sourceFundId: string, destinationFundId: string, amount: string, reason: string): Promise<{
+        success: boolean;
+        transactionHash: string;
+        transferAmount: string;
     }>;
 }
 //# sourceMappingURL=emergencyFunds.d.ts.map
