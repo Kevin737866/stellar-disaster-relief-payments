@@ -17,6 +17,7 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
   const [merchants, setMerchants] = useState<Merchant[]>([]);
   const [verificationQueue, setVerificationQueue] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [merchantSearchError, setMerchantSearchError] = useState<string | null>(null);
   const [showOnboardingForm, setShowOnboardingForm] = useState(false);
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
   const [mapCenter, setMapCenter] = useState({ lat: 40.7128, lng: -74.0060 }); // NYC default
@@ -60,8 +61,10 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
         searchRadius
       );
       setMerchants(nearbyMerchants);
+      setMerchantSearchError(null);
     } catch (error) {
       console.error('Failed to load merchants:', error);
+      setMerchantSearchError('Unable to search merchants for this location. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -479,6 +482,17 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           
           {loading ? (
             <div className="text-center py-4">Loading...</div>
+          ) : merchantSearchError ? (
+            <div className="text-center py-4">
+              <p role="alert" className="text-red-600 mb-2">{merchantSearchError}</p>
+              <button
+                type="button"
+                onClick={handleLocationSearch}
+                className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+              >
+                Retry merchant search
+              </button>
+            </div>
           ) : merchants.length === 0 ? (
             <div className="text-gray-500 text-center py-4">No merchants found in this area</div>
           ) : (
