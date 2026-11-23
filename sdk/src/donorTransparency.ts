@@ -505,8 +505,15 @@ export class DonorTransparencyClient {
       transactions
         .filter(t => t.transactionType === 'allocation')
         .forEach(t => {
-          const key = t.description.split(':')[0] || 'Other';
-          allocationBreakdown[key] = t.amount;
+          // Normalize the category from the description.  Descriptions are
+          // expected to follow "Category: detail" format.  Entries with no
+          // description or no colon prefix are grouped under 'Uncategorized'.
+          const prefix = t.description.split(':')[0].trim();
+          const key = prefix || 'Uncategorized';
+          allocationBreakdown[key] = this.addBigNumbers(
+            allocationBreakdown[key] || '0',
+            t.amount
+          );
         });
 
       return {
