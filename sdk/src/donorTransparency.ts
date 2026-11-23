@@ -1,11 +1,61 @@
 import axios from 'axios';
 import { SHA256 } from 'crypto-js';
+import { ValidationError } from './errors';
+
+/** Transaction types accepted by {@link DonorTransparencyClient.createTransparencyEntry}. */
+export const VALID_TRANSACTION_TYPES = [
+  'fund_created',
+  'allocation',
+  'disbursement',
+  'recall',
+] as const;
+type TransactionType = (typeof VALID_TRANSACTION_TYPES)[number];
+
+/** Maximum 256-bit unsigned integer value: 2^256 - 1. */
+const MAX_U256 = (1n << 256n) - 1n;
+
+/**
+ * Validate that an amount string is a non-negative integer that fits in a
+ * 256-bit unsigned integer (the representation used by Soroban and by the
+ * BigInt-based balance calculations in this module).
+ *
+ * Rejects empty strings, fractions, negatives, and values exceeding U256.
+ * @internal
+ */
+function validateAmount(amount: string, field = 'amount'): string {
+  if (typeof amount !== 'string') {
+    throw new ValidationError(field, 'Amount must be a string');
+  }
+  const trimmed = amount.trim();
+  if (!trimmed) {
+    throw new ValidationError(field, 'Amount string must not be empty');
+  }
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ValidationError(
+      field,
+      'Amount must be a non-negative decimal integer string without decimals, fractions, or signs'
+    );
+  }
+  try {
+    const val = BigInt(trimmed);
+    if (val < 0n || val > MAX_U256) {
+      throw new ValidationError(
+        field,
+        'Amount must fit within a 256-bit unsigned integer (0 <= amount <= 2^256 - 1)'
+      );
+    }
+    return val.toString();
+  } catch (err: any) {
+    if (err instanceof ValidationError) throw err;
+    throw new ValidationError(field, `Failed to parse amount as U256: ${err?.message || err}`);
+  }
+}
 
 export interface TransparencyEntry {
   id: string;
   fundId: string;
   timestamp: number;
-  transactionType: 'fund_created' | 'allocation' | 'disbursement' | 'recall';
+  transactionType: TransactionType;
   amount: string;
   description: string;
   beneficiary?: string;
@@ -265,7 +315,16 @@ export class DonorTransparencyClient {
   }
 
   /**
-   * Creates complete transparency record for fund deployment
+   * Creates complete transparency record for fund deployment.
+   *
+   * Validates the fund ID, transaction type, and amount before persisting.
+   * Only `fund_created`, `allocation`, `disbursement`, and `recall` are
+   * accepted as transaction types.  Amounts must be non-negative integer
+   * strings that fit within a 256-bit unsigned integer.
+   *
+   * @throws {ValidationError} if `fundId` is empty, `transactionType` is
+   *   not one of the supported values, or `amount` is malformed, negative,
+   *   or exceeds U256.
    */
   async createTransparencyEntry(
     fundId: string,
@@ -276,12 +335,28 @@ export class DonorTransparencyClient {
     location?: { latitude: number; longitude: number; precision?: number },
     proof?: string
   ): Promise<TransparencyEntry> {
+    // Validate fund ID.
+    if (!fundId || typeof fundId !== 'string' || fundId.trim() === '') {
+      throw new ValidationError('fundId', 'Fund ID must be a non-empty string');
+    }
+
+    // Validate transaction type against the declared union.
+    if (!VALID_TRANSACTION_TYPES.includes(transactionType as TransactionType)) {
+      throw new ValidationError(
+        'transactionType',
+        `Unsupported transaction type: "${transactionType}". Must be one of: ${VALID_TRANSACTION_TYPES.join(', ')}`
+      );
+    }
+
+    // Validate amount — non-negative integer, U256-safe.
+    const normalizedAmount = validateAmount(amount);
+
     const entry: TransparencyEntry = {
       id: this.generateId(),
-      fundId,
+      fundId: fundId.trim(),
       timestamp: Date.now(),
-      transactionType: transactionType as any,
-      amount,
+      transactionType: transactionType as TransactionType,
+      amount: normalizedAmount,
       description,
       beneficiary,
       location,
