@@ -5,12 +5,17 @@ export interface BeneficiaryProfile {
     location: string;
     registrationDate: number;
     lastVerified: number;
+    /** Reference to the canonical identity (Some if identity created, None if not yet) */
+    identityHash: string | null;
+    /** Only operational factors for spending/transfers (not full identity factors) */
     verificationFactors: VerificationFactor[];
-    walletAddress: string;
     isActive: boolean;
     familySize: number;
     specialNeeds: string[];
+    /** @deprecated Use identity.trustScore via getIdentity(identityHash) */
     trustScore: number;
+    /** @deprecated Use identity.walletAddress via getIdentity(identityHash) */
+    walletAddress: string;
 }
 export interface VerificationFactor {
     factorType: string;
@@ -50,6 +55,21 @@ export interface Location {
     city: string;
     country: string;
     postalCode: string;
+    facilityName?: string;
+    contactPerson?: string;
+}
+/** Offset pagination options for merchant listing endpoints. */
+export interface MerchantPaginationOptions {
+    /** Number of matching records to skip. Defaults to 0. */
+    offset?: number;
+    /** Page size (1–100). Defaults to 20. */
+    limit?: number;
+}
+/** A bounded page of merchants plus the total matching count. */
+export interface PaginatedMerchants {
+    merchants: Merchant[];
+    totalCount: number;
+    hasMore: boolean;
 }
 export interface Transaction {
     id: string;
@@ -76,6 +96,30 @@ export interface EmergencyFund {
     isActive: boolean;
     releaseTriggers: string[];
     requiredSignatures: number;
+    metadata: Record<string, string>;
+}
+/**
+ * Canonical reporting categories for disbursement purposes.
+ *
+ * The contract continues to store the operator-entered `purpose` string for
+ * auditability, but every purpose is mapped to one of these categories so that
+ * reporting, duplicate-intent detection and guardrails do not depend on
+ * free-text spelling.
+ */
+export declare const DISBURSEMENT_PURPOSE_CATEGORIES: readonly ["food", "water", "shelter", "medical", "education", "livelihoods", "protection", "logistics", "administration", "other"];
+export type DisbursementPurposeCategory = (typeof DISBURSEMENT_PURPOSE_CATEGORIES)[number];
+/** Maximum accepted length of the free-text purpose field. */
+export declare const PURPOSE_MAX_LENGTH = 120;
+/** Result of classifying a free-text purpose. */
+export interface PurposeClassification {
+    /** The original, untrimmed value supplied by the caller. */
+    raw: string;
+    /** Lower-cased, underscore-normalised value. */
+    normalized: string;
+    /** Canonical category used for aggregation and policy. */
+    category: DisbursementPurposeCategory;
+    /** True when `normalized` is itself a canonical category name. */
+    isCanonical: boolean;
 }
 export interface DisbursementRecord {
     id: string;
@@ -84,8 +128,34 @@ export interface DisbursementRecord {
     amount: string;
     timestamp: number;
     purpose: string;
+    /** Derived classification; not required to be persisted on-chain. */
+    purposeCategory?: DisbursementPurposeCategory;
     approvedBy: string[];
     transactionHash: string;
+}
+/**
+ * Maximum number of operations in one batch transaction and entries in one
+ * batch disbursement. Matches Stellar's 100-operation limit and the on-chain
+ * `MAX_BATCH_SIZE` in `src/aid_registry.rs`.
+ */
+export declare const BATCH_MAX_SIZE = 100;
+/** A single entry within a batch disbursement request */
+export interface BatchDisbursementEntry {
+    beneficiary: string;
+    amount: string;
+    purpose: string;
+    /** Optional explicit category; defaults to the classifier result. */
+    purposeCategory?: DisbursementPurposeCategory;
+}
+/** Result returned after submitting a batch disbursement */
+export interface BatchDisbursementResult {
+    success: boolean;
+    fundId: string;
+    disbursementIds: string[];
+    totalAmount: string;
+    count: number;
+    transactionHash?: string;
+    error?: string;
 }
 export interface ConditionalTransfer {
     id: string;
@@ -225,6 +295,8 @@ export interface NetworkConfig {
     network: "testnet" | "mainnet" | "standalone";
     rpcUrl: string;
     horizonUrl: string;
+    /** Default TTL in milliseconds for cached read results. Defaults to 30 000. */
+    cacheTtlMs?: number;
     contractIds: {
         platform: string;
         aidRegistry: string;
@@ -234,6 +306,49 @@ export interface NetworkConfig {
         supplyChainTracker: string;
         antiFraud: string;
     };
+    /** Optional logging configuration. Defaults to level='info', destination='console'. */
+    logging?: import('./logger').LoggingConfig;
+}
+/** Contract slots that can be targeted by batch/upgrade clients. */
+export type ContractTarget = keyof NetworkConfig['contractIds'];
+/** A single contract invocation within a batch. */
+export interface BatchContractCall {
+    contractTarget: ContractTarget;
+    method: string;
+    args: any[];
+}
+/** Request to execute multiple contract calls atomically. */
+export interface BatchExecuteRequest {
+    calls: BatchContractCall[];
+    signerKey: string;
+}
+/** Per-call result returned by BatchClient. */
+export interface BatchCallResult {
+    index: number;
+    success: boolean;
+    returnValue?: unknown;
+    error?: string;
+}
+/** Result of a batch execution. */
+export interface BatchExecuteResult {
+    transactionHash: string;
+    status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+    results: BatchCallResult[];
+    ledger?: number;
+}
+/** Request to upgrade an already-deployed contract. */
+export interface ContractUpgradeRequest {
+    target: ContractTarget;
+    /** 32-byte WASM hash encoded as 64 hex chars or base64. */
+    newWasmHash: string;
+    adminKey: string;
+}
+/** Result of a contract upgrade. */
+export interface ContractUpgradeResult {
+    contractId: string;
+    transactionHash: string;
+    status: 'SUCCESS' | 'FAILED' | 'TIMEOUT';
+    ledger?: number;
 }
 export interface DeploymentOptions {
     network: "testnet" | "mainnet";
@@ -249,6 +364,7 @@ export interface PaymentRequest {
     token: string;
     purpose: string;
     location?: string;
+    category?: string;
 }
 export interface VerificationRequest {
     beneficiaryId: string;
@@ -258,23 +374,49 @@ export interface VerificationRequest {
 export interface MerchantOnboardingRequest {
     name: string;
     businessType: string;
-    location: Location;
+    /** Merchant category numeric code (e.g. 0 = food, 1 = water, 2 = shelter, 3 = medical). */
+    category: number;
+    /** Geographic coordinates as a "lat,lng" string, e.g. "18.4861,-69.9312". */
+    locationLatLng: string;
+    locationAddress: string;
+    locationCity: string;
+    locationCountry: string;
+    locationPostalCode: string;
     contactInfo: string;
-    stellarTomlUrl: string;
     acceptedTokens: string[];
-    dailyLimit: string;
-    monthlyLimit: string;
-    verificationDocuments: string[];
+    /**
+     * Community vouching references: three beneficiary IDs or one NGO field-worker ID.
+     * Required for standard onboarding; can be empty for emergency fast-track.
+     */
+    vouchers: string[];
+    /**
+     * When true the merchant is pre-approved from an existing network and
+     * receives immediate STATUS_ACTIVE with a higher daily limit.
+     */
+    emergencyFastTrack: boolean;
 }
 export interface SupplyChainRequest {
     donorId: string;
     supplyType: string;
     quantity: string;
     unit: string;
-    origin: Location;
-    destination: Location;
+    /** Origin coordinates as "lat,lng" string, e.g. "18.4861,-69.9312". */
+    originLatLng: string;
+    originAddress: string;
+    originFacility: string;
+    originContact: string;
+    /** Destination coordinates as "lat,lng" string. */
+    destinationLatLng: string;
+    destinationAddress: string;
+    destinationFacility: string;
+    destinationContact: string;
     estimatedArrival: number;
-    temperatureRequirements?: TemperatureRequirements;
+    /**
+     * Temperature requirements for cold-chain shipments.
+     * Pass `null` or `undefined` when not required; the SDK serialises it to
+     * the Soroban `Option::None` / `Option::Some(...)` shape accordingly.
+     */
+    temperatureRequirements?: TemperatureRequirements | null;
     specialHandling: string[];
 }
 export interface BeneficiaryIdentity {
@@ -290,6 +432,15 @@ export interface BeneficiaryIdentity {
     duressPinHash?: string;
     geofenceZones: GeofenceZone[];
     temporaryCredentials: TemporaryCredential[];
+    /** Associated disbursement IDs for audit trail */
+    disbursementIds: string[];
+    /** Associated transfer IDs for audit trail */
+    transferIds: string[];
+}
+/** Complete beneficiary view combining profile + identity (single source of truth) */
+export interface BeneficiaryComplete {
+    profile: BeneficiaryProfile;
+    identity: BeneficiaryIdentity | null;
 }
 export interface IdentityFactor {
     factorType: 'knowledge' | 'possession' | 'social' | 'behavioral' | 'institutional';
@@ -342,5 +493,53 @@ export interface PaperBackupCode {
     checksum: string;
     createdAt: number;
     instructions: string;
+}
+/** Opaque cursor string returned by paginated endpoints. */
+export type PaginationCursor = string;
+/** Generic paginated response wrapper. */
+export interface PaginatedResponse<T> {
+    /** Items in this page. */
+    items: T[];
+    /**
+     * Cursor to pass as `cursor` in the next request.
+     * `null` means there are no more pages.
+     */
+    nextCursor: PaginationCursor | null;
+    /** Convenience flag – true when `nextCursor` is non-null. */
+    hasMore: boolean;
+}
+/** Options accepted by paginated list methods. */
+export interface PaginationOptions {
+    /** Cursor from the previous page's `nextCursor`. Omit for the first page. */
+    cursor?: PaginationCursor;
+    /**
+     * Maximum number of items to return.
+     * Must be between 1 and 100 (inclusive). Defaults to 20.
+     */
+    limit?: number;
+}
+/** Options for `BeneficiaryClient.searchBeneficiaries`. */
+export interface BeneficiarySearchOptions extends PaginationOptions {
+    /** Free-text search across name / location (max 200 chars). */
+    search?: string;
+    /** Restrict results to a location substring. */
+    locationFilter?: string;
+    /** When true (default), only active beneficiaries are returned. */
+    activeOnly?: boolean;
+    /** Minimum trust score (0–100). */
+    minTrustScore?: number;
+}
+/** Options for `BeneficiaryClient.searchFunds`. */
+export interface FundSearchOptions {
+    /** Free-text search across name / description (max 200 chars). */
+    search?: string;
+    /** Restrict to a disaster type. */
+    disasterType?: string;
+    /** When true, only active funds are returned. */
+    activeOnly?: boolean;
+    /** Lower bound (unix seconds); 0 means unbounded. */
+    createdAfter?: number;
+    /** Upper bound (unix seconds); 0 means unbounded. */
+    createdBefore?: number;
 }
 //# sourceMappingURL=types.d.ts.map
