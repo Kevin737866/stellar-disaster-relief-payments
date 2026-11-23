@@ -2,7 +2,7 @@ import { MerchantNetworkSDK, Merchant, Transaction, Settlement, CATEGORY_FOOD, C
 
 /**
  * Merchant App - Lightweight React Native app for Android (2G compatible)
- * 
+ *
  * Features:
  * - Offline transaction queue with automatic sync
  * - Inventory management for aid item tracking
@@ -11,11 +11,79 @@ import { MerchantNetworkSDK, Merchant, Transaction, Settlement, CATEGORY_FOOD, C
  * - USSD code support for feature phones
  */
 
+// ============== Storage Adapter ==============
+
+/**
+ * Minimal synchronous key-value storage interface.
+ *
+ * The API mirrors the browser `localStorage` subset used by MerchantApp so
+ * that `localStorageAdapter` is a zero-cost shim.  To use React Native's
+ * `AsyncStorage` wrap it in a synchronous in-memory cache that flushes to
+ * `AsyncStorage` in the background, or switch to a synchronous alternative
+ * such as `react-native-mmkv`.
+ *
+ * @example React Native MMKV adapter
+ * ```ts
+ * import { MMKV } from 'react-native-mmkv';
+ * const mmkv = new MMKV();
+ * const mmkvAdapter: StorageAdapter = {
+ *   getItem:    (key) => mmkv.getString(key) ?? null,
+ *   setItem:    (key, value) => mmkv.set(key, value),
+ *   removeItem: (key) => mmkv.delete(key),
+ * };
+ * new MerchantApp({ ...config, storage: mmkvAdapter });
+ * ```
+ */
+export interface StorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+/**
+ * Thrown when a storage read or write operation fails.
+ * Includes the key and operation name so callers can log actionable context.
+ */
+export class StorageError extends Error {
+  constructor(
+    public readonly operation: 'getItem' | 'setItem' | 'removeItem',
+    public readonly key: string,
+    cause: unknown,
+  ) {
+    super(
+      `StorageAdapter.${operation}("${key}") failed: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    this.name = 'StorageError';
+    // Preserve the original error as `cause` on runtimes that support it.
+    if (cause instanceof Error && 'cause' in Error.prototype === false) {
+      (this as any).cause = cause;
+    }
+  }
+}
+
+/**
+ * Ready-to-use adapter for browser environments.
+ * Pass this (or omit `storage` in config) when running in a browser or jsdom.
+ */
+export const localStorageAdapter: StorageAdapter = {
+  getItem:    (key) => localStorage.getItem(key),
+  setItem:    (key, value) => localStorage.setItem(key, value),
+  removeItem: (key) => localStorage.removeItem(key),
+};
+
 export interface MerchantAppConfig {
   rpcUrl: string;
   network: 'testnet' | 'mainnet' | 'standalone';
   merchantId: string;
   merchantKey: string;
+  /**
+   * Storage backend for the offline queue, inventory, and support messages.
+   * Defaults to `localStorageAdapter` (browser `localStorage`).
+   * Inject a custom adapter for React Native or test environments.
+   */
+  storage?: StorageAdapter;
 }
 
 export interface OfflineQueueItem {
@@ -45,9 +113,33 @@ export interface SupportMessage {
   status: 'pending' | 'sent' | 'read' | 'resolved';
 }
 
+/**
+ * One line of an itemized sale.
+ * `itemId` must match an `InventoryItem.id` already in inventory.
+ */
+export interface SaleLineItem {
+  itemId: string;
+  quantity: number;
+}
+
+/**
+ * Returned by `updateInventoryAfterSale` so callers can inspect
+ * what was decremented and what was rejected, without throwing on
+ * soft errors like unknown items or insufficient stock.
+ */
+export interface InventoryUpdateResult {
+  /** Items whose stock was successfully decremented. */
+  decremented: SaleLineItem[];
+  /** Items not found in inventory. */
+  unknownItems: string[];
+  /** Items found but with stock below the requested quantity. */
+  insufficientStock: Array<{ itemId: string; requested: number; available: number }>;
+}
+
 export class MerchantApp {
   private sdk: MerchantNetworkSDK;
   private config: MerchantAppConfig;
+  private storage: StorageAdapter;
   private offlineQueue: OfflineQueueItem[] = [];
   private inventory: InventoryItem[] = [];
   private supportMessages: SupportMessage[] = [];
@@ -56,6 +148,7 @@ export class MerchantApp {
 
   constructor(config: MerchantAppConfig) {
     this.config = config;
+    this.storage = config.storage ?? localStorageAdapter;
     this.sdk = new MerchantNetworkSDK({
       rpcUrl: config.rpcUrl,
       network: config.network,
@@ -64,13 +157,47 @@ export class MerchantApp {
       }
     });
     
-    // Initialize offline queue from local storage (in real app)
+    // Initialize state from storage.
     this.loadOfflineQueue();
     this.loadInventory();
     this.loadSupportMessages();
     
     // Start automatic sync when online
     this.startAutoSync();
+  }
+
+  // ============== Storage helpers ==============
+
+  /**
+   * Read a JSON value from storage.
+   * Returns `null` when the key is absent.
+   * Throws `StorageError` on adapter failure or JSON parse errors.
+   */
+  private storageGet<T>(key: string): T | null {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(key);
+    } catch (err) {
+      throw new StorageError('getItem', key, err);
+    }
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch (err) {
+      throw new StorageError('getItem', key, new Error(`JSON parse failed: ${(err as Error).message}`));
+    }
+  }
+
+  /**
+   * Write a JSON-serialisable value to storage.
+   * Throws `StorageError` on adapter failure.
+   */
+  private storageSet(key: string, value: unknown): void {
+    try {
+      this.storage.setItem(key, JSON.stringify(value));
+    } catch (err) {
+      throw new StorageError('setItem', key, err);
+    }
   }
 
   /**
@@ -87,13 +214,20 @@ export class MerchantApp {
   /**
    * Process payment with multiple payment methods
    * Supports: QR, USSD, NFC, Offline
+   *
+   * @param lineItems - Explicit inventory items and quantities consumed by this
+   *   sale. Stock is only decremented after the payment is confirmed on-chain.
+   *   Omit or pass an empty array to skip inventory tracking.
+   * @returns Transaction ID on success. For offline payments returns a local
+   *   queue ID prefixed with `offline_`.
    */
   async processPayment(
     beneficiaryId: string,
     amount: string,
     token: string = 'USDC',
     purpose: string = 'Aid Purchase',
-    paymentMethod: number = PAYMENT_QR
+    paymentMethod: number = PAYMENT_QR,
+    lineItems: SaleLineItem[] = []
   ): Promise<string> {
     // Check online status
     if (!this.isOnline) {
@@ -113,8 +247,10 @@ export class MerchantApp {
         paymentMethod
       );
       
-      // Update inventory
-      this.updateInventoryAfterSale(amount, purpose);
+      // Decrement stock only after confirmed payment success
+      if (lineItems.length > 0) {
+        this.updateInventoryAfterSale(lineItems);
+      }
       
       return transactionId;
     } catch (error) {
@@ -328,16 +464,66 @@ export class MerchantApp {
   }
 
   /**
-   * Update inventory after sale
+   * Decrement inventory quantities after a confirmed sale.
+   *
+   * Rules:
+   * - Each `SaleLineItem.itemId` must resolve to an existing `InventoryItem`.
+   * - Decrement is applied only when the item is found **and** has sufficient stock.
+   * - Unknown items and insufficient-stock items are collected in the result and
+   *   do **not** throw — the caller decides how to surface them.
+   * - Persistence (`saveInventory`) is called once after all valid decrements are
+   *   applied, so either all valid changes land or none do if `saveInventory` throws.
+   *
+   * @param lineItems - Items and quantities consumed by the confirmed sale.
+   * @returns `InventoryUpdateResult` describing what was decremented and what was rejected.
    */
-  private updateInventoryAfterSale(amount: string, purpose: string): void {
-    // In production, map purpose to inventory items and decrement quantity
-    // This is a simplified implementation
-    const amountNum = parseFloat(amount);
-    if (amountNum > 0) {
-      // Update inventory tracking
-      console.log(`Sale recorded: ${amount} for ${purpose}`);
+  updateInventoryAfterSale(lineItems: SaleLineItem[]): InventoryUpdateResult {
+    const result: InventoryUpdateResult = {
+      decremented: [],
+      unknownItems: [],
+      insufficientStock: [],
+    };
+
+    if (lineItems.length === 0) {
+      return result;
     }
+
+    let changed = false;
+
+    for (const line of lineItems) {
+      const index = this.inventory.findIndex(item => item.id === line.itemId);
+
+      if (index === -1) {
+        result.unknownItems.push(line.itemId);
+        continue;
+      }
+
+      const item = this.inventory[index];
+
+      if (item.quantity < line.quantity) {
+        result.insufficientStock.push({
+          itemId: line.itemId,
+          requested: line.quantity,
+          available: item.quantity,
+        });
+        continue;
+      }
+
+      this.inventory[index] = {
+        ...item,
+        quantity: item.quantity - line.quantity,
+        lastUpdated: Date.now(),
+      };
+
+      result.decremented.push({ itemId: line.itemId, quantity: line.quantity });
+      changed = true;
+    }
+
+    if (changed) {
+      this.saveInventory();
+    }
+
+    return result;
   }
 
   /**
@@ -470,37 +656,27 @@ export class MerchantApp {
   // ============== Local Storage (Simplified) ==============
 
   private loadOfflineQueue(): void {
-    // In production, use AsyncStorage or similar
-    const stored = localStorage.getItem('offlineQueue');
-    if (stored) {
-      this.offlineQueue = JSON.parse(stored);
-    }
+    this.offlineQueue = this.storageGet<OfflineQueueItem[]>('offlineQueue') ?? [];
   }
 
   private saveOfflineQueue(): void {
-    localStorage.setItem('offlineQueue', JSON.stringify(this.offlineQueue));
+    this.storageSet('offlineQueue', this.offlineQueue);
   }
 
   private loadInventory(): void {
-    const stored = localStorage.getItem('inventory');
-    if (stored) {
-      this.inventory = JSON.parse(stored);
-    }
+    this.inventory = this.storageGet<InventoryItem[]>('inventory') ?? [];
   }
 
   private saveInventory(): void {
-    localStorage.setItem('inventory', JSON.stringify(this.inventory));
+    this.storageSet('inventory', this.inventory);
   }
 
   private loadSupportMessages(): void {
-    const stored = localStorage.getItem('supportMessages');
-    if (stored) {
-      this.supportMessages = JSON.parse(stored);
-    }
+    this.supportMessages = this.storageGet<SupportMessage[]>('supportMessages') ?? [];
   }
 
   private saveSupportMessages(): void {
-    localStorage.setItem('supportMessages', JSON.stringify(this.supportMessages));
+    this.storageSet('supportMessages', this.supportMessages);
   }
 
   // ============== Settlement ==============
