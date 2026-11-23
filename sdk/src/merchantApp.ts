@@ -2,7 +2,7 @@ import { MerchantNetworkSDK, Merchant, Transaction, Settlement, CATEGORY_FOOD, C
 
 /**
  * Merchant App - Lightweight React Native app for Android (2G compatible)
- * 
+ *
  * Features:
  * - Offline transaction queue with automatic sync
  * - Inventory management for aid item tracking
@@ -11,11 +11,79 @@ import { MerchantNetworkSDK, Merchant, Transaction, Settlement, CATEGORY_FOOD, C
  * - USSD code support for feature phones
  */
 
+// ============== Storage Adapter ==============
+
+/**
+ * Minimal synchronous key-value storage interface.
+ *
+ * The API mirrors the browser `localStorage` subset used by MerchantApp so
+ * that `localStorageAdapter` is a zero-cost shim.  To use React Native's
+ * `AsyncStorage` wrap it in a synchronous in-memory cache that flushes to
+ * `AsyncStorage` in the background, or switch to a synchronous alternative
+ * such as `react-native-mmkv`.
+ *
+ * @example React Native MMKV adapter
+ * ```ts
+ * import { MMKV } from 'react-native-mmkv';
+ * const mmkv = new MMKV();
+ * const mmkvAdapter: StorageAdapter = {
+ *   getItem:    (key) => mmkv.getString(key) ?? null,
+ *   setItem:    (key, value) => mmkv.set(key, value),
+ *   removeItem: (key) => mmkv.delete(key),
+ * };
+ * new MerchantApp({ ...config, storage: mmkvAdapter });
+ * ```
+ */
+export interface StorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+/**
+ * Thrown when a storage read or write operation fails.
+ * Includes the key and operation name so callers can log actionable context.
+ */
+export class StorageError extends Error {
+  constructor(
+    public readonly operation: 'getItem' | 'setItem' | 'removeItem',
+    public readonly key: string,
+    cause: unknown,
+  ) {
+    super(
+      `StorageAdapter.${operation}("${key}") failed: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    this.name = 'StorageError';
+    // Preserve the original error as `cause` on runtimes that support it.
+    if (cause instanceof Error && 'cause' in Error.prototype === false) {
+      (this as any).cause = cause;
+    }
+  }
+}
+
+/**
+ * Ready-to-use adapter for browser environments.
+ * Pass this (or omit `storage` in config) when running in a browser or jsdom.
+ */
+export const localStorageAdapter: StorageAdapter = {
+  getItem:    (key) => localStorage.getItem(key),
+  setItem:    (key, value) => localStorage.setItem(key, value),
+  removeItem: (key) => localStorage.removeItem(key),
+};
+
 export interface MerchantAppConfig {
   rpcUrl: string;
   network: 'testnet' | 'mainnet' | 'standalone';
   merchantId: string;
   merchantKey: string;
+  /**
+   * Storage backend for the offline queue, inventory, and support messages.
+   * Defaults to `localStorageAdapter` (browser `localStorage`).
+   * Inject a custom adapter for React Native or test environments.
+   */
+  storage?: StorageAdapter;
 }
 
 export interface OfflineQueueItem {
@@ -71,6 +139,7 @@ export interface InventoryUpdateResult {
 export class MerchantApp {
   private sdk: MerchantNetworkSDK;
   private config: MerchantAppConfig;
+  private storage: StorageAdapter;
   private offlineQueue: OfflineQueueItem[] = [];
   private inventory: InventoryItem[] = [];
   private supportMessages: SupportMessage[] = [];
@@ -79,6 +148,7 @@ export class MerchantApp {
 
   constructor(config: MerchantAppConfig) {
     this.config = config;
+    this.storage = config.storage ?? localStorageAdapter;
     this.sdk = new MerchantNetworkSDK({
       rpcUrl: config.rpcUrl,
       network: config.network,
@@ -87,13 +157,47 @@ export class MerchantApp {
       }
     });
     
-    // Initialize offline queue from local storage (in real app)
+    // Initialize state from storage.
     this.loadOfflineQueue();
     this.loadInventory();
     this.loadSupportMessages();
     
     // Start automatic sync when online
     this.startAutoSync();
+  }
+
+  // ============== Storage helpers ==============
+
+  /**
+   * Read a JSON value from storage.
+   * Returns `null` when the key is absent.
+   * Throws `StorageError` on adapter failure or JSON parse errors.
+   */
+  private storageGet<T>(key: string): T | null {
+    let raw: string | null;
+    try {
+      raw = this.storage.getItem(key);
+    } catch (err) {
+      throw new StorageError('getItem', key, err);
+    }
+    if (raw === null) return null;
+    try {
+      return JSON.parse(raw) as T;
+    } catch (err) {
+      throw new StorageError('getItem', key, new Error(`JSON parse failed: ${(err as Error).message}`));
+    }
+  }
+
+  /**
+   * Write a JSON-serialisable value to storage.
+   * Throws `StorageError` on adapter failure.
+   */
+  private storageSet(key: string, value: unknown): void {
+    try {
+      this.storage.setItem(key, JSON.stringify(value));
+    } catch (err) {
+      throw new StorageError('setItem', key, err);
+    }
   }
 
   /**
@@ -552,37 +656,27 @@ export class MerchantApp {
   // ============== Local Storage (Simplified) ==============
 
   private loadOfflineQueue(): void {
-    // In production, use AsyncStorage or similar
-    const stored = localStorage.getItem('offlineQueue');
-    if (stored) {
-      this.offlineQueue = JSON.parse(stored);
-    }
+    this.offlineQueue = this.storageGet<OfflineQueueItem[]>('offlineQueue') ?? [];
   }
 
   private saveOfflineQueue(): void {
-    localStorage.setItem('offlineQueue', JSON.stringify(this.offlineQueue));
+    this.storageSet('offlineQueue', this.offlineQueue);
   }
 
   private loadInventory(): void {
-    const stored = localStorage.getItem('inventory');
-    if (stored) {
-      this.inventory = JSON.parse(stored);
-    }
+    this.inventory = this.storageGet<InventoryItem[]>('inventory') ?? [];
   }
 
   private saveInventory(): void {
-    localStorage.setItem('inventory', JSON.stringify(this.inventory));
+    this.storageSet('inventory', this.inventory);
   }
 
   private loadSupportMessages(): void {
-    const stored = localStorage.getItem('supportMessages');
-    if (stored) {
-      this.supportMessages = JSON.parse(stored);
-    }
+    this.supportMessages = this.storageGet<SupportMessage[]>('supportMessages') ?? [];
   }
 
   private saveSupportMessages(): void {
-    localStorage.setItem('supportMessages', JSON.stringify(this.supportMessages));
+    this.storageSet('supportMessages', this.supportMessages);
   }
 
   // ============== Settlement ==============

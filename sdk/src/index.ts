@@ -43,7 +43,9 @@ export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
-export { MerchantApp } from './merchantApp';
+export { MerchantApp, localStorageAdapter } from './merchantApp';
+export type { StorageAdapter } from './merchantApp';
+export { StorageError } from './merchantApp';
 
 // Export i18n (Internationalization) Support
 export { I18nManager, defaultI18n, ERROR_MESSAGES } from './i18n';

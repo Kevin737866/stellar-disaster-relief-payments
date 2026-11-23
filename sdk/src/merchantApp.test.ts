@@ -1,24 +1,20 @@
 /**
- * Tests for MerchantApp — inventory management and payment flow.
+ * Tests for MerchantApp — inventory management, payment flow, and storage adapter.
  *
- * We test `updateInventoryAfterSale` directly and through `processPayment`
- * to verify stock is only decremented after confirmed payment success.
+ * All tests inject an in-memory StorageAdapter so no global localStorage is
+ * required.  The storage-adapter suite also covers unavailable storage,
+ * read errors, and write errors.
  */
 
-import { MerchantApp, MerchantAppConfig, InventoryItem, SaleLineItem } from './merchantApp';
+import {
+  MerchantApp,
+  MerchantAppConfig,
+  InventoryItem,
+  SaleLineItem,
+  StorageAdapter,
+  StorageError,
+} from './merchantApp';
 import { PAYMENT_QR } from './merchantNetwork';
-
-// ---------------------------------------------------------------------------
-// Minimal localStorage stub (MerchantApp reads/writes localStorage)
-// ---------------------------------------------------------------------------
-const store: Record<string, string> = {};
-const localStorageMock = {
-  getItem: (key: string) => store[key] ?? null,
-  setItem: (key: string, value: string) => { store[key] = value; },
-  removeItem: (key: string) => { delete store[key]; },
-  clear: () => { for (const k of Object.keys(store)) delete store[k]; },
-};
-(global as any).localStorage = localStorageMock;
 
 // ---------------------------------------------------------------------------
 // MerchantNetworkSDK mock — prevents real network calls
@@ -42,19 +38,33 @@ jest.mock('./merchantNetwork', () => {
 });
 
 // ---------------------------------------------------------------------------
+// In-memory StorageAdapter factory
+// ---------------------------------------------------------------------------
+
+/** Returns a fresh isolated in-memory adapter for each test. */
+function makeStorage(): StorageAdapter & { _store: Record<string, string> } {
+  const _store: Record<string, string> = {};
+  return {
+    _store,
+    getItem:    (key) => _store[key] ?? null,
+    setItem:    (key, value) => { _store[key] = value; },
+    removeItem: (key) => { delete _store[key]; },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-const CONFIG: MerchantAppConfig = {
-  rpcUrl: 'https://soroban-testnet.stellar.org',
-  network: 'testnet',
+const BASE_CONFIG: Omit<MerchantAppConfig, 'storage'> = {
+  rpcUrl:     'https://soroban-testnet.stellar.org',
+  network:    'testnet',
   merchantId: 'merchant_1',
   merchantKey: 'SCXSVM5RJF6RPESLJ6G7BZH4ARCROWKAIRLJKPX6XQZUUNT7IU64NR35',
 };
 
-function makeApp(): MerchantApp {
-  localStorageMock.clear();
-  const app = new MerchantApp(CONFIG);
-  app.stopAutoSync(); // prevent setInterval leaking between tests
+function makeApp(storage = makeStorage()): MerchantApp {
+  const app = new MerchantApp({ ...BASE_CONFIG, storage });
+  app.stopAutoSync();
   app.setOnlineStatus(true);
   return app;
 }
@@ -62,14 +72,14 @@ function makeApp(): MerchantApp {
 /** Add a named item to the app's inventory and return its assigned id. */
 function seedItem(
   app: MerchantApp,
-  overrides: Partial<Omit<InventoryItem, 'id' | 'lastUpdated'>> & { name: string }
+  overrides: Partial<Omit<InventoryItem, 'id' | 'lastUpdated'>> & { name: string },
 ): string {
   return app.addInventoryItem({
-    name: overrides.name,
+    name:     overrides.name,
     category: overrides.category ?? 'food',
     quantity: overrides.quantity ?? 50,
-    unit: overrides.unit ?? 'unit',
-    price: overrides.price ?? '1.00',
+    unit:     overrides.unit ?? 'unit',
+    price:    overrides.price ?? '1.00',
   });
 }
 
@@ -140,13 +150,10 @@ describe('updateInventoryAfterSale', () => {
         { itemId: knownId,         quantity: 100 },  // second line — but only 8 remain after first
       ]);
 
-      // First line succeeds
       expect(result.decremented).toContainEqual({ itemId: knownId, quantity: 2 });
-      // Unknown item is captured
       expect(result.unknownItems).toContain('inv_ghost_999');
-      // Second line for the same item fails because only 8 remain
       expect(result.insufficientStock).toContainEqual(
-        expect.objectContaining({ itemId: knownId, requested: 100, available: 8 })
+        expect.objectContaining({ itemId: knownId, requested: 100, available: 8 }),
       );
       // Net stock: 10 - 2 = 8 (second line rejected)
       expect(app.getInventoryByCategory('food').find(i => i.id === knownId)!.quantity).toBe(8);
@@ -193,9 +200,8 @@ describe('updateInventoryAfterSale', () => {
         { itemId: id, requested: 10, available: 3 },
       ]);
       expect(result.decremented).toHaveLength(0);
-      // Stock must not have changed
       expect(
-        app.getInventoryByCategory('medical').find(i => i.id === id)!.quantity
+        app.getInventoryByCategory('medical').find(i => i.id === id)!.quantity,
       ).toBe(3);
     });
 
@@ -252,7 +258,6 @@ describe('processPayment inventory integration', () => {
     const app = makeApp();
     const id = seedItem(app, { name: 'Water tablet', quantity: 30 });
 
-    // Make the SDK throw to simulate a failed payment
     const { MerchantNetworkSDK } = jest.requireMock('./merchantNetwork');
     MerchantNetworkSDK.mock.results[
       MerchantNetworkSDK.mock.results.length - 1
@@ -260,10 +265,9 @@ describe('processPayment inventory integration', () => {
 
     const offlineId = await app.processPayment(
       'ben_2', '5.00', 'USDC', 'Water aid', PAYMENT_QR,
-      [{ itemId: id, quantity: 5 }]
+      [{ itemId: id, quantity: 5 }],
     );
 
-    // Falls back to offline queue — no stock change
     expect(offlineId).toMatch(/^offline_/);
     expect(app.getInventoryByCategory('food').find(i => i.id === id)!.quantity).toBe(30);
   });
@@ -274,21 +278,20 @@ describe('processPayment inventory integration', () => {
 
     await app.processPayment('ben_3', '10.00');
 
-    // No line items → inventory untouched
     expect(app.getInventoryByCategory('food').find(i => i.id === id)!.quantity).toBe(20);
   });
 
   it('handles a multi-item sale through processPayment', async () => {
     const app = makeApp();
-    const riceId = seedItem(app, { name: 'Rice', quantity: 100 });
-    const beansId = seedItem(app, { name: 'Beans', quantity: 60 });
+    const riceId  = seedItem(app, { name: 'Rice',  quantity: 100 });
+    const beansId = seedItem(app, { name: 'Beans', quantity: 60  });
 
     await app.processPayment(
       'ben_4', '30.00', 'USDC', 'Multi-item food aid', PAYMENT_QR,
       [
         { itemId: riceId,  quantity: 10 },
         { itemId: beansId, quantity: 5  },
-      ]
+      ],
     );
 
     expect(app.getInventoryByCategory('food').find(i => i.id === riceId)!.quantity).toBe(90);
@@ -302,11 +305,192 @@ describe('processPayment inventory integration', () => {
 
     const queuedId = await app.processPayment(
       'ben_5', '8.00', 'USDC', 'Aid', PAYMENT_QR,
-      [{ itemId: id, quantity: 3 }]
+      [{ itemId: id, quantity: 3 }],
     );
 
     expect(queuedId).toMatch(/^offline_/);
-    // Payment not confirmed → stock must remain unchanged
     expect(app.getInventoryByCategory('food').find(i => i.id === id)!.quantity).toBe(15);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Storage adapter
+// ---------------------------------------------------------------------------
+
+describe('storage adapter', () => {
+  describe('in-memory adapter', () => {
+    it('persists inventory across a fresh MerchantApp instance sharing the same adapter', () => {
+      const storage = makeStorage();
+      const app1 = makeApp(storage);
+      const id = seedItem(app1, { name: 'Shared item', quantity: 7 });
+
+      // Second instance reading from the same storage should see the saved inventory.
+      const app2 = makeApp(storage);
+      app2.stopAutoSync();
+      const item = app2.getInventoryByCategory('food').find(i => i.id === id);
+      expect(item).toBeDefined();
+      expect(item!.quantity).toBe(7);
+    });
+
+    it('writes inventory key to the backing store after addInventoryItem', () => {
+      const storage = makeStorage();
+      const app = makeApp(storage);
+      seedItem(app, { name: 'Stored item', quantity: 3 });
+
+      const raw = storage._store['inventory'];
+      expect(raw).toBeDefined();
+      const parsed = JSON.parse(raw) as InventoryItem[];
+      expect(parsed.some(i => i.name === 'Stored item')).toBe(true);
+    });
+
+    it('writes offline queue key to the backing store when a payment is queued', async () => {
+      const storage = makeStorage();
+      const app = makeApp(storage);
+      app.setOnlineStatus(false);
+
+      await app.processPayment('ben_q', '5.00');
+
+      const raw = storage._store['offlineQueue'];
+      expect(raw).toBeDefined();
+      const parsed = JSON.parse(raw) as Array<{ type: string }>;
+      expect(parsed.some(q => q.type === 'payment')).toBe(true);
+    });
+
+    it('isolated adapters do not bleed data between app instances', () => {
+      const app1 = makeApp(makeStorage());
+      const app2 = makeApp(makeStorage());
+      seedItem(app1, { name: 'App1 item', quantity: 10 });
+
+      expect(app2.getInventoryByCategory('food')).toHaveLength(0);
+    });
+  });
+
+  describe('unavailable storage', () => {
+    it('throws StorageError with key and operation when getItem throws', () => {
+      const broken: StorageAdapter = {
+        getItem:    () => { throw new Error('Storage unavailable'); },
+        setItem:    () => {},
+        removeItem: () => {},
+      };
+
+      // loadInventory() is called in the constructor via getItem('inventory')
+      expect(() => new MerchantApp({ ...BASE_CONFIG, storage: broken }))
+        .toThrow(StorageError);
+
+      try {
+        new MerchantApp({ ...BASE_CONFIG, storage: broken });
+      } catch (err) {
+        expect(err).toBeInstanceOf(StorageError);
+        const se = err as StorageError;
+        expect(se.operation).toBe('getItem');
+        // The first getItem call during construction is for 'offlineQueue'.
+        expect(se.key).toMatch(/offlineQueue|inventory|supportMessages/);
+        expect(se.message).toMatch(/StorageAdapter\.getItem/);
+        expect(se.message).toMatch(/Storage unavailable/);
+      }
+    });
+
+    it('reports which key failed in the error message', () => {
+      let callCount = 0;
+      const flakyOnThird: StorageAdapter = {
+        getItem: (key) => {
+          callCount++;
+          // Fail on the third getItem call (supportMessages)
+          if (callCount === 3) throw new Error('Quota exceeded');
+          return null;
+        },
+        setItem:    () => {},
+        removeItem: () => {},
+      };
+
+      try {
+        new MerchantApp({ ...BASE_CONFIG, storage: flakyOnThird });
+        fail('Expected StorageError to be thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StorageError);
+        const se = err as StorageError;
+        expect(se.message).toContain('supportMessages');
+        expect(se.message).toContain('Quota exceeded');
+      }
+    });
+  });
+
+  describe('write errors', () => {
+    it('throws StorageError with key and operation when setItem throws', () => {
+      const readOnlyStore: StorageAdapter = {
+        getItem:    () => null,
+        setItem:    () => { throw new Error('Disk full'); },
+        removeItem: () => {},
+      };
+
+      // Construction uses getItem only; first setItem is from addInventoryItem.
+      const app = new MerchantApp({ ...BASE_CONFIG, storage: readOnlyStore });
+      app.stopAutoSync();
+
+      expect(() => app.addInventoryItem({
+        name: 'Failing item', category: 'food', quantity: 1, unit: 'unit', price: '1.00',
+      })).toThrow(StorageError);
+
+      try {
+        app.addInventoryItem({
+          name: 'Failing item', category: 'food', quantity: 1, unit: 'unit', price: '1.00',
+        });
+      } catch (err) {
+        expect(err).toBeInstanceOf(StorageError);
+        const se = err as StorageError;
+        expect(se.operation).toBe('setItem');
+        expect(se.key).toBe('inventory');
+        expect(se.message).toMatch(/Disk full/);
+      }
+    });
+
+    it('throws StorageError when saving the offline queue fails', async () => {
+      let inventorySaved = false;
+      const selectiveFail: StorageAdapter = {
+        getItem:    () => null,
+        setItem: (key) => {
+          if (key === 'offlineQueue') throw new Error('Write blocked');
+          inventorySaved = true;
+        },
+        removeItem: () => {},
+      };
+
+      const app = new MerchantApp({ ...BASE_CONFIG, storage: selectiveFail });
+      app.stopAutoSync();
+      app.setOnlineStatus(false);
+
+      await expect(app.processPayment('ben_x', '1.00')).rejects.toThrow(StorageError);
+
+      try {
+        await app.processPayment('ben_x', '1.00');
+      } catch (err) {
+        const se = err as StorageError;
+        expect(se.operation).toBe('setItem');
+        expect(se.key).toBe('offlineQueue');
+      }
+    });
+  });
+
+  describe('read errors (corrupt data)', () => {
+    it('throws StorageError when stored JSON is malformed', () => {
+      const corruptStorage: StorageAdapter = {
+        getItem: (key) => key === 'inventory' ? '{not: valid json' : null,
+        setItem:    () => {},
+        removeItem: () => {},
+      };
+
+      expect(() => new MerchantApp({ ...BASE_CONFIG, storage: corruptStorage }))
+        .toThrow(StorageError);
+
+      try {
+        new MerchantApp({ ...BASE_CONFIG, storage: corruptStorage });
+      } catch (err) {
+        expect(err).toBeInstanceOf(StorageError);
+        const se = err as StorageError;
+        expect(se.operation).toBe('getItem');
+        expect(se.key).toBe('inventory');
+        expect(se.message).toMatch(/JSON parse failed/);
+      }
+    });
   });
 });
