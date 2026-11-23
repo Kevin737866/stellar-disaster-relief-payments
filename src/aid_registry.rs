@@ -1,6 +1,9 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, Bytes, panic_with_error, log};
-use crate::validation::{require_non_empty_address_list, require_min_address_count};
 use crate::unique_id::*;
+use crate::validation::{require_min_address_count, require_non_empty_address_list};
+use soroban_sdk::{
+    contract, contractimpl, log, panic_with_error, u64, Address, Bytes, Env, Map, String, Symbol,
+    Vec, U256,
+};
 
 const DISASTER_SEISMIC: &str = "seismic";
 const DISASTER_WEATHER: &str = "weather";
@@ -220,7 +223,7 @@ impl AidRegistry {
     ) {
         // Verify admin authorization
         admin.require_auth();
-        
+
         // Input validation
         if fund_id.len() == 0 {
             panic_with_error!(&env, "fund_id must not be empty");
@@ -231,7 +234,7 @@ impl AidRegistry {
         if expires_at <= env.ledger().timestamp() {
             panic_with_error!(&env, "expires_at must be in the future");
         }
-        
+
         // Create fund structure
         let fund = EmergencyFund {
             id: fund_id.clone(),
@@ -254,24 +257,31 @@ impl AidRegistry {
             reserved_for_recall: U256::from_u64(0),
             metadata,
         };
-        
+
         // Store fund
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
-        
+
         // Initialize disbursement records for this fund
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
         let disbursements: Map<String, DisbursementRecord> = Map::new(&env);
-        env.storage().instance().set(&disbursement_key, &disbursements);
+        env.storage()
+            .instance()
+            .set(&disbursement_key, &disbursements);
 
         // Emit fund created event
         env.events().publish(
-            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_created")),
+            (
+                Symbol::new(&env, "aid_registry"),
+                Symbol::new(&env, "fund_created"),
+            ),
             (fund_id, total_amount),
         );
     }
@@ -279,20 +289,24 @@ impl AidRegistry {
     /// Get fund details
     pub fn get_fund(env: Env, fund_id: String) -> Option<EmergencyFund> {
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         funds.get(fund_id)
     }
 
     /// List all active funds
     pub fn list_active_funds(env: Env) -> Vec<EmergencyFund> {
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut active_funds = Vec::new(&env);
         for (_, fund) in funds.iter() {
             if fund.is_active {
@@ -323,7 +337,9 @@ impl AidRegistry {
     ) -> Vec<EmergencyFund> {
         let empty_str = String::from_str(&env, "");
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
 
@@ -385,32 +401,34 @@ impl AidRegistry {
 
         // #239 — no value leaves a fund while the platform is paused.
         require_not_paused(&env);
-        
+
         // Validate approvers list
         require_non_empty_address_list(&env, &approvers);
-        
+
         // Verify fund exists and is active
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
         }
-        
+
         // Check if sufficient funds remain
         if fund.released_amount + amount > fund.total_amount {
             panic_with_error!(&env, "Insufficient funds in pool");
         }
-        
+
         // Verify multi-sig requirements
         if approvers.len() < fund.required_signatures as usize {
             panic_with_error!(&env, "Insufficient signatures");
         }
-        
+
         // Verify all approvers are authorized
         for approver in approvers.iter() {
             if !fund.release_triggers.contains(approver.clone()) {
@@ -431,19 +449,24 @@ impl AidRegistry {
             // each approver signs independently.
             approver.require_auth();
         }
-        
+
         // Prevent duplicate disbursements: same beneficiary + same purpose in this fund
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
-        let existing_disbursements: Map<String, DisbursementRecord> = env.storage().instance()
+        let existing_disbursements: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
-        
+
         for (_, record) in existing_disbursements.iter() {
             if record.beneficiary == beneficiary && record.purpose == purpose {
-                panic_with_error!(&env, "Duplicate disbursement: beneficiary already received funds for this purpose");
+                panic_with_error!(
+                    &env,
+                    "Duplicate disbursement: beneficiary already received funds for this purpose"
+                );
             }
         }
-        
+
         // Create disbursement record
         let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
@@ -458,13 +481,15 @@ impl AidRegistry {
             trigger_id: None,
             is_auto_released: false,
         };
-        
+
         // Store disbursement (reuse already-loaded map from duplicate check)
         let mut disbursements = existing_disbursements;
-        
+
         disbursements.set(disbursement_id.clone(), disbursement);
-        env.storage().instance().set(&disbursement_key, &disbursements);
-        
+        env.storage()
+            .instance()
+            .set(&disbursement_key, &disbursements);
+
         // Update fund released amount
         fund.released_amount += amount;
         funds.set(fund_id.clone(), fund);
@@ -472,24 +497,34 @@ impl AidRegistry {
 
         // Emit disbursement event
         env.events().publish(
-            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (
+                Symbol::new(&env, "aid_registry"),
+                Symbol::new(&env, "disbursed"),
+            ),
             (fund_id, beneficiary, amount),
         );
     }
 
     /// Get disbursement history for a fund with pagination
-    pub fn get_disbursements(env: Env, fund_id: String, offset: u32, limit: u32) -> PaginatedDisbursements {
+    pub fn get_disbursements(
+        env: Env,
+        fund_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> PaginatedDisbursements {
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
-        let disbursements: Map<String, DisbursementRecord> = env.storage().instance()
+        let disbursements: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
-        
+
         let total_count = disbursements.len() as u64;
-        
+
         let mut result = Vec::new(&env);
         let mut count = 0;
         let mut skipped = 0;
-        
+
         for (_, record) in disbursements.iter() {
             if skipped < offset as u64 {
                 skipped += 1;
@@ -501,9 +536,9 @@ impl AidRegistry {
             result.push_back(record);
             count += 1;
         }
-        
+
         let has_more = (offset as u64 + count) < total_count;
-        
+
         PaginatedDisbursements {
             records: result,
             total_count,
@@ -531,12 +566,14 @@ impl AidRegistry {
     /// Deactivate expired funds
     pub fn cleanup_expired_funds(env: Env) {
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let current_time = env.ledger().timestamp();
-        
+
         for (fund_id, mut fund) in funds.iter() {
             if current_time > fund.expires_at && fund.is_active {
                 fund.is_active = false;
@@ -544,7 +581,7 @@ impl AidRegistry {
                 funds.set(fund_id, fund);
             }
         }
-        
+
         env.storage().instance().set(&fund_key, &funds);
     }
 
@@ -564,30 +601,33 @@ impl AidRegistry {
         min_oracle_confirmations: u32,
     ) {
         admin.require_auth();
-        
+
         // Verify fund exists
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         if funds.get(fund_id.clone()).is_none() {
             panic_with_error!(&env, "Fund does not exist");
         }
-        
+
         // Archived funds cannot receive new triggers
         if let Some(f) = funds.get(fund_id.clone()) {
             if f.current_status == String::from_str(&env, FUND_STATUS_ARCHIVED) {
                 panic_with_error!(&env, "Fund is archived");
             }
         }
-        
+
         // Validate trigger type
         match trigger_type.as_str() {
-            DISASTER_SEISMIC | DISASTER_WEATHER | DISASTER_CONFLICT | DISASTER_HEALTH | DISASTER_MANUAL => {},
+            DISASTER_SEISMIC | DISASTER_WEATHER | DISASTER_CONFLICT | DISASTER_HEALTH
+            | DISASTER_MANUAL => {}
             _ => panic_with_error!(&env, "Invalid trigger type"),
         }
-        
+
         // Create trigger
         let trigger = Trigger {
             id: trigger_id.clone(),
@@ -605,13 +645,15 @@ impl AidRegistry {
             trigger_count: 0,
             last_verified: env.ledger().timestamp(),
         };
-        
+
         // Store trigger
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let mut triggers: Map<String, Trigger> = env.storage().instance()
+        let mut triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
-        
+
         triggers.set(trigger_id, trigger);
         env.storage().instance().set(&triggers_key, &triggers);
     }
@@ -619,10 +661,12 @@ impl AidRegistry {
     /// Get all triggers for a fund
     pub fn get_fund_triggers(env: Env, fund_id: String) -> Vec<Trigger> {
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let triggers: Map<String, Trigger> = env.storage().instance()
+        let triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut result = Vec::new(&env);
         for (_, trigger) in triggers.iter() {
             if trigger.is_active {
@@ -658,7 +702,9 @@ impl AidRegistry {
 
         // ── Load trigger to validate against its configuration ───────────────
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let triggers: Map<String, Trigger> = env.storage().instance()
+        let triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
         let trigger = triggers.get(trigger_id.clone()).unwrap_or_panic_with(&env);
@@ -680,7 +726,8 @@ impl AidRegistry {
 
         // ── Validate data_type is a known type ───────────────────────────────
         match data_type.as_str() {
-            DISASTER_SEISMIC | DISASTER_WEATHER | DISASTER_CONFLICT | DISASTER_HEALTH | DISASTER_MANUAL => {},
+            DISASTER_SEISMIC | DISASTER_WEATHER | DISASTER_CONFLICT | DISASTER_HEALTH
+            | DISASTER_MANUAL => {}
             _ => panic_with_error!(&env, "Invalid data_type"),
         }
 
@@ -721,18 +768,22 @@ impl AidRegistry {
         // Key: "oracle_seen_{fund}_{trigger}_{oracle_str}_{now}"
         // We use a 5-second bucket to tolerate same-ledger resubmissions.
         let bucket = now / 5;
-        let replay_key = Symbol::new(
-            &env,
-            &format!("seen_{}_{}_{}", fund_id, trigger_id, bucket),
-        );
-        if env.storage().instance().get::<Symbol, bool>(&replay_key).unwrap_or(false) {
+        let replay_key = Symbol::new(&env, &format!("seen_{}_{}_{}", fund_id, trigger_id, bucket));
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&replay_key)
+            .unwrap_or(false)
+        {
             panic_with_error!(&env, "Duplicate oracle submission (replay rejected)");
         }
         env.storage().instance().set(&replay_key, &true);
 
         // ── Store validated oracle record ────────────────────────────────────
         let oracle_key = Symbol::new(&env, &format!("oracle_{}_{}", fund_id, trigger_id));
-        let mut oracle_records: Vec<OracleData> = env.storage().instance()
+        let mut oracle_records: Vec<OracleData> = env
+            .storage()
+            .instance()
             .get(&oracle_key)
             .unwrap_or(Vec::new(&env));
 
@@ -765,11 +816,11 @@ impl AidRegistry {
         let parsed: u64 = Self::parse_u64(env, value);
 
         let max: u64 = match data_type.as_str() {
-            DISASTER_SEISMIC  => 1_000,        // magnitude 0.0–10.0 × 100
-            DISASTER_WEATHER  => 500,           // km/h
+            DISASTER_SEISMIC => 1_000, // magnitude 0.0–10.0 × 100
+            DISASTER_WEATHER => 500,   // km/h
             DISASTER_CONFLICT => 1_000_000,
-            DISASTER_HEALTH   => 100_000_000,
-            DISASTER_MANUAL   => 1_000_000_000,
+            DISASTER_HEALTH => 100_000_000,
+            DISASTER_MANUAL => 1_000_000_000,
             _ => panic_with_error!(env, "Invalid data_type in value range check"),
         };
 
@@ -798,13 +849,10 @@ impl AidRegistry {
     }
 
     /// Get stored oracle records for a fund/trigger (for inspection and testing).
-    pub fn get_oracle_records(
-        env: Env,
-        fund_id: String,
-        trigger_id: String,
-    ) -> Vec<OracleData> {
+    pub fn get_oracle_records(env: Env, fund_id: String, trigger_id: String) -> Vec<OracleData> {
         let oracle_key = Symbol::new(&env, &format!("oracle_{}_{}", fund_id, trigger_id));
-        env.storage().instance()
+        env.storage()
+            .instance()
             .get(&oracle_key)
             .unwrap_or(Vec::new(&env))
     }
@@ -846,82 +894,89 @@ impl AidRegistry {
     /// - Partially released funds: Auto-release succeeds as long as unreleased & unreserved balance covers `auto_release_amount`.
     /// - Stale oracle records: Oracle entries older than 3,600s are ignored; if total fresh entries < `min_oracle_confirmations`, release fails.
     /// - Recalled funds: If `reserved_for_recall` covers remaining funds, `available` is 0 and trigger release panics.
-    pub fn execute_trigger(
-        env: Env,
-        fund_id: String,
-        trigger_id: String,
-    ) -> U256 {
+    pub fn execute_trigger(env: Env, fund_id: String, trigger_id: String) -> U256 {
         // #239 — automated releases are paused too. An incident brake that a
         // trigger can drive straight through is not a brake.
         require_not_paused(&env);
 
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !fund.is_active || fund.current_status != String::from_str(&env, FUND_STATUS_ACTIVE) {
             panic_with_error!(&env, "Fund is not active");
         }
-        
+
         // Get trigger
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let mut triggers: Map<String, Trigger> = env.storage().instance()
+        let mut triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut trigger = triggers.get(trigger_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !trigger.is_active {
             panic_with_error!(&env, "Trigger is not active");
         }
-        
+
         // Verify oracle data confirmations
         let oracle_key = Symbol::new(&env, &format!("oracle_{}_{}", fund_id, trigger_id));
-        let oracle_records: Vec<OracleData> = env.storage().instance()
+        let oracle_records: Vec<OracleData> = env
+            .storage()
+            .instance()
             .get(&oracle_key)
             .unwrap_or(Vec::new(&env));
-        
+
         // Check if we have enough confirmations
-        let recent_threshold = env.ledger().timestamp().saturating_sub(ORACLE_STALENESS_SECS);
+        let recent_threshold = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(ORACLE_STALENESS_SECS);
         let mut valid_confirmations: u64 = 0;
-        
+
         for record in oracle_records.iter() {
             if record.timestamp > recent_threshold && record.confidence >= ORACLE_MIN_CONFIDENCE {
                 valid_confirmations += 1;
             }
         }
-        
+
         if valid_confirmations < trigger.min_oracle_confirmations as u64 {
             panic_with_error!(&env, "Insufficient oracle confirmations");
         }
-        
+
         // Check available funds
         let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
         if trigger.auto_release_amount > available {
             panic_with_error!(&env, "Insufficient available funds");
         }
-        
+
         // Execute release
         fund.released_amount += trigger.auto_release_amount;
         fund.current_status = String::from_str(&env, FUND_STATUS_TRIGGERED);
         trigger.last_triggered = env.ledger().timestamp();
         trigger.trigger_count += 1;
-        
+
         // Store updates
         funds.set(fund_id.clone(), fund.clone());
         env.storage().instance().set(&fund_key, &funds);
-        
+
         triggers.set(trigger_id.clone(), trigger);
         env.storage().instance().set(&triggers_key, &triggers);
-        
+
         // Record automated release
         let release_summary_key = Symbol::new(&env, &generate_auto_release_key(&env, &fund_id));
-        env.storage().instance().set(&release_summary_key, &trigger.auto_release_amount);
-        
+        env.storage()
+            .instance()
+            .set(&release_summary_key, &trigger.auto_release_amount);
+
         trigger.auto_release_amount
     }
 
@@ -1013,7 +1068,9 @@ impl AidRegistry {
         }
 
         // ── Check fund has sufficient balance ────────────────────────────────
-        let available = fund.total_amount.clone() - fund.released_amount.clone() - fund.reserved_for_recall.clone();
+        let available = fund.total_amount.clone()
+            - fund.released_amount.clone()
+            - fund.reserved_for_recall.clone();
         if total > available {
             panic_with_error!(&env, "Insufficient funds in pool");
         }
@@ -1058,7 +1115,10 @@ impl AidRegistry {
 
         // Emit batch disbursement event
         env.events().publish(
-            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "batch_disbursed")),
+            (
+                Symbol::new(&env, "aid_registry"),
+                Symbol::new(&env, "batch_disbursed"),
+            ),
             (fund_id, total, ids.len() as u32),
         );
 
@@ -1082,40 +1142,42 @@ impl AidRegistry {
 
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !fund.is_active {
             panic_with_error!(&env, "Fund is not active");
         }
-        
+
         // Verify signatures (require each approver to authorize)
         for approver in approvers.iter() {
             approver.require_auth();
-            
+
             if !fund.release_triggers.contains(approver) {
                 panic_with_error!(&env, "Unauthorized approver");
             }
         }
-        
+
         // Check multi-sig threshold
         if approvers.len() < fund.required_signatures as usize {
             panic_with_error!(&env, "Insufficient approvals");
         }
-        
+
         // Check available funds
         let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
         if amount > available {
             panic_with_error!(&env, "Insufficient available funds");
         }
-        
+
         // Execute release
         fund.released_amount += amount;
         fund.current_status = String::from_str(&env, FUND_STATUS_RELEASED);
-        
+
         let disbursement_id = generate_disbursement_id(&env, &fund_id);
         let disbursement = DisbursementRecord {
             id: disbursement_id.clone(),
@@ -1129,23 +1191,30 @@ impl AidRegistry {
             trigger_id: None,
             is_auto_released: false,
         };
-        
+
         // Store disbursement
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
-        let mut disbursements: Map<String, DisbursementRecord> = env.storage().instance()
+        let mut disbursements: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
-        
+
         disbursements.set(disbursement_id, disbursement);
-        env.storage().instance().set(&disbursement_key, &disbursements);
-        
+        env.storage()
+            .instance()
+            .set(&disbursement_key, &disbursements);
+
         // Update fund
         funds.set(fund_id.clone(), fund);
         env.storage().instance().set(&fund_key, &funds);
-        
+
         // Emit disbursement event
         env.events().publish(
-            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "disbursed")),
+            (
+                Symbol::new(&env, "aid_registry"),
+                Symbol::new(&env, "disbursed"),
+            ),
             (fund_id, beneficiary, amount),
         );
 
@@ -1155,12 +1224,14 @@ impl AidRegistry {
     /// Archive a fund (e.g. after mission completion or cancellation).
     pub fn archive_fund(env: Env, admin: Address, fund_id: String, reason: String) {
         admin.require_auth();
-        
+
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
         fund.is_active = false;
         fund.current_status = String::from_str(&env, FUND_STATUS_ARCHIVED);
@@ -1168,7 +1239,10 @@ impl AidRegistry {
         env.storage().instance().set(&fund_key, &funds);
 
         env.events().publish(
-            (Symbol::new(&env, "aid_registry"), Symbol::new(&env, "fund_archived")),
+            (
+                Symbol::new(&env, "aid_registry"),
+                Symbol::new(&env, "fund_archived"),
+            ),
             (fund_id, reason),
         );
     }
@@ -1232,7 +1306,12 @@ impl AidRegistry {
 
         let count = Self::store_approvals(&env, &fund_id, &request_id, &approvals);
 
-        log!(&env, "Approval recorded for request {} on fund {}", request_id, fund_id);
+        log!(
+            &env,
+            "Approval recorded for request {} on fund {}",
+            request_id,
+            fund_id
+        );
         count
     }
 
@@ -1293,7 +1372,9 @@ impl AidRegistry {
         requester.require_auth();
 
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
 
@@ -1316,13 +1397,18 @@ impl AidRegistry {
 
         // ── Duplicate check: same beneficiary + purpose must not repeat ──────
         let disbursement_key = Symbol::new(&env, &format!("disbursements_{}", fund_id));
-        let mut disbursements: Map<String, DisbursementRecord> = env.storage().instance()
+        let mut disbursements: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_key)
             .unwrap_or(Map::new(&env));
 
         for (_, record) in disbursements.iter() {
             if record.beneficiary == beneficiary && record.purpose == purpose {
-                panic_with_error!(&env, "Duplicate disbursement: beneficiary already received funds for this purpose");
+                panic_with_error!(
+                    &env,
+                    "Duplicate disbursement: beneficiary already received funds for this purpose"
+                );
             }
         }
 
@@ -1372,11 +1458,7 @@ impl AidRegistry {
     fn load_approvals(env: &Env, fund_id: &String, request_id: &String) -> Vec<Address> {
         let key = Symbol::new(env, &format!("approvals_{}_{}", fund_id, request_id));
 
-        let approvals: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&key)
-            .unwrap_or(Vec::new(env));
+        let approvals: Vec<Address> = env.storage().instance().get(&key).unwrap_or(Vec::new(env));
 
         // An approval set with no start stamp predates this logic; treat it as
         // empty rather than trusting it.
@@ -1399,28 +1481,21 @@ impl AidRegistry {
     }
 
     fn approval_started_at(env: &Env, fund_id: &String, request_id: &String) -> Option<u64> {
-        let key = Symbol::new(
-            env,
-            &format!("approval_started_{}_{}", fund_id, request_id),
-        );
+        let key = Symbol::new(env, &format!("approval_started_{}_{}", fund_id, request_id));
 
         env.storage().instance().get(&key)
     }
 
     /// Drop the approval set and its start stamp.
     fn clear_approvals(env: &Env, fund_id: &String, request_id: &String) {
-        env.storage()
-            .instance()
-            .remove(&Symbol::new(
-                env,
-                &format!("approvals_{}_{}", fund_id, request_id),
-            ));
-        env.storage()
-            .instance()
-            .remove(&Symbol::new(
-                env,
-                &format!("approval_started_{}_{}", fund_id, request_id),
-            ));
+        env.storage().instance().remove(&Symbol::new(
+            env,
+            &format!("approvals_{}_{}", fund_id, request_id),
+        ));
+        env.storage().instance().remove(&Symbol::new(
+            env,
+            &format!("approval_started_{}_{}", fund_id, request_id),
+        ));
     }
 
     /// Allocate funds to sectors and beneficiaries with proof of need
@@ -1447,20 +1522,22 @@ impl AidRegistry {
         if amount > max_amount {
             panic_with_error!(&env, "Allocation amount exceeds maximum threshold");
         }
-        
+
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         // Archived funds cannot receive new allocations
         if fund.current_status == String::from_str(&env, FUND_STATUS_ARCHIVED) {
             panic_with_error!(&env, "Fund is archived");
         }
-        
+
         // Create allocation
         let allocation = FundAllocation {
             sector,
@@ -1471,10 +1548,10 @@ impl AidRegistry {
             min_amount,
             max_amount,
         };
-        
+
         // Add to fund allocations
         fund.fund_allocation.push_back(allocation);
-        
+
         // Store updated fund
         funds.set(fund_id, fund);
         env.storage().instance().set(&fund_key, &funds);
@@ -1483,10 +1560,12 @@ impl AidRegistry {
     /// Get fund allocations
     pub fn get_fund_allocations(env: Env, fund_id: String) -> Vec<FundAllocation> {
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let fund = funds.get(fund_id).unwrap_or_panic_with(&env);
         fund.fund_allocation
     }
@@ -1522,59 +1601,59 @@ impl AidRegistry {
     /// - Fully disbursed fund: If `released_amount == total_amount`, `unused` is 0; status is unaffected.
     /// - Disabled recall: Invoking when `recall_enabled == false` panics regardless of fund age.
     /// - Premature call: Invoking even one second before `recall_threshold` panics.
-    pub fn recall_unused_funds(
-        env: Env,
-        donor: Address,
-        fund_id: String,
-    ) -> U256 {
+    pub fn recall_unused_funds(env: Env, donor: Address, fund_id: String) -> U256 {
         donor.require_auth();
-        
+
         // Get fund
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         if !fund.recall_enabled {
             panic_with_error!(&env, "Recall not enabled for this fund");
         }
-        
+
         let age_seconds = env.ledger().timestamp() - fund.created_at;
         let recall_threshold = fund.recall_after_months as u64 * SECONDS_PER_MONTH;
-        
+
         if age_seconds < recall_threshold {
             panic_with_error!(&env, "Fund is not yet eligible for recall");
         }
-        
+
         // Calculate amount available for recall
         let unused = fund.total_amount - fund.released_amount;
-        
+
         if unused > U256::from_u64(0) {
             fund.reserved_for_recall = unused;
             fund.current_status = String::from_str(&env, FUND_STATUS_RECALLED);
         }
-        
+
         // Store updated fund
         funds.set(fund_id, fund.clone());
         env.storage().instance().set(&fund_key, &funds);
-        
+
         unused
     }
 
     /// Get fund status and metrics
     pub fn get_fund_status(env: Env, fund_id: String) -> (String, U256, U256, U256, u64) {
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
-        
+
         let available = fund.total_amount - fund.released_amount - fund.reserved_for_recall;
         let beneficiary_count = fund.fund_allocation.len() as u64;
-        
+
         (
             fund.current_status,
             fund.total_amount,
@@ -1589,42 +1668,37 @@ impl AidRegistry {
     /// Requires Admin authentication (`admin.require_auth()`). Sets `fund.recall_enabled = true`.
     /// Does not trigger recall itself, but permits donors to invoke `recall_unused_funds` once
     /// the time eligibility threshold (`recall_after_months`) has elapsed.
-    pub fn enable_recall(
-        env: Env,
-        admin: Address,
-        fund_id: String,
-    ) {
+    pub fn enable_recall(env: Env, admin: Address, fund_id: String) {
         admin.require_auth();
-        
+
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
         fund.recall_enabled = true;
-        
+
         funds.set(fund_id, fund);
         env.storage().instance().set(&fund_key, &funds);
     }
 
     /// Deactivate a trigger
-    pub fn deactivate_trigger(
-        env: Env,
-        admin: Address,
-        fund_id: String,
-        trigger_id: String,
-    ) {
+    pub fn deactivate_trigger(env: Env, admin: Address, fund_id: String, trigger_id: String) {
         admin.require_auth();
-        
+
         let triggers_key = Symbol::new(&env, &format!("triggers_{}", fund_id));
-        let mut triggers: Map<String, Trigger> = env.storage().instance()
+        let mut triggers: Map<String, Trigger> = env
+            .storage()
+            .instance()
             .get(&triggers_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut trigger = triggers.get(trigger_id.clone()).unwrap_or_panic_with(&env);
         trigger.is_active = false;
-        
+
         triggers.set(trigger_id, trigger);
         env.storage().instance().set(&triggers_key, &triggers);
     }
@@ -1637,15 +1711,17 @@ impl AidRegistry {
         metadata: Map<String, String>,
     ) {
         admin.require_auth();
-        
+
         let fund_key = Symbol::new(&env, "fund");
-        let mut funds: Map<String, EmergencyFund> = env.storage().instance()
+        let mut funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut fund = funds.get(fund_id.clone()).unwrap_or_panic_with(&env);
         fund.metadata = metadata;
-        
+
         funds.set(fund_id, fund);
         env.storage().instance().set(&fund_key, &funds);
     }
@@ -1653,10 +1729,12 @@ impl AidRegistry {
     /// Get metadata for a fund
     pub fn get_metadata(env: Env, fund_id: String) -> Map<String, String> {
         let fund_key = Symbol::new(&env, "fund");
-        let funds: Map<String, EmergencyFund> = env.storage().instance()
+        let funds: Map<String, EmergencyFund> = env
+            .storage()
+            .instance()
             .get(&fund_key)
             .unwrap_or(Map::new(&env));
-        
+
         let fund = funds.get(fund_id).unwrap_or_panic_with(&env);
         fund.metadata
     }
@@ -1679,11 +1757,14 @@ impl AidRegistry {
 
         // Create unique key for this disbursement
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
-        
+
         let record = DisbursementRecord {
             id: disbursement_key.clone(),
             fund_id: fund_id.clone(),
-            beneficiary: Address::from_contract_id(&env, &env.crypto().sha256(&env.ledger().sequence().to_le_bytes())),
+            beneficiary: Address::from_contract_id(
+                &env,
+                &env.crypto().sha256(&env.ledger().sequence().to_le_bytes()),
+            ),
             amount,
             timestamp: env.ledger().timestamp(),
             purpose: purpose.clone(),
@@ -1692,16 +1773,25 @@ impl AidRegistry {
             trigger_id: None,
             is_auto_released: false,
         };
-        
+
         let disbursement_records_key = Symbol::new(&env, "duplicate_check_records");
-        let mut records: Map<String, DisbursementRecord> = env.storage().instance()
+        let mut records: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_records_key)
             .unwrap_or(Map::new(&env));
-        
+
         records.set(disbursement_key, record);
-        env.storage().instance().set(&disbursement_records_key, &records);
-        
-        log!(&env, "Recorded disbursement for {} - {}", beneficiary_address, purpose);
+        env.storage()
+            .instance()
+            .set(&disbursement_records_key, &records);
+
+        log!(
+            &env,
+            "Recorded disbursement for {} - {}",
+            beneficiary_address,
+            purpose
+        );
     }
 
     /// Check if a disbursement is a duplicate
@@ -1711,12 +1801,14 @@ impl AidRegistry {
         purpose: String,
     ) -> bool {
         let disbursement_key = format!("disbursement_{}_{}", beneficiary_address, purpose);
-        
+
         let disbursement_records_key = Symbol::new(&env, "duplicate_check_records");
-        let records: Map<String, DisbursementRecord> = env.storage().instance()
+        let records: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_records_key)
             .unwrap_or(Map::new(&env));
-        
+
         records.contains_key(disbursement_key)
     }
 
@@ -1726,17 +1818,19 @@ impl AidRegistry {
         beneficiary_address: String,
     ) -> Vec<DisbursementRecord> {
         let disbursement_records_key = Symbol::new(&env, "duplicate_check_records");
-        let records: Map<String, DisbursementRecord> = env.storage().instance()
+        let records: Map<String, DisbursementRecord> = env
+            .storage()
+            .instance()
             .get(&disbursement_records_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut beneficiary_records = Vec::new(&env);
         for (_, record) in records.iter() {
             // Filter records for this beneficiary
             // Note: In production, would need to store beneficiary address properly
             beneficiary_records.push_back(record);
         }
-        
+
         beneficiary_records
     }
 
@@ -1762,9 +1856,7 @@ impl AidRegistry {
     /// `paused_at` is `0` when the platform has never been paused. Both
     /// timestamps are recorded for operator forensics only — nothing enforces
     /// behaviour from them.
-    pub fn get_pause_state(
-        env: Env,
-    ) -> (bool, Address, String, u64, u64) {
+    pub fn get_pause_state(env: Env) -> (bool, Address, String, u64, u64) {
         let paused: bool = env
             .storage()
             .instance()
@@ -1830,9 +1922,10 @@ impl AidRegistry {
             env.storage()
                 .instance()
                 .set(&Symbol::new(&env, KEY_PAUSED), &false);
-            env.storage()
-                .instance()
-                .set(&Symbol::new(&env, KEY_PAUSE_LIFTED_AT), &env.ledger().timestamp());
+            env.storage().instance().set(
+                &Symbol::new(&env, KEY_PAUSE_LIFTED_AT),
+                &env.ledger().timestamp(),
+            );
         }
 
         log!(&env, "Incident pause set to {} by {}", paused, admin);
@@ -1854,4 +1947,3 @@ pub fn require_not_paused(env: &Env) {
         panic_with_error!(env, "Contract is paused");
     }
 }
-

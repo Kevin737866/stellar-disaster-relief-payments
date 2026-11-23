@@ -4,8 +4,8 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 
 use crate::rbac::{
     assign_role, get_roles, has_role, require_any_role, require_role, revoke_role,
-    seed_initial_roles, ROLE_ADMIN, ROLE_AUDITOR, ROLE_GOV, ROLE_NGO, ROLE_OPERATOR,
-    ROLE_ORACLE, ROLE_UN, ROLE_TRANSPORTER, ROLE_MERCHANT, ROLE_RECIPIENT,
+    seed_initial_roles, ROLE_ADMIN, ROLE_AUDITOR, ROLE_GOV, ROLE_MERCHANT, ROLE_NGO, ROLE_OPERATOR,
+    ROLE_ORACLE, ROLE_RECIPIENT, ROLE_TRANSPORTER, ROLE_UN,
 };
 
 fn setup() -> (Env, Address, Address, Address, Address) {
@@ -148,8 +148,16 @@ fn test_require_any_role_panics_if_none_match() {
 #[test]
 fn test_all_role_constants_are_distinct_powers_of_two() {
     let roles = [
-        ROLE_ADMIN, ROLE_NGO, ROLE_GOV, ROLE_UN, ROLE_AUDITOR, ROLE_ORACLE, ROLE_OPERATOR,
-        ROLE_TRANSPORTER, ROLE_MERCHANT, ROLE_RECIPIENT,
+        ROLE_ADMIN,
+        ROLE_NGO,
+        ROLE_GOV,
+        ROLE_UN,
+        ROLE_AUDITOR,
+        ROLE_ORACLE,
+        ROLE_OPERATOR,
+        ROLE_TRANSPORTER,
+        ROLE_MERCHANT,
+        ROLE_RECIPIENT,
     ];
     for (i, &a) in roles.iter().enumerate() {
         assert!(a.is_power_of_two(), "role {} is not a power of two", a);

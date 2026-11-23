@@ -1,0 +1,5 @@
+# Rust formatting configuration
+# Run `cargo fmt` to apply, `cargo fmt --check` in CI to verify.
+
+edition = "2021"
+max_width = 100

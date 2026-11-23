@@ -1,19 +1,38 @@
-export { AidClient } from './aidClient';
-export { BeneficiaryClient } from './beneficiaryClient';
+export { AidClient, MAX_BATCH_SIZE, MIN_BATCH_SIZE } from './aidClient';
+export { CostEstimationClient } from './costEstimation';
+export type { CostEstimate, CostEstimationOptions, ContractInteractionType } from './costEstimation';
+export { estimateContractCost, estimateMultipleContractCosts, estimateTotalCost } from './costEstimation';
+export { BeneficiaryClient, DEFAULT_BENEFICIARY_PAGE_SIZE, MAX_BENEFICIARY_PAGE_SIZE, } from './beneficiaryClient';
+export { normalizePurpose, categorizePurpose, classifyPurpose, validatePurpose, isDisbursementPurposeCategory, } from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
 export { OfflineAuthClient } from './offlineAuth';
-export { MerchantClient } from './merchantClient';
+export { MerchantClient, DEFAULT_MERCHANT_PAGE_SIZE, MAX_MERCHANT_PAGE_SIZE, } from './merchantClient';
 export { TransferClient } from './transferClient';
 export { TrackerClient } from './trackerClient';
+export { ReadCache } from './readCache';
+import { AidClient } from './aidClient';
+import { FeeBumpClient } from './feeBumpClient';
+import { TransactionSimulator } from './transactionSimulator';
+import { BeneficiaryClient } from './beneficiaryClient';
+import { MerchantClient } from './merchantClient';
+import { TransferClient } from './transferClient';
+import { TrackerClient } from './trackerClient';
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
+export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
+export { DuplicatePreventionClient } from './duplicatePrevention';
 export { MerchantNetworkSDK } from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
+export { I18nManager, defaultI18n, ERROR_MESSAGES } from './i18n';
+export type { Language, ErrorMessage, LocalizedErrorMessages } from './i18n';
 export * from './types';
+export * from './errors';
 export declare const TESTNET_CONFIG: {
     network: "testnet";
     rpcUrl: string;
     horizonUrl: string;
+    networkPassphrase: string;
+    explorerUrl: string;
     contractIds: {
         platform: string;
         aidRegistry: string;
@@ -28,6 +47,8 @@ export declare const MAINNET_CONFIG: {
     network: "mainnet";
     rpcUrl: string;
     horizonUrl: string;
+    networkPassphrase: string;
+    explorerUrl: string;
     contractIds: {
         platform: string;
         aidRegistry: string;
@@ -39,11 +60,13 @@ export declare const MAINNET_CONFIG: {
     };
 };
 export declare const createDisasterReliefSDK: (config: any) => {
-    aidClient: any;
-    beneficiaryClient: any;
-    merchantClient: any;
-    transferClient: any;
-    trackerClient: any;
+    aidClient: AidClient;
+    beneficiaryClient: BeneficiaryClient;
+    merchantClient: MerchantClient;
+    transferClient: TransferClient;
+    trackerClient: TrackerClient;
+    feeBumpClient: FeeBumpClient;
+    transactionSimulator: TransactionSimulator;
 };
 export declare const DISASTER_TYPES: {
     readonly EARTHQUAKE: "earthquake";

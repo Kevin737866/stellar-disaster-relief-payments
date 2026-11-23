@@ -13,7 +13,12 @@ crate-type = ["cdylib"]
 # IMPORTANT: soroban-sdk version must match the Soroban CLI and RPC node version
 # used in deployment. A mismatch causes XDR serialisation incompatibilities.
 # See docs/COMPATIBILITY.md for the full compatibility matrix.
-soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+#
+# Do NOT enable the `testutils` feature here — it pulls in test-only code
+# (mock auths, `Env::default`, `Address::generate`, `register_contract`) that
+# has no place in release/WASM builds.  Test utilities are provided via
+# [dev-dependencies] below and are only compiled under `cfg(test)`.
+soroban-sdk = "22.0.0"
 soroban-token-sdk = "22.0.0"
 # sha2 provides SHA-256 for all on-chain hashing (identity factors, recovery codes,
 # duress PIN, device credential). Algorithm must match crypto-js SHA-256 in the
@@ -24,7 +29,38 @@ serde_json = "1.0"
 hex = "0.4.3"
 
 [dev-dependencies]
+# testutils is only available to cfg(test) targets (unit tests, integration
+# tests, and `cargo test`).  Release/WASM builds never resolve this entry.
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+
+# ---------------------------------------------------------------------------
+# Clippy lint policy
+# ---------------------------------------------------------------------------
+# `-D warnings` in CI treats every emitted warning as an error.  The allows
+# below silence lints that fire on Soroban SDK macro-generated code or on
+# `#![no_std]` contracts where the suggestion does not apply.
+#
+# To audit the full list locally:
+#   cargo clippy --all-targets -- -D warnings
+# ---------------------------------------------------------------------------
+[lints.clippy]
+# Deny the high-value correctness and style lints by default.
+all = { level = "deny", priority = -1 }
+# The `cargo` group is not available as a group in [lints]; individual lints
+# from it that matter are listed below.
+#
+# --- Intentional allowances (documented) -------------------------------------
+# `needless_lifetimes`: Soroban SDK client structs and generated code emit
+#   explicit lifetimes that clippy considers redundant.  Suppressing avoids
+#   fighting macro output.
+needless_lifetimes = "allow"
+# `new_without_default`: Contract structs and SDK clients use `new(env, &id)`
+#   with extra parameters; a `Default` impl would be meaningless.
+new_without_default = "allow"
+# `arc_with_non_send_sync`: Soroban `Env` / `Address` are not `Send` + `Sync`
+#   by design (they reference the WASM runtime).
+arc_with_non_send_sync = "allow"
+
 
 [profile.release]
 opt-level = "z"

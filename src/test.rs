@@ -235,8 +235,8 @@ mod aid_registry_tests {
             &str(&env, "magnitude_7.0"),
             &str(&env, "usgs"),
             &u256(100_000),
-            &18_900_000i64,   // ~18.9° latitude × 1e6
-            &-72_300_000i64,  // ~-72.3° longitude × 1e6
+            &18_900_000i64,  // ~18.9° latitude × 1e6
+            &-72_300_000i64, // ~-72.3° longitude × 1e6
             &50u64,
             &2u32,
         );
@@ -403,11 +403,7 @@ mod aid_registry_tests {
 
         let mut entries = Vec::new(&env);
         for _ in 0..100u32 {
-            entries.push_back((
-                Address::generate(&env),
-                u256(1),
-                str(&env, "food"),
-            ));
+            entries.push_back((Address::generate(&env), u256(1), str(&env, "food")));
         }
 
         let approvers = Vec::from_array(&env, [approver]);
@@ -444,11 +440,7 @@ mod aid_registry_tests {
 
         let mut entries = Vec::new(&env);
         for _ in 0..101u32 {
-            entries.push_back((
-                Address::generate(&env),
-                u256(1),
-                str(&env, "food"),
-            ));
+            entries.push_back((Address::generate(&env), u256(1), str(&env, "food")));
         }
 
         let approvers = Vec::from_array(&env, [approver]);
@@ -684,7 +676,8 @@ mod aid_registry_tests {
         client.enable_recall(&admin, &str(&env, "fund_recall_test"));
 
         // Advance ledger by 12 months (12 * 2_592_000 seconds)
-        env.ledger().with_mut(|l| l.timestamp = 1_000 + (12 * 2_592_000) + 10);
+        env.ledger()
+            .with_mut(|l| l.timestamp = 1_000 + (12 * 2_592_000) + 10);
 
         let recalled = client.recall_unused_funds(&donor, &str(&env, "fund_recall_test"));
         assert_eq!(recalled, u256(400_000));
@@ -699,7 +692,9 @@ mod aid_registry_tests {
 
 mod beneficiary_tests {
     use super::*;
-    use crate::beneficiary_manager::{BeneficiaryManager, BeneficiaryManagerClient, VerificationFactor};
+    use crate::beneficiary_manager::{
+        BeneficiaryManager, BeneficiaryManagerClient, VerificationFactor,
+    };
 
     fn deploy(env: &Env) -> BeneficiaryManagerClient {
         let id = env.register(BeneficiaryManager, ());
@@ -916,7 +911,11 @@ mod beneficiary_tests {
             &factors,
         );
 
-        client.update_location(&wallet, &str(&env, "ben_loc"), &str(&env, "New Shelter Camp"));
+        client.update_location(
+            &wallet,
+            &str(&env, "ben_loc"),
+            &str(&env, "New Shelter Camp"),
+        );
 
         let profile = client.get_beneficiary(&str(&env, "ben_loc")).unwrap();
         assert_eq!(profile.location, str(&env, "New Shelter Camp"));
@@ -943,7 +942,12 @@ mod beneficiary_tests {
             &factors,
         );
 
-        client.update_trust_score(&admin, &str(&env, "ben_score"), &88u32, &str(&env, "Field worker verified"));
+        client.update_trust_score(
+            &admin,
+            &str(&env, "ben_score"),
+            &88u32,
+            &str(&env, "Field worker verified"),
+        );
 
         let profile = client.get_beneficiary(&str(&env, "ben_score")).unwrap();
         assert_eq!(profile.trust_score, 88u32);
@@ -1387,14 +1391,13 @@ mod merchant_tests {
         assert_ne!(first.get(0).unwrap().id, second.get(0).unwrap().id);
 
         // Location pagination applies the same bounds.
-        let (nearby, nearby_total, nearby_more) = client
-            .find_merchants_by_location_paginated(
-                &18.5944f64,
-                &-72.3074f64,
-                &10.0f64,
-                &0u32,
-                &20u32,
-            );
+        let (nearby, nearby_total, nearby_more) = client.find_merchants_by_location_paginated(
+            &18.5944f64,
+            &-72.3074f64,
+            &10.0f64,
+            &0u32,
+            &20u32,
+        );
         assert_eq!(nearby.len(), 2);
         assert_eq!(nearby_total, 2);
         assert!(!nearby_more);
@@ -1897,10 +1900,13 @@ mod anti_fraud_tests {
         let env = make_env();
         let client = deploy(&env);
 
-        let factors = Vec::from_array(&env, [
-            str(&env, "possession:card_abc"),
-            str(&env, "behavioral:morning_arrival"),
-        ]);
+        let factors = Vec::from_array(
+            &env,
+            [
+                str(&env, "possession:card_abc"),
+                str(&env, "behavioral:morning_arrival"),
+            ],
+        );
 
         let (approved, _msg) = client.register_beneficiary_check(
             &str(&env, "ben_clean"),
@@ -2000,7 +2006,10 @@ mod anti_fraud_tests {
 
         let high_risk = client.get_high_risk_entities(&25u32);
         assert_eq!(high_risk.len(), 1);
-        assert_eq!(high_risk.get(0).unwrap().entity_id, str(&env, "ben_med_risk"));
+        assert_eq!(
+            high_risk.get(0).unwrap().entity_id,
+            str(&env, "ben_med_risk")
+        );
 
         let very_high_risk = client.get_high_risk_entities(&50u32);
         assert_eq!(very_high_risk.len(), 0);
@@ -2108,9 +2117,11 @@ mod platform_tests {
 
 mod performance_tests {
     use super::*;
-    use crate::merchant_network::{MerchantNetwork, MerchantNetworkClient, Location, STATUS_ACTIVE};
-    use crate::cash_transfer::{CashTransfer, CashTransferClient, SpendingRule};
     use crate::anti_fraud::{AntiFraud, AntiFraudClient};
+    use crate::cash_transfer::{CashTransfer, CashTransferClient, SpendingRule};
+    use crate::merchant_network::{
+        Location, MerchantNetwork, MerchantNetworkClient, STATUS_ACTIVE,
+    };
 
     fn make_env() -> Env {
         let env = Env::default();
@@ -2143,7 +2154,7 @@ mod performance_tests {
         let client = MerchantNetworkClient::new(&env, &env.register(MerchantNetwork, ()));
         let owner = Address::generate(&env);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
-        
+
         // Register multiple merchants in same category
         for i in 0..50 {
             let merchant_id = str(&env, &format!("merchant_{}", i));
@@ -2160,7 +2171,7 @@ mod performance_tests {
                 &false,
             );
         }
-        
+
         // Verify category lookup returns bounded results
         let results = client.find_merchants_by_category(&0u32);
         // Should return at most MAX_MERCHANT_RESULTS (100) but we only have 50
@@ -2174,7 +2185,7 @@ mod performance_tests {
         let client = MerchantNetworkClient::new(&env, &env.register(MerchantNetwork, ()));
         let owner = Address::generate(&env);
         let tokens = Vec::from_array(&env, [str(&env, "USDC")]);
-        
+
         // Register multiple merchants in nearby locations
         for i in 0..30 {
             let merchant_id = str(&env, &format!("merchant_loc_{}", i));
@@ -2182,7 +2193,7 @@ mod performance_tests {
             // Slightly offset each merchant
             loc.latitude += (i as f64) * 0.001;
             loc.longitude += (i as f64) * 0.001;
-            
+
             client.register_merchant(
                 &owner,
                 &merchant_id,
@@ -2196,7 +2207,7 @@ mod performance_tests {
                 &false,
             );
         }
-        
+
         // Verify location lookup returns bounded results
         let results = client.find_merchants_by_location(&18.5944f64, &-72.3074f64, &10.0f64);
         assert!(results.len() <= 30);
@@ -2209,7 +2220,7 @@ mod performance_tests {
         let client = CashTransferClient::new(&env, &env.register(CashTransfer, ()));
         let creator = Address::generate(&env);
         let beneficiary = Address::generate(&env);
-        
+
         // Create transfer with many spending rules
         let mut rules = Vec::new(&env);
         for i in 0..60 {
@@ -2222,7 +2233,7 @@ mod performance_tests {
                 current_usage: u256(0),
             });
         }
-        
+
         client.create_transfer(
             &creator,
             &str(&env, "txfr_perf"),
@@ -2233,7 +2244,7 @@ mod performance_tests {
             &rules,
             &str(&env, "Performance test"),
         );
-        
+
         // Spend should only check up to MAX_SPENDING_RULES_CHECK rules
         let approved = client.spend(
             &beneficiary,
@@ -2243,7 +2254,7 @@ mod performance_tests {
             &str(&env, "cat_0"), // Match first rule
             &str(&env, "location"),
         );
-        
+
         // Should succeed and only check bounded number of rules
         assert!(approved);
     }
@@ -2254,7 +2265,7 @@ mod performance_tests {
         let client = CashTransferClient::new(&env, &env.register(CashTransfer, ()));
         let creator = Address::generate(&env);
         let beneficiary = Address::generate(&env);
-        
+
         client.create_transfer(
             &creator,
             &str(&env, "txfr_hist"),
@@ -2265,7 +2276,7 @@ mod performance_tests {
             &Vec::new(&env),
             &str(&env, "History test"),
         );
-        
+
         // Create many transactions
         for i in 0..150 {
             client.spend(
@@ -2277,7 +2288,7 @@ mod performance_tests {
                 &str(&env, "market"),
             );
         }
-        
+
         // Get transactions should return bounded results
         let txns = client.get_transactions(&str(&env, "txfr_hist"));
         // Should return at most MAX_TRANSACTION_HISTORY (100)
@@ -2288,7 +2299,7 @@ mod performance_tests {
     fn test_anti_fraud_velocity_bounded() {
         let env = make_env();
         let client = AntiFraudClient::new(&env, &env.register(AntiFraud, ()));
-        
+
         // Register beneficiary
         client.register_beneficiary_check(
             &str(&env, "ben_vel"),
@@ -2296,18 +2307,20 @@ mod performance_tests {
             &str(&env, "Camp Alpha"),
             &str(&env, "device_123"),
         );
-        
+
         // Create many historical transactions
         let transactions_key = Symbol::new(&env, "transaction_history");
         let mut transactions = Map::new(&env);
         let current_time = 10000u64;
-        
+
         for i in 0..1500 {
             let tx_id = str(&env, &format!("tx_{}", i));
             transactions.set(tx_id, (current_time - (i * 10), u256(100)));
         }
-        env.storage().instance().set(&transactions_key, &transactions);
-        
+        env.storage()
+            .instance()
+            .set(&transactions_key, &transactions);
+
         // Monitor transaction should only scan MAX_VELOCITY_SCAN transactions
         let (is_clean, _) = client.monitor_transaction(
             &str(&env, "ben_vel"),
@@ -2316,7 +2329,7 @@ mod performance_tests {
             &current_time,
             &str(&env, "tx_hash_new"),
         );
-        
+
         // Should complete without scanning all 1500 transactions
         // The velocity check should find >10 in last hour and return false
         // But the scan is bounded to MAX_VELOCITY_SCAN (1000)
@@ -2327,25 +2340,28 @@ mod performance_tests {
     fn test_anti_fraud_high_risk_entities_bounded() {
         let env = make_env();
         let client = AntiFraudClient::new(&env, &env.register(AntiFraud, ()));
-        
+
         // Create many risk profiles
         let profiles_key = Symbol::new(&env, "risk_profiles");
         let mut profiles = Map::new(&env);
-        
+
         for i in 0..600 {
             let entity_id = str(&env, &format!("entity_{}", i));
-            profiles.set(entity_id.clone(), crate::anti_fraud::RiskProfile {
-                entity_id,
-                entity_type: str(&env, "beneficiary"),
-                risk_score: if i < 100 { 80 } else { 20 }, // First 100 are high risk
-                last_updated: 1000u64,
-                risk_factors: Vec::new(&env),
-                flagged_transactions: 0,
-                total_transactions: 0,
-            });
+            profiles.set(
+                entity_id.clone(),
+                crate::anti_fraud::RiskProfile {
+                    entity_id,
+                    entity_type: str(&env, "beneficiary"),
+                    risk_score: if i < 100 { 80 } else { 20 }, // First 100 are high risk
+                    last_updated: 1000u64,
+                    risk_factors: Vec::new(&env),
+                    flagged_transactions: 0,
+                    total_transactions: 0,
+                },
+            );
         }
         env.storage().instance().set(&profiles_key, &profiles);
-        
+
         // Get high risk entities should only scan MAX_RISK_PROFILE_SCAN (500)
         let high_risk = client.get_high_risk_entities(&50u32);
         // Should return at most 500 scanned, but only first 100 are high risk

@@ -63,16 +63,15 @@
 /// - Only Admin can assign or revoke roles.
 /// - Admin cannot revoke their own Admin role (lockout protection).
 /// - `initialize()` is guarded by a one-time init flag; re-initialization panics.
-
 use soroban_sdk::{Address, Env, Map, Symbol};
 
 // Role bitmask constants — each role is a distinct bit.
-pub const ROLE_ADMIN: u32    = 1 << 0; // 1
-pub const ROLE_NGO: u32      = 1 << 1; // 2
-pub const ROLE_GOV: u32      = 1 << 2; // 4
-pub const ROLE_UN: u32       = 1 << 3; // 8
-pub const ROLE_AUDITOR: u32  = 1 << 4; // 16
-pub const ROLE_ORACLE: u32   = 1 << 5; // 32
+pub const ROLE_ADMIN: u32 = 1 << 0; // 1
+pub const ROLE_NGO: u32 = 1 << 1; // 2
+pub const ROLE_GOV: u32 = 1 << 2; // 4
+pub const ROLE_UN: u32 = 1 << 3; // 8
+pub const ROLE_AUDITOR: u32 = 1 << 4; // 16
+pub const ROLE_ORACLE: u32 = 1 << 5; // 32
 pub const ROLE_OPERATOR: u32 = 1 << 6; // 64
 pub const ROLE_TRANSPORTER: u32 = 1 << 7; // 128
 pub const ROLE_MERCHANT: u32 = 1 << 8; // 256
@@ -158,13 +157,7 @@ pub fn require_any_role(env: &Env, address: &Address, role_mask: u32) {
 
 /// Seed initial roles from the platform `initialize()` call.
 /// Must only be called once (enforced by the caller via the init guard).
-pub fn seed_initial_roles(
-    env: &Env,
-    admin: &Address,
-    ngo: &Address,
-    gov: &Address,
-    un: &Address,
-) {
+pub fn seed_initial_roles(env: &Env, admin: &Address, ngo: &Address, gov: &Address, un: &Address) {
     let mut roles = Map::new(env);
     roles.set(admin.clone(), ROLE_ADMIN);
     roles.set(ngo.clone(), ROLE_NGO);

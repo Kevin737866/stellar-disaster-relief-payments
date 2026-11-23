@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MerchantNetworkSDK = exports.PAYMENT_ONLINE = exports.PAYMENT_OFFLINE = exports.PAYMENT_NFC = exports.PAYMENT_USSD = exports.PAYMENT_QR = exports.STATUS_GRADUATED = exports.STATUS_SUSPENDED = exports.STATUS_ACTIVE = exports.STATUS_TRIAL = exports.STATUS_PENDING = exports.CATEGORY_FUEL = exports.CATEGORY_CLOTHING = exports.CATEGORY_MEDICAL = exports.CATEGORY_SHELTER = exports.CATEGORY_WATER = exports.CATEGORY_FOOD = void 0;
 const stellar_sdk_1 = require("stellar-sdk");
+const { Server } = stellar_sdk_1.SorobanRpc;
+const retry_1 = require("./retry");
 // Merchant categories
 exports.CATEGORY_FOOD = 0;
 exports.CATEGORY_WATER = 1;
@@ -24,7 +26,7 @@ exports.PAYMENT_ONLINE = 4;
 class MerchantNetworkSDK {
     constructor(config) {
         this.config = config;
-        this.server = new stellar_sdk_1.Server(config.rpcUrl);
+        this.server = new Server(config.rpcUrl);
         this.contract = new stellar_sdk_1.Contract(config.contractIds.merchantNetwork);
     }
     /**
@@ -34,7 +36,7 @@ class MerchantNetworkSDK {
     async registerMerchant(ownerKey, merchantId, profile, references // 3 beneficiary references or 1 NGO field worker
     ) {
         const ownerKeypair = stellar_sdk_1.Keypair.fromSecret(ownerKey);
-        const ownerAccount = await this.server.getAccount(ownerKeypair.publicKey());
+        const ownerAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(ownerKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(ownerAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -54,7 +56,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(ownerKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return `Merchant ${merchantId} registered successfully.`;
         }
@@ -68,7 +70,7 @@ class MerchantNetworkSDK {
     async addVouch(voucherKey, merchantId, voucherType // 0 = beneficiary, 1 = ngo
     ) {
         const voucherKeypair = stellar_sdk_1.Keypair.fromSecret(voucherKey);
-        const voucherAccount = await this.server.getAccount(voucherKeypair.publicKey());
+        const voucherAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(voucherKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(voucherAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -81,7 +83,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(voucherKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return `Vouch added for merchant ${merchantId}`;
         }
@@ -96,7 +98,7 @@ class MerchantNetworkSDK {
     async processPayment(merchantKey, beneficiaryKey, merchantId, beneficiaryId, amount, token, purpose, paymentMethod = exports.PAYMENT_ONLINE) {
         const merchantKeypair = stellar_sdk_1.Keypair.fromSecret(merchantKey);
         const beneficiaryKeypair = stellar_sdk_1.Keypair.fromSecret(beneficiaryKey);
-        const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+        const merchantAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(merchantKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(merchantAccount, {
             fee: '200',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -115,7 +117,7 @@ class MerchantNetworkSDK {
             .build();
         tx.sign(merchantKeypair);
         tx.sign(beneficiaryKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
@@ -140,7 +142,7 @@ class MerchantNetworkSDK {
      */
     async syncOfflineTransactions(merchantKey, merchantId, offlineTransactionIds) {
         const merchantKeypair = stellar_sdk_1.Keypair.fromSecret(merchantKey);
-        const merchantAccount = await this.server.getAccount(merchantKeypair.publicKey());
+        const merchantAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(merchantKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(merchantAccount, {
             fee: '200',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -152,7 +154,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(merchantKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
@@ -178,7 +180,7 @@ class MerchantNetworkSDK {
      */
     async settleBalances(adminKey) {
         const adminKeypair = stellar_sdk_1.Keypair.fromSecret(adminKey);
-        const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+        const adminAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(adminKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(adminAccount, {
             fee: '200',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -187,7 +189,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(adminKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
@@ -200,7 +202,7 @@ class MerchantNetworkSDK {
      */
     async reviewTrialMerchant(adminKey, merchantId, approve) {
         const adminKeypair = stellar_sdk_1.Keypair.fromSecret(adminKey);
-        const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+        const adminAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(adminKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(adminAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -213,7 +215,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(adminKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status === 'SUCCESS') {
             return approve
                 ? `Merchant ${merchantId} graduated successfully`
@@ -380,7 +382,7 @@ class MerchantNetworkSDK {
      */
     async getOnboardingQueue() {
         try {
-            const result = await this.contract.call("get_onboarding_queue");
+            const result = await (0, retry_1.withRetry)(() => this.contract.call("get_onboarding_queue"));
             return (0, stellar_sdk_1.scValToNative)(result.result.retval);
         }
         catch (error) {
@@ -393,7 +395,7 @@ class MerchantNetworkSDK {
      */
     async resetDailyVolumes(adminKey) {
         const adminKeypair = stellar_sdk_1.Keypair.fromSecret(adminKey);
-        const adminAccount = await this.server.getAccount(adminKeypair.publicKey());
+        const adminAccount = await (0, retry_1.withRetry)(() => this.server.getAccount(adminKeypair.publicKey()));
         const tx = new stellar_sdk_1.TransactionBuilder(adminAccount, {
             fee: '100',
             networkPassphrase: this.getNetworkPassphrase(),
@@ -402,7 +404,7 @@ class MerchantNetworkSDK {
             .setTimeout(30)
             .build();
         tx.sign(adminKeypair);
-        const result = await this.server.sendTransaction(tx);
+        const result = await (0, retry_1.withRetry)(() => this.server.sendTransaction(tx));
         if (result.status !== 'SUCCESS') {
             throw new Error(`Failed to reset daily volumes: ${result.status}`);
         }
