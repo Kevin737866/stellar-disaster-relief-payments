@@ -13,7 +13,12 @@ crate-type = ["cdylib"]
 # IMPORTANT: soroban-sdk version must match the Soroban CLI and RPC node version
 # used in deployment. A mismatch causes XDR serialisation incompatibilities.
 # See docs/COMPATIBILITY.md for the full compatibility matrix.
-soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+#
+# Do NOT enable the `testutils` feature here — it pulls in test-only code
+# (mock auths, `Env::default`, `Address::generate`, `register_contract`) that
+# has no place in release/WASM builds.  Test utilities are provided via
+# [dev-dependencies] below and are only compiled under `cfg(test)`.
+soroban-sdk = "22.0.0"
 soroban-token-sdk = "22.0.0"
 # sha2 provides SHA-256 for all on-chain hashing (identity factors, recovery codes,
 # duress PIN, device credential). Algorithm must match crypto-js SHA-256 in the
@@ -24,6 +29,8 @@ serde_json = "1.0"
 hex = "0.4.3"
 
 [dev-dependencies]
+# testutils is only available to cfg(test) targets (unit tests, integration
+# tests, and `cargo test`).  Release/WASM builds never resolve this entry.
 soroban-sdk = { version = "22.0.0", features = ["testutils"] }
 
 # ---------------------------------------------------------------------------
