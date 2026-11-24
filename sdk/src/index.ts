@@ -38,6 +38,7 @@ import { TrackerClient } from './trackerClient';
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
+export type { TaxDeductionPolicy, TaxReceipt } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 

@@ -301,7 +301,9 @@ async function trackImpact(donorAddress: string) {
       HAITI_FUND_ID,
       donorAddress,
       'International Relief Foundation',
-      'donor@relief.org'
+      'donor@relief.org',
+      // Replace with the donor's actual jurisdiction before issuing a receipt.
+      { jurisdiction: 'US', deductiblePercentage: 100 }
     );
 
     console.log(`✓ Tax Receipt Generated:`);

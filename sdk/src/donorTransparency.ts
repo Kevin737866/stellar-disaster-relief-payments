@@ -60,6 +60,8 @@ export interface TaxReceipt {
   donorEmail: string;
   totalDonation: string;
   taxDeductibleAmount: string;
+  /** Snapshot of the policy used; no tax claim is made without one. */
+  taxPolicy: TaxDeductionPolicy;
   donationDate: number;
   receiptDate: number;
   certificateNumber: string;
@@ -68,6 +70,22 @@ export interface TaxReceipt {
     sectorsSupported: string[];
     regionsImpacted: string[];
   };
+}
+
+/**
+ * Explicit tax treatment for a contribution. Deductibility is never inferred
+ * from the donation amount alone.
+ */
+export interface TaxDeductionPolicy {
+  /** Jurisdiction whose rules are applied (e.g. `US`, `GB`, `CA-ON`). */
+  jurisdiction: string;
+  /** Share of the donation that is deductible, 0-100 inclusive. */
+  deductiblePercentage: number;
+  /** Optional cap, in the same unit as the donation amount. */
+  maximumDeductibleAmount?: string;
+  /** Inclusive donation-date bounds for which the policy applies. */
+  validFrom?: number;
+  validUntil?: number;
 }
 
 export interface DonorDashboard {
@@ -289,14 +307,27 @@ export class DonorTransparencyClient {
     fundId: string,
     donorAddress: string,
     donorName: string,
-    donorEmail: string
+    donorEmail: string,
+    taxPolicy?: TaxDeductionPolicy
   ): Promise<TaxReceipt> {
     try {
+      // The contribution date comes from the single recorded fund-creation
+      // event, not from when the receipt happens to be generated.
+      const entries = await this.retrieveTransparencyEntries(fundId);
+      const contribution = this.resolveDonationContribution(fundId, entries);
+      const policy = this.validateTaxPolicy(taxPolicy);
       const fundFlow = await this.trackFundFlow(fundId, donorAddress);
       const proofs = await this.retrieveProofsOfImpact(fundId);
 
-      // Calculate tax deductible amount
-      const taxDeductibleAmount = this.calculateTaxDeductible(fundFlow.initialAmount);
+      if (fundFlow.initialAmount !== contribution.amount) {
+        throw new Error(`Fund-creation amount is inconsistent for fund ${fundId}`);
+      }
+
+      const taxDeductibleAmount = this.calculateTaxDeductible(
+        contribution.amount,
+        policy,
+        contribution.timestamp
+      );
 
       // Get impact data
       const sectors = new Set<string>();
@@ -314,9 +345,10 @@ export class DonorTransparencyClient {
         donorAddress,
         donorName,
         donorEmail,
-        totalDonation: fundFlow.initialAmount,
+        totalDonation: contribution.amount,
         taxDeductibleAmount,
-        donationDate: Date.now(),
+        taxPolicy: policy,
+        donationDate: contribution.timestamp,
         receiptDate: Date.now(),
         certificateNumber: this.generateCertificateNumber(),
         impact: {
@@ -528,9 +560,122 @@ export class DonorTransparencyClient {
     return balance.toString();
   }
 
-  private calculateTaxDeductible(amount: string): string {
-    // Typically 100% of qualified charitable contributions
-    return amount;
+  /**
+   * Resolves the one fund-creation event that verifies the contribution.
+   * A missing or duplicated event leaves the donation date unverifiable.
+   */
+  private resolveDonationContribution(
+    fundId: string,
+    entries: TransparencyEntry[]
+  ): { amount: string; timestamp: number } {
+    const creations = entries.filter(e => e.transactionType === 'fund_created');
+
+    if (creations.length === 0) {
+      throw new Error(`No fund-creation record found for fund ${fundId}`);
+    }
+    if (creations.length > 1) {
+      throw new Error(
+        `Multiple fund-creation records found for fund ${fundId}; donation date is ambiguous`
+      );
+    }
+
+    const creation = creations[0];
+    const amount = this.parseDonationAmount(creation.amount, 'Fund-creation record');
+    if (!Number.isFinite(creation.timestamp) || creation.timestamp < 0) {
+      throw new Error(`Fund-creation record for fund ${fundId} has an invalid timestamp`);
+    }
+
+    return { amount, timestamp: creation.timestamp };
+  }
+
+  private validateTaxPolicy(policy?: TaxDeductionPolicy): TaxDeductionPolicy {
+    if (!policy || typeof policy !== 'object') {
+      throw new Error('An explicit tax policy is required to generate a tax receipt');
+    }
+
+    const jurisdiction = typeof policy.jurisdiction === 'string' ? policy.jurisdiction.trim() : '';
+    if (!jurisdiction) {
+      throw new Error('Tax policy must specify a jurisdiction');
+    }
+    if (
+      !Number.isInteger(policy.deductiblePercentage) ||
+      policy.deductiblePercentage < 0 ||
+      policy.deductiblePercentage > 100
+    ) {
+      throw new Error('Tax policy deductiblePercentage must be an integer between 0 and 100');
+    }
+
+    const validated: TaxDeductionPolicy = {
+      jurisdiction,
+      deductiblePercentage: policy.deductiblePercentage,
+    };
+
+    if (policy.maximumDeductibleAmount !== undefined) {
+      validated.maximumDeductibleAmount = this.parseDonationAmount(
+        policy.maximumDeductibleAmount,
+        'Tax policy maximumDeductibleAmount'
+      );
+    }
+
+    for (const key of ['validFrom', 'validUntil'] as const) {
+      const value = policy[key];
+      if (value !== undefined) {
+        if (!Number.isFinite(value) || value < 0) {
+          throw new Error(`Tax policy ${key} must be a non-negative timestamp`);
+        }
+        validated[key] = value;
+      }
+    }
+    if (
+      validated.validFrom !== undefined &&
+      validated.validUntil !== undefined &&
+      validated.validFrom > validated.validUntil
+    ) {
+      throw new Error('Tax policy validFrom must not be after validUntil');
+    }
+
+    return validated;
+  }
+
+  private parseDonationAmount(amount: string, source: string): string {
+    if (typeof amount !== 'string' || !/^\d+$/.test(amount.trim())) {
+      throw new Error(`${source} has an invalid non-negative integer amount`);
+    }
+    return BigInt(amount.trim()).toString();
+  }
+
+  private calculateTaxDeductible(
+    amount: string,
+    policy?: TaxDeductionPolicy,
+    donationDate?: number
+  ): string {
+    // No amount is deductible unless an explicit, jurisdiction-scoped policy
+    // applies to the verified donation date.
+    const validatedPolicy = this.validateTaxPolicy(policy);
+    if (donationDate === undefined || !Number.isFinite(donationDate)) {
+      throw new Error('A verified donation date is required to calculate tax deductibility');
+    }
+    if (
+      validatedPolicy.validFrom !== undefined &&
+      donationDate < validatedPolicy.validFrom
+    ) {
+      throw new Error('Tax policy does not apply to this donation date');
+    }
+    if (
+      validatedPolicy.validUntil !== undefined &&
+      donationDate > validatedPolicy.validUntil
+    ) {
+      throw new Error('Tax policy does not apply to this donation date');
+    }
+
+    const total = BigInt(this.parseDonationAmount(amount, 'Donation'));
+    const deductible = (total * BigInt(validatedPolicy.deductiblePercentage)) / BigInt(100);
+
+    if (validatedPolicy.maximumDeductibleAmount !== undefined) {
+      const cap = BigInt(validatedPolicy.maximumDeductibleAmount);
+      return (deductible < cap ? deductible : cap).toString();
+    }
+    return deductible.toString();
   }
 
   private addBigNumbers(a: string, b: string): string {
