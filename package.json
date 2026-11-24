@@ -9,6 +9,7 @@
     "dev": "tsc --watch",
     "test": "jest",
     "test:sdk": "jest --selectProjects sdk",
+    "test:i18n": "jest --selectProjects sdk --runTestsByPath sdk/src/i18n.test.ts",
     "test:ui": "jest --selectProjects ui",
     "test:integration": "jest --selectProjects integration",
     "test:performance": "jest --selectProjects performance",
