@@ -9,7 +9,7 @@ export interface TransparencyEntry {
     location?: {
         latitude: number;
         longitude: number;
-        precision: number;
+        precision?: number;
     };
     proof?: string;
 }

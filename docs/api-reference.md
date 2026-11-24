@@ -126,7 +126,7 @@ pub fn add_trigger(
     auto_release_amount: U256,
     geofence_latitude: i64,     // degrees × 1e6
     geofence_longitude: i64,    // degrees × 1e6
-    geofence_radius_km: u64,
+    geofence_radius_km: u64,    // kilometers (not meters; cf. GeofenceZone.radius_meters)
     min_oracle_confirmations: u32,
 )
 ```
@@ -803,6 +803,71 @@ await client.confirmDelivery(shipmentId, params)  // Confirm receipt
 await client.getShipment(shipmentId)              // Fetch shipment
 await client.getShipmentHistory(shipmentId)       // Full history
 ```
+
+---
+
+## Geofence Utilities (`geo` module)
+
+The `geo` module provides shared geographic primitives used by
+BeneficiaryManager, MerchantNetwork, and SupplyChainTracker.
+
+---
+
+#### `GeofenceZone` struct
+
+```rust
+pub struct GeofenceZone {
+    pub zone_name: String,
+    pub center: GeoPoint,
+    pub radius_meters: u32,   // meters, not kilometers
+    pub is_safe: bool,
+}
+```
+
+| Field | Type | Unit | Description |
+|-------|------|------|-------------|
+| `zone_name` | `String` | — | Human-readable label for the zone |
+| `center` | `GeoPoint` | degrees (WGS84) | Center point of the circular geofence |
+| `radius_meters` | `u32` | **meters** | Radius of the geofence; use `radius_km()` for the km equivalent |
+| `is_safe` | `bool` | — | Whether the zone is a designated safe area |
+
+#### `GeofenceZone::contains`
+
+Checks whether a point lies inside the geofence.
+
+```rust
+pub fn contains(&self, point: &GeoPoint) -> bool
+```
+
+**Boundary semantics:** The boundary is **inclusive**. A point whose
+Haversine distance from `center` equals exactly `radius_meters / 1000.0` km
+is considered inside the zone. The comparison is `distance_km <=
+radius_meters / 1000.0`.
+
+| Scenario | Result |
+|----------|--------|
+| Point at exactly the configured radius | **Included** (returns `true`) |
+| Point just inside the radius | **Included** (returns `true`) |
+| Point just outside the radius | **Excluded** (returns `false`) |
+
+#### `GeoPoint::is_within_radius`
+
+Checks whether a point is within `radius_km` (km) of a center point. The
+boundary is **inclusive** (`distance <= radius_km`).
+
+```rust
+pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> bool
+```
+
+#### `GeoPoint::distance_to`
+
+Haversine great-circle distance between two points, in kilometers.
+
+```rust
+pub fn distance_to(&self, other: &GeoPoint) -> f64
+```
+
+Uses `EARTH_RADIUS_KM = 6371.0` (WGS84 mean radius).
 
 ---
 

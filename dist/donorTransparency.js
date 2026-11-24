@@ -211,7 +211,7 @@ class DonorTransparencyClient {
                 return this.addBigNumbers(sum, e.amount);
             }, '0');
             const geolocationCoverage = [
-                ...new Set(disbursements.map(e => e.location?.address || 'Unknown')),
+                ...new Set(disbursements.map(e => e.location ? `${e.location.latitude},${e.location.longitude}` : 'Unknown')),
             ];
             return {
                 totalExpenses,
