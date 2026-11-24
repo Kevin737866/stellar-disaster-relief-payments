@@ -90,7 +90,10 @@ impl GeoPoint {
         r * c
     }
 
-    /// Check if point is within radius (km) of another point
+    /// Check if point is within radius (km) of another point.
+    ///
+    /// The boundary is **inclusive**: a point at exactly `radius_km` from
+    /// `center` is considered inside (the comparison uses `<=`).
     pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> bool {
         self.distance_to(center) <= radius_km
     }
@@ -144,7 +147,20 @@ impl GeoBounds {
     }
 }
 
-/// Geofence zone with circular boundary
+/// Geofence zone with circular boundary.
+///
+/// # Boundary Semantics
+///
+/// The boundary is **inclusive**: a point whose Haversine distance from
+/// `center` equals `radius_meters / 1000.0` km is considered inside the
+/// zone. The [`contains`](GeofenceZone::contains) method uses `<=` for
+/// the comparison, so a point at exactly the configured radius is included.
+///
+/// # Units
+///
+/// `radius_meters` is measured in **meters** (not kilometers).
+/// Use [`radius_km`](GeofenceZone::radius_km) to obtain the equivalent
+/// value in kilometers.
 #[derive(Clone, Debug)]
 pub struct GeofenceZone {
     pub zone_name: String,
@@ -180,7 +196,12 @@ impl GeofenceZone {
         (self.zone_name.clone(), lat_scaled, lng_scaled, self.radius_meters, self.is_safe)
     }
 
-    /// Check if a point is within this geofence
+    /// Check if a point is within this geofence.
+    ///
+    /// The boundary is **inclusive**: a point at exactly `radius_meters`
+    /// from the center is considered inside. The comparison is
+    /// `distance_km <= radius_meters / 1000.0`, where `distance_km` is
+    /// the Haversine distance between `center` and `point`.
     pub fn contains(&self, point: &GeoPoint) -> bool {
         self.center.distance_to(point) <= (self.radius_meters as f64 / 1000.0)
     }
@@ -311,5 +332,259 @@ mod tests {
         let parsed = GeoFormatter::parse_point(&env, &formatted).unwrap();
         assert!((parsed.latitude - point.latitude).abs() < 0.000001);
         assert!((parsed.longitude - point.longitude).abs() < 0.000001);
+    }
+
+    // ── Boundary inclusion semantics ──────────────────────────────────
+
+    /// A point at exactly the configured radius (distance == radius)
+    /// must be considered inside the geofence (inclusive boundary).
+    #[test]
+    fn test_geofence_boundary_exact_radius_inclusive() {
+        let env = Env::default();
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Origin Zone"),
+            center,
+            1000, // 1 km = 1000 m
+            true,
+        );
+
+        // Move along the equator where 1 degree of longitude ≈ 111.0 km.
+        // For a 1 km radius, offset in degrees ≈ 1.0 / 111.0.
+        let offset_deg = 1.0 / 111.0;
+        let on_boundary = GeoPoint::new(0.0, offset_deg).unwrap();
+
+        let dist_km = center.distance_to(&on_boundary);
+        let radius_km = zone.radius_km();
+
+        // Verify the point is at approximately the configured radius.
+        assert!(
+            (dist_km - radius_km).abs() < 0.01,
+            "distance {} should be ~{} km",
+            dist_km,
+            radius_km
+        );
+
+        // The boundary is inclusive: a point at exactly the radius is inside.
+        assert!(
+            zone.contains(&on_boundary),
+            "point at exact radius should be included (inclusive boundary)"
+        );
+    }
+
+    /// A point just inside the radius must be included.
+    #[test]
+    fn test_geofence_point_just_inside() {
+        let env = Env::default();
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Origin Zone"),
+            center,
+            1000, // 1 km
+            true,
+        );
+
+        // Offset slightly less than the radius: 99% of the radius.
+        let offset_deg = 0.99 * (1.0 / 111.0);
+        let just_inside = GeoPoint::new(0.0, offset_deg).unwrap();
+
+        assert!(
+            zone.contains(&just_inside),
+            "point just inside the radius should be included"
+        );
+
+        // Also verify with is_within_radius helper for consistency.
+        let radius_km = zone.radius_km();
+        assert!(
+            just_inside.is_within_radius(&center, radius_km),
+            "is_within_radius must agree with GeofenceZone::contains"
+        );
+    }
+
+    /// A point just outside the radius must be excluded.
+    #[test]
+    fn test_geofence_point_just_outside() {
+        let env = Env::default();
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Origin Zone"),
+            center,
+            1000, // 1 km
+            true,
+        );
+
+        // Offset slightly more than the radius: 101% of the radius.
+        let offset_deg = 1.01 * (1.0 / 111.0);
+        let just_outside = GeoPoint::new(0.0, offset_deg).unwrap();
+
+        assert!(
+            !zone.contains(&just_outside),
+            "point just outside the radius should be excluded"
+        );
+
+        // Also verify with is_within_radius helper for consistency.
+        let radius_km = zone.radius_km();
+        assert!(
+            !just_outside.is_within_radius(&center, radius_km),
+            "is_within_radius must agree with GeofenceZone::contains"
+        );
+    }
+
+    /// The center point itself is always inside the geofence (distance == 0).
+    #[test]
+    fn test_geofence_center_point() {
+        let env = Env::default();
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Camp Alpha"),
+            center,
+            5000,
+            true,
+        );
+
+        assert!(
+            zone.contains(&center),
+            "center point should be inside the geofence"
+        );
+    }
+
+    // ── Unit conversion semantics ──────────────────────────────────────
+
+    /// Verify that radius_meters is correctly converted to kilometers
+    /// and that contains() uses the right unit.
+    #[test]
+    fn test_geofence_radius_unit_conversion() {
+        let env = Env::default();
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+
+        // 2000 meters = 2.0 km
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Zone 2km"),
+            center,
+            2000,
+            true,
+        );
+
+        // radius_km() should return 2.0
+        assert!(
+            (zone.radius_km() - 2.0).abs() < 1e-9,
+            "radius_km() should be 2.0, got {}",
+            zone.radius_km()
+        );
+
+        // A point at 1.9 km should be inside (1.9 < 2.0 km).
+        let offset_deg_1_9km = 1.9 / 111.0;
+        let point_1_9km = GeoPoint::new(0.0, offset_deg_1_9km).unwrap();
+        assert!(
+            zone.contains(&point_1_9km),
+            "point at ~1.9 km should be inside a 2 km zone"
+        );
+
+        // A point at 2.1 km should be outside (2.1 > 2.0 km).
+        let offset_deg_2_1km = 2.1 / 111.0;
+        let point_2_1km = GeoPoint::new(0.0, offset_deg_2_1km).unwrap();
+        assert!(
+            !zone.contains(&point_2_1km),
+            "point at ~2.1 km should be outside a 2 km zone"
+        );
+    }
+
+    /// Verify that contains() and is_within_radius() agree on boundary
+    /// behavior — both must be inclusive.
+    #[test]
+    fn test_contains_and_is_within_radius_agree() {
+        let env = Env::default();
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Camp Alpha"),
+            center,
+            5000, // 5 km
+            true,
+        );
+        let radius_km = zone.radius_km();
+
+        // Inside point
+        let inside = GeoPoint::new(18.595, -72.307).unwrap();
+        assert_eq!(
+            zone.contains(&inside),
+            inside.is_within_radius(&center, radius_km),
+            "contains and is_within_radius must agree for inside point"
+        );
+
+        // Outside point
+        let outside = GeoPoint::new(19.0, -72.0).unwrap();
+        assert_eq!(
+            zone.contains(&outside),
+            outside.is_within_radius(&center, radius_km),
+            "contains and is_within_radius must agree for outside point"
+        );
+
+        // Center point
+        assert_eq!(
+            zone.contains(&center),
+            center.is_within_radius(&center, radius_km),
+            "contains and is_within_radius must agree for center point"
+        );
+    }
+
+    /// Verify that a zero-radius geofence includes only the center point.
+    #[test]
+    fn test_geofence_zero_radius() {
+        let env = Env::default();
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Point Zone"),
+            center,
+            0, // 0 m radius
+            true,
+        );
+
+        // Center itself: distance 0 <= 0 → inside
+        assert!(
+            zone.contains(&center),
+            "center should be inside a zero-radius geofence"
+        );
+
+        // Any offset from center: distance > 0 → outside
+        let offset = GeoPoint::new(0.001, 0.0).unwrap();
+        assert!(
+            !zone.contains(&offset),
+            "any point away from center should be outside a zero-radius geofence"
+        );
+    }
+
+    /// Verify that a point on the boundary at a non-equatorial latitude
+    /// is also handled inclusively (test with a latitude offset).
+    #[test]
+    fn test_geofence_boundary_at_non_equatorial_latitude() {
+        let env = Env::default();
+        let lat = 45.0;
+        let center = GeoPoint::new(lat, 0.0).unwrap();
+        let zone = GeofenceZone::new(
+            String::from_str(&env, "Mid-Latitude Zone"),
+            center,
+            1000, // 1 km
+            true,
+        );
+
+        // Along a meridian (latitude offset), 1 degree ≈ 111 km everywhere.
+        let offset_deg = 1.0 / 111.0;
+        let on_boundary = GeoPoint::new(lat + offset_deg, 0.0).unwrap();
+
+        let dist_km = center.distance_to(&on_boundary);
+        let radius_km = zone.radius_km();
+
+        assert!(
+            (dist_km - radius_km).abs() < 0.01,
+            "distance {} should be ~{} km at lat {}",
+            dist_km,
+            radius_km,
+            lat
+        );
+
+        assert!(
+            zone.contains(&on_boundary),
+            "point at exact radius should be included at non-equatorial latitude"
+        );
     }
 }

@@ -9,6 +9,8 @@ import {
   xdr,
   Keypair,
   BASE_FEE,
+  nativeToScVal,
+  scValToNative,
 } from 'stellar-sdk';
 import {
   FundCreationError,
@@ -21,6 +23,7 @@ import {
   NetworkError,
   ValidationError,
   UnauthorizedError,
+  FundNotFoundError,
 } from './errors';
 import { withRetry } from './retry';
 import { validateAddress, validateAddressList } from './validation';
@@ -510,22 +513,56 @@ export class EmergencyFundsClient {
   }
 
   /**
-   * Retrieves current status and metrics of an emergency fund
+   * Retrieves current status and metrics of an emergency fund by simulating
+   * the on-chain `get_fund_status` contract call.
+   *
+   * The contract returns a 5-tuple:
+   *   (status: String, total: U256, released: U256, available: U256, count: u64)
+   *
+   * Throws `FundNotFoundError` when the fund does not exist on-chain (the
+   * contract panics, which surfaces as an error from the simulation).
+   * Throws `NetworkError` for RPC failures.
+   * Throws `Error` for decode failures (unexpected response shape).
    */
   async getFundStatus(fundId: string): Promise<FundStatus> {
     try {
       const contract = new Contract(this.contractId) as any;
+      const result = await contract.call('get_fund_status', nativeToScVal(fundId));
+      const decoded = scValToNative(result.result.retval);
 
-      // Note: This would typically use contract.call() in a simulation
-      // For now, returning a placeholder structure
+      if (!Array.isArray(decoded) || decoded.length < 5) {
+        throw new Error(
+          `Unexpected contract response: expected a 5-element tuple, got ${typeof decoded}`
+        );
+      }
+
+      const [status, totalAmount, releasedAmount, availableAmount, beneficiaryCount] = decoded;
+
+      if (typeof status !== 'string') {
+        throw new Error(`Unexpected status type: expected string, got ${typeof status}`);
+      }
+
       return {
-        status: 'active',
-        totalAmount: '0',
-        releasedAmount: '0',
-        availableAmount: '0',
-        beneficiaryCount: 0,
+        status,
+        totalAmount: String(totalAmount),
+        releasedAmount: String(releasedAmount),
+        availableAmount: String(availableAmount),
+        beneficiaryCount: Number(beneficiaryCount),
       };
     } catch (error: any) {
+      // The contract panics when a fund does not exist; this surfaces as
+      // a simulation error. Distinguish it from network/decode errors.
+      if (
+        error?.message?.includes('not found') ||
+        error?.message?.includes('does not exist') ||
+        error?.message?.includes('unwrap') ||
+        error?.message?.includes('panic')
+      ) {
+        throw new FundNotFoundError(fundId, { operation: 'getFundStatus' });
+      }
+      if (error instanceof FundNotFoundError) {
+        throw error;
+      }
       throw new NetworkError('get fund status', error.message, { fundId });
     }
   }

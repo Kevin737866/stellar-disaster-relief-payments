@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { AidClient } from '../../sdk/src/aidClient';
 import { BeneficiaryClient } from '../../sdk/src/beneficiaryClient';
 import { MerchantClient } from '../../sdk/src/merchantClient';
@@ -103,7 +103,7 @@ interface DashboardStats {
   activeTransfers: number;
   totalTransferAmount: bigint;
   spentAmount: bigint;
-  /** How many amount fields could not be parsed as integers. */
+  /** How many amount fields could not be parsed as integers (non-fund only). */
   invalidAmountFields: number;
 }
 
@@ -232,6 +232,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [funds, setFunds] = useState<EmergencyFund[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedDisasterType, setSelectedDisasterType] = useState<string>('');
 
   const resolved = resolveQuery(query);
 
@@ -280,7 +281,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       const spentTotals = sumAmounts(transfersData.map((t) => t.spentAmount));
 
       const invalidAmountFields =
-        fundTotals.invalid + releasedTotals.invalid + transferTotals.invalid + spentTotals.invalid;
+        transferTotals.invalid + spentTotals.invalid;
 
       setStats({
         totalFunds: fundsData.length,
@@ -306,6 +307,33 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const pct = (part: bigint, whole: bigint) => percentageOf(part, whole);
 
+  // ── Disaster filter (client-side) ──────────────────────────────────────
+
+  const uniqueDisasterTypes = useMemo(
+    () => [...new Set(funds.map((f) => f.disasterType))],
+    [funds]
+  );
+
+  const filteredFunds = useMemo(
+    () =>
+      selectedDisasterType === ''
+        ? funds
+        : funds.filter((f) => f.disasterType === selectedDisasterType),
+    [funds, selectedDisasterType]
+  );
+
+  const fundStats = useMemo(() => {
+    const total = sumAmounts(filteredFunds.map((f) => f.totalAmount));
+    const released = sumAmounts(filteredFunds.map((f) => f.releasedAmount));
+    return {
+      totalFunds: filteredFunds.length,
+      activeFunds: filteredFunds.filter((f) => f.isActive).length,
+      totalFundAmount: total.total,
+      releasedAmount: released.total,
+      invalidAmountFields: total.invalid + released.invalid,
+    };
+  }, [filteredFunds]);
+
   /** Counts (not money) still arrive as `number`, so they need their own ratio. */
   const countPct = (part: number, whole: number) =>
     whole === 0 ? 0 : Math.min(100, Math.max(0, Math.round((part / whole) * 100)));
@@ -329,13 +357,28 @@ export const Dashboard: React.FC<DashboardProps> = ({
             beneficiary and merchant views for full paginated data.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={loadDashboardData}
-          className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <select
+            aria-label="Filter by disaster type"
+            value={selectedDisasterType}
+            onChange={(e) => setSelectedDisasterType(e.target.value)}
+            className="border border-gray-300 rounded px-3 py-2 text-sm"
+          >
+            <option value="">All disaster types</option>
+            {uniqueDisasterTypes.map((type) => (
+              <option key={type} value={type}>
+                {type.charAt(0).toUpperCase() + type.slice(1)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={loadDashboardData}
+            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -360,10 +403,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
       )}
 
       {/* #203 — unreadable amounts are a data problem worth showing. */}
-      {stats && stats.invalidAmountFields > 0 && (
+      {stats && (fundStats.invalidAmountFields + stats.invalidAmountFields) > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-red-700 text-sm">
-          {stats.invalidAmountFields} amount{stats.invalidAmountFields === 1 ? '' : 's'} could not
-          be read as an integer and {stats.invalidAmountFields === 1 ? 'was' : 'were'} counted as
+          {fundStats.invalidAmountFields + stats.invalidAmountFields} amount{(fundStats.invalidAmountFields + stats.invalidAmountFields) === 1 ? '' : 's'} could not
+          be read as an integer and {(fundStats.invalidAmountFields + stats.invalidAmountFields) === 1 ? 'was' : 'were'} counted as
           zero. Totals below may be understated.
         </div>
       )}
@@ -374,8 +417,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard
               label="Emergency Funds"
-              value={stats.activeFunds}
-              sub={`${stats.totalFunds} total`}
+              value={fundStats.activeFunds}
+              sub={`${fundStats.totalFunds} total`}
               color="text-blue-600"
             />
             <StatCard
@@ -405,8 +448,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h2 className="font-semibold text-gray-800 mb-4">Fund Overview</h2>
               <BarChart
                 data={[
-                  { label: 'Active', value: stats.activeFunds, color: '#3b82f6' },
-                  { label: 'Inactive', value: stats.totalFunds - stats.activeFunds, color: '#d1d5db' },
+                  { label: 'Active', value: fundStats.activeFunds, color: '#3b82f6' },
+                  { label: 'Inactive', value: fundStats.totalFunds - fundStats.activeFunds, color: '#d1d5db' },
                   { label: 'Transfers', value: stats.activeTransfers, color: '#f97316' },
                   { label: 'Merchants', value: stats.verifiedMerchants, color: '#8b5cf6' },
                   { label: 'Benefic.', value: stats.activeBeneficiaries, color: '#10b981' },
@@ -419,7 +462,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <h2 className="font-semibold text-gray-800 mb-4">Utilization Rates</h2>
               <div className="flex justify-around items-center h-40">
                 <DonutChart
-                  value={pct(stats.releasedAmount, stats.totalFundAmount)}
+                  value={pct(fundStats.releasedAmount, fundStats.totalFundAmount)}
                   color="#3b82f6"
                   label="Funds Released"
                 />
@@ -444,14 +487,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
           {/* Financial summary */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard label="Total Fund Amount" value={formatAmount(stats.totalFundAmount)} sub="XLM equivalent" />
-            <StatCard label="Released to Date" value={formatAmount(stats.releasedAmount)} sub={`${pct(stats.releasedAmount, stats.totalFundAmount)}% of total`} />
+            <StatCard label="Total Fund Amount" value={formatAmount(fundStats.totalFundAmount)} sub="XLM equivalent" />
+            <StatCard label="Released to Date" value={formatAmount(fundStats.releasedAmount)} sub={`${pct(fundStats.releasedAmount, fundStats.totalFundAmount)}% of total`} />
             <StatCard label="Transfer Volume" value={formatAmount(stats.totalTransferAmount)} sub="across all transfers" />
             <StatCard label="Amount Spent" value={formatAmount(stats.spentAmount)} sub={`${pct(stats.spentAmount, stats.totalTransferAmount)}% utilization`} />
           </div>
 
           {/* Active funds table */}
-          {funds.length > 0 && (
+          {filteredFunds.length > 0 ? (
             <div className="bg-white rounded-lg border border-gray-200 p-5">
               <h2 className="font-semibold text-gray-800 mb-4">Active Emergency Funds</h2>
               <div className="overflow-x-auto">
@@ -470,7 +513,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {funds.map((fund) => {
+                    {filteredFunds.map((fund) => {
                       const total = parseAmount(fund.totalAmount);
                       const released = parseAmount(fund.releasedAmount);
                       const utilPct = pct(released, total);
@@ -519,6 +562,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   </tbody>
                 </table>
               </div>
+            </div>
+          ) : (
+            <div className="bg-white rounded-lg border border-gray-200 p-5 text-gray-500">
+              No funds match the selected disaster type.
             </div>
           )}
         </>
