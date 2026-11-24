@@ -16,7 +16,20 @@ export {
   isDisbursementPurposeCategory,
 } from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
-export { OfflineAuthClient, MAX_PAPER_BACKUP_CODES } from './offlineAuth';
+export {
+  OfflineAuthClient,
+  InMemorySMSChallengeStateStore,
+  MAX_PAPER_BACKUP_CODES,
+} from './offlineAuth';
+export type {
+  ConsumedSMSChallengeRecord,
+  IssuedSMSChallengeRecord,
+  OfflineAuthConfig,
+  SMSChallengeStateSnapshot,
+  SMSChallengeStateStore,
+  SMSChallengeValidationReason,
+  SMSChallengeValidationResult,
+} from './offlineAuth';
 export {
   MerchantClient,
   DEFAULT_MERCHANT_PAGE_SIZE,

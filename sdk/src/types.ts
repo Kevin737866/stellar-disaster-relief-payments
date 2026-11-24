@@ -546,6 +546,8 @@ export interface OfflineAuthCode {
   expiresAt: number;
   signature: string;
   checksum?: string; // For paper codes
+  /** Single-use identifier; present on SMS/USSD challenges. */
+  challengeId?: string;
 }
 
 export interface BluetoothMeshNode {

@@ -1,4 +1,8 @@
-import { MAX_PAPER_BACKUP_CODES, OfflineAuthClient } from './offlineAuth';
+import {
+  InMemorySMSChallengeStateStore,
+  MAX_PAPER_BACKUP_CODES,
+  OfflineAuthClient,
+} from './offlineAuth';
 
 // Use the same module object the implementation's dynamic require() resolves.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -143,5 +147,182 @@ describe('offline auth paper backup codes', () => {
 
     const timestampBefore = code.createdAt;
     expect(timestampBefore).toBeGreaterThan(0);
+  });
+});
+
+describe('offline auth SMS/USSD single-use challenges', () => {
+  const PHONE = '+962791234567';
+  const VERIFIER = 'desk-a';
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function setup() {
+    const store = new InMemorySMSChallengeStateStore();
+    const issuer = new OfflineAuthClient({ challengeStateStore: store });
+    const verifier = new OfflineAuthClient({ challengeStateStore: store, verifierId: VERIFIER });
+    return { store, issuer, verifier };
+  }
+
+  function validate(
+    verifier: OfflineAuthClient,
+    challenge: { challengeId?: string; code: string; signature: string; expiresAt: number },
+    verifierId: string = VERIFIER
+  ) {
+    return verifier.validateSMSCode(
+      challenge.challengeId!,
+      challenge.code,
+      PHONE,
+      challenge.signature,
+      challenge.expiresAt,
+      verifierId
+    );
+  }
+
+  it('generates explicit, unique challenge IDs', () => {
+    const { issuer } = setup();
+    const challenges = Array.from({ length: 20 }, () => issuer.generateSMSCode('id', PHONE));
+
+    challenges.forEach(challenge => {
+      expect(challenge.challengeId).toMatch(/^[0-9a-f]{32}$/);
+    });
+    expect(new Set(challenges.map(challenge => challenge.challengeId)).size).toBe(20);
+  });
+
+  it('accepts a challenge once and rejects a replay by the same verifier', () => {
+    const { store, issuer, verifier } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    const first = validate(verifier, challenge);
+    expect(first).toMatchObject({
+      isValid: true,
+      reason: 'valid',
+      challengeId: challenge.challengeId,
+      verifierId: VERIFIER,
+    });
+    expect(store.getConsumed(VERIFIER, challenge.challengeId!)).toBeDefined();
+
+    const replay = validate(verifier, challenge);
+    expect(replay).toMatchObject({ isValid: false, reason: 'already_consumed' });
+    expect(replay.consumedAt).toBe(first.consumedAt);
+  });
+
+  it('scopes consumption to one verifier authority', () => {
+    const { store, issuer, verifier } = setup();
+    const other = new OfflineAuthClient({ challengeStateStore: store, verifierId: 'desk-b' });
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    expect(validate(verifier, challenge, VERIFIER).isValid).toBe(true);
+    expect(validate(other, challenge, 'desk-b').isValid).toBe(true);
+    expect(validate(other, challenge, 'desk-b').reason).toBe('already_consumed');
+  });
+
+  it('rejects an expired challenge with a distinct outcome', () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(Date.UTC(2024, 0, 1));
+    const { issuer, verifier } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE, 15);
+    now.mockReturnValue(challenge.expiresAt + 1);
+
+    expect(validate(verifier, challenge).reason).toBe('expired');
+  });
+
+  it('rejects unknown challenge IDs and missing verifier IDs distinctly', () => {
+    const { issuer, verifier } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    const unknown = verifier.validateSMSCode(
+      'not-a-challenge',
+      challenge.code,
+      PHONE,
+      challenge.signature,
+      challenge.expiresAt,
+      VERIFIER
+    );
+    expect(unknown.reason).toBe('unknown_challenge');
+
+    const missingVerifier = validate(verifier, challenge, '');
+    expect(missingVerifier.reason).toBe('invalid_verifier');
+  });
+
+  it('rejects a tampered signature', () => {
+    const { issuer, verifier } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    const result = verifier.validateSMSCode(
+      challenge.challengeId!,
+      challenge.code,
+      PHONE,
+      'tampered-signature',
+      challenge.expiresAt,
+      VERIFIER
+    );
+
+    expect(result.reason).toBe('invalid_signature');
+  });
+
+  it('accepts only one of two concurrent attempts', async () => {
+    const { issuer, verifier } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    const results = await Promise.all([
+      Promise.resolve().then(() => validate(verifier, challenge)),
+      Promise.resolve().then(() => validate(verifier, challenge)),
+    ]);
+
+    expect(results.filter(result => result.isValid)).toHaveLength(1);
+    expect(results.map(result => result.reason).sort()).toEqual(['already_consumed', 'valid']);
+  });
+
+  it('keeps consumption after a verifier restart with a durable store', () => {
+    const { issuer, store } = setup();
+    const challenge = issuer.generateSMSCode('id', PHONE);
+
+    const firstVerifier = new OfflineAuthClient({ challengeStateStore: store, verifierId: VERIFIER });
+    expect(validate(firstVerifier, challenge).isValid).toBe(true);
+
+    const restarted = new OfflineAuthClient({ challengeStateStore: store, verifierId: VERIFIER });
+    expect(validate(restarted, challenge).reason).toBe('already_consumed');
+  });
+
+  it('reconciles offline devices, keeps the earliest tombstone, and reports conflicts', () => {
+    const now = jest.spyOn(Date, 'now');
+    const baseTime = Date.UTC(2024, 0, 1);
+    now.mockReturnValue(baseTime);
+
+    const storeA = new InMemorySMSChallengeStateStore();
+    const storeB = new InMemorySMSChallengeStateStore();
+    const issuerA = new OfflineAuthClient({ challengeStateStore: storeA });
+    const deviceA = new OfflineAuthClient({ challengeStateStore: storeA, verifierId: VERIFIER });
+    const deviceB = new OfflineAuthClient({ challengeStateStore: storeB, verifierId: VERIFIER });
+    const challenge = issuerA.generateSMSCode('id', PHONE);
+
+    // Share issuance metadata, then let both devices work offline.
+    deviceB.reconcileChallengeState(VERIFIER, [
+      { issued: storeA.listIssued(), consumed: [] },
+    ]);
+
+    now.mockReturnValue(baseTime + 1000);
+    expect(validate(deviceA, challenge).isValid).toBe(true);
+    now.mockReturnValue(baseTime + 2000);
+    expect(validate(deviceB, challenge).isValid).toBe(true);
+
+    const reconciliation = deviceA.reconcileChallengeState(VERIFIER, [
+      deviceB.exportChallengeState(VERIFIER),
+    ]);
+    expect(reconciliation.conflicts).toContain(challenge.challengeId);
+    expect(deviceA.exportChallengeState(VERIFIER).consumed[0].consumedAt).toBe(baseTime + 1000);
+
+    deviceB.reconcileChallengeState(VERIFIER, [deviceA.exportChallengeState(VERIFIER)]);
+    expect(validate(deviceB, challenge).reason).toBe('already_consumed');
+  });
+
+  it('fails explicitly instead of resetting state when no store is configured', () => {
+    const client = new OfflineAuthClient({ verifierId: VERIFIER });
+
+    expect(() => client.generateSMSCode('id', PHONE)).toThrow(/challenge state store is not configured/i);
+    expect(() =>
+      client.validateSMSCode('anything', '000000', PHONE, 'sig', Date.now(), VERIFIER)
+    ).toThrow(/challenge state store is not configured/i);
   });
 });
