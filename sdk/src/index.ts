@@ -39,6 +39,10 @@ import { TrackerClient } from './trackerClient';
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
+export type {
+  FundExpiryNotificationIdSource,
+  RegisterFundExpiryNotificationResult,
+} from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
