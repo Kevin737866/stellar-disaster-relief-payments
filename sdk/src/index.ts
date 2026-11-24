@@ -16,7 +16,7 @@ export {
   isDisbursementPurposeCategory,
 } from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
-export { OfflineAuthClient } from './offlineAuth';
+export { OfflineAuthClient, MAX_PAPER_BACKUP_CODES } from './offlineAuth';
 export {
   MerchantClient,
   DEFAULT_MERCHANT_PAGE_SIZE,
