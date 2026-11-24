@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.examples.json",
+  "include": [
+    "examples/__typecheck_fixtures__/invalid-api-usage.ts",
+    "sdk/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}

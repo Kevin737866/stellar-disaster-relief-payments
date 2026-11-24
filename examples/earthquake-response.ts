@@ -1,9 +1,11 @@
-import { 
-  createDisasterReliefSDK, 
-  TESTNET_CONFIG, 
+import {
+  CATEGORY_FOOD,
+  CATEGORY_MEDICAL,
+  createDisasterReliefSDK,
   DISASTER_TYPES,
-  SUPPLY_TYPES 
-} from '../sdk/src/index';
+  SUPPLY_TYPES,
+  TESTNET_CONFIG,
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Earthquake Disaster Response Example
@@ -44,13 +46,7 @@ async function earthquakeResponse() {
       config.affectedArea,
       Date.now() + (config.duration * 24 * 60 * 60 * 1000),
       [config.adminKey],
-      1,
-      {
-        'response_team_id': 'EQ_TEAM_2024_001',
-        'donor_agency': 'International Relief Fund',
-        'priority_level': 'critical',
-        'contact_email': 'earthquake-response@relief.org'
-      }
+      1
     );
 
     // Step 2: Deploy rapid emergency funds
@@ -189,12 +185,18 @@ async function earthquakeResponse() {
     ];
 
     for (const merchant of merchants) {
+      const category = merchant.businessType === 'pharmacy' ? CATEGORY_MEDICAL : CATEGORY_FOOD;
       const request = sdk.merchantClient.createOnboardingRequest(
         merchant.name,
         merchant.businessType,
-        merchant.location,
+        category,
+        `${merchant.location.latitude},${merchant.location.longitude}`,
+        merchant.location.address,
+        merchant.location.city,
+        merchant.location.country,
+        merchant.location.postalCode,
         merchant.contactInfo,
-        merchant.stellarAddress
+        merchant.verificationDocuments
       );
       
       await sdk.merchantClient.registerMerchant(
@@ -337,9 +339,14 @@ async function earthquakeResponse() {
     // Step 8: Generate QR codes for offline access
     console.log('📱 Generating QR codes for offline access...');
     for (const person of displacedPersons) {
+      const profile = await sdk.beneficiaryClient.getBeneficiary(person.beneficiaryId);
+      if (!profile) {
+        console.warn(`⚠️ Skipping QR for unknown beneficiary ${person.beneficiaryId}`);
+        continue;
+      }
       const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
         person.beneficiaryId,
-        await sdk.beneficiaryClient.getBeneficiary(person.beneficiaryId)
+        profile
       );
       console.log(`📲 QR Code for ${person.name}:`, qrCode.substring(0, 100) + '...');
     }

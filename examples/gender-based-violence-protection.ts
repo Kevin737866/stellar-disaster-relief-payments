@@ -17,8 +17,10 @@
  * 6. Location privacy protection
  */
 
-import { BeneficiaryIdentityClient } from '../sdk/src/beneficiaryIdentity';
-import { OfflineAuthClient } from '../sdk/src/offlineAuth';
+import {
+  BeneficiaryIdentityClient,
+  OfflineAuthClient,
+} from 'stellar-disaster-relief-sdk';
 import { Keypair } from 'stellar-sdk';
 
 // Configuration

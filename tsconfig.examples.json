@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "stellar-disaster-relief-sdk": ["sdk/src/index.ts"]
+    },
+    "types": ["node"]
+  },
+  "include": [
+    "examples/**/*.ts",
+    "sdk/src/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "examples/__typecheck_fixtures__/**"
+  ]
+}

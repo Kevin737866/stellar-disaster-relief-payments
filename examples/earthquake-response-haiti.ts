@@ -14,15 +14,19 @@
 import {
   Keypair,
   Networks,
-  Server,
+  SorobanRpc,
 } from 'stellar-sdk';
-import { EmergencyFundsClient } from '../sdk/src/emergencyFunds';
-import { DonorTransparencyClient } from '../sdk/src/donorTransparency';
+import {
+  DonorTransparencyClient,
+  EmergencyFundsClient,
+} from 'stellar-disaster-relief-sdk';
+
+const { Server } = SorobanRpc;
 
 // Configuration
 const TESTNET_RPC = 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = 'CARDIO7WBLDQ7FXMXJCQ5DPPNKZMFBFVWDLVZ2HI2KNHQR5YSN5KDVX'; // Replace with actual
-const NETWORK_PASSPHRASE = Networks.TESTNET_NETWORK_PASSPHRASE;
+const NETWORK_PASSPHRASE = Networks.TESTNET;
 
 // Disaster parameters
 const HAITI_FUND_ID = 'haiti-earthquake-2024';
@@ -36,6 +40,8 @@ const TOTAL_FUND_AMOUNT = '10000000.00'; // $10M
 const HEALTHCARE_ALLOCATION = '5000000.00'; // $5M
 const SHELTER_ALLOCATION = '3000000.00'; // $3M
 const LOGISTICS_ALLOCATION = '2000000.00'; // $2M
+const MIN_SECTOR_ALLOCATION = '100000.00'; // $100k
+const MAX_SECTOR_ALLOCATION = '10000000.00'; // $10M
 
 async function setupHaitiEarthquakeFund(
   adminKeypair: Keypair,
@@ -133,7 +139,9 @@ async function setupHaitiEarthquakeFund(
         'GHZX7G5BTQVZFTQ5PYE3HZQTFR3VDPYX5QZ4KLTW4CWYQJOKJMIBFPZ', // WHO partner
         'G3XXYUPBH3KWSQYNWHTGMKBMVBQW7U2LKFQM5BNF6IIRRSQEKZZRNZQX', // Red Crescent
       ],
-      'Medical supplies, emergency clinics, vaccination campaigns'
+      'Medical supplies, emergency clinics, vaccination campaigns',
+      MIN_SECTOR_ALLOCATION,
+      MAX_SECTOR_ALLOCATION
     );
 
     // Shelter sector
@@ -146,7 +154,9 @@ async function setupHaitiEarthquakeFund(
         'GZXBTFXPFYJFUHZ5HVFJKQX7PQZLP7V6TN7MX3W3GZTRLGBMMGVNPVY2', // Local NGO
         'GKYXBVFYJMP4ZW2NTQ5PZ3QR7JFVKX2WMJQL7Z5HQMZ5V2QVWYYX3KDI', // Construction partner
       ],
-      'Temporary shelter, reconstruction materials, site preparation'
+      'Temporary shelter, reconstruction materials, site preparation',
+      MIN_SECTOR_ALLOCATION,
+      MAX_SECTOR_ALLOCATION
     );
 
     // Logistics sector
@@ -158,7 +168,9 @@ async function setupHaitiEarthquakeFund(
       [
         'GZYX2LQFPJ2HW3X4Q5Z6B7C8D9E0F1G2H3I4J5K6L7M8N9O0P1Q2R3S4T', // Logistics partner
       ],
-      'Transportation, warehousing, supply chain management'
+      'Transportation, warehousing, supply chain management',
+      MIN_SECTOR_ALLOCATION,
+      MAX_SECTOR_ALLOCATION
     );
 
     console.log(`✓ Fund allocations configured:`);
@@ -301,7 +313,9 @@ async function trackImpact(donorAddress: string) {
       HAITI_FUND_ID,
       donorAddress,
       'International Relief Foundation',
-      'donor@relief.org'
+      'donor@relief.org',
+      // Replace with the donor's actual jurisdiction before issuing a receipt.
+      { jurisdiction: 'US', deductiblePercentage: 100 }
     );
 
     console.log(`✓ Tax Receipt Generated:`);

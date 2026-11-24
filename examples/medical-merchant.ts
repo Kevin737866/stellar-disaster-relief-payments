@@ -1,7 +1,7 @@
 import { 
   createDisasterReliefSDK, 
   TESTNET_CONFIG 
-} from '../sdk/src/index';
+} from 'stellar-disaster-relief-sdk';
 import { 
   MerchantNetworkSDK, 
   CATEGORY_MEDICAL,
@@ -13,7 +13,7 @@ import {
   PAYMENT_QR,
   PAYMENT_NFC,
   PAYMENT_OFFLINE
-} from '../sdk/src/merchantNetwork';
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Medical Merchant Network - Pharmacy Payment System

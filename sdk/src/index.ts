@@ -16,7 +16,20 @@ export {
   isDisbursementPurposeCategory,
 } from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
-export { OfflineAuthClient } from './offlineAuth';
+export {
+  OfflineAuthClient,
+  InMemorySMSChallengeStateStore,
+  MAX_PAPER_BACKUP_CODES,
+} from './offlineAuth';
+export type {
+  ConsumedSMSChallengeRecord,
+  IssuedSMSChallengeRecord,
+  OfflineAuthConfig,
+  SMSChallengeStateSnapshot,
+  SMSChallengeStateStore,
+  SMSChallengeValidationReason,
+  SMSChallengeValidationResult,
+} from './offlineAuth';
 export {
   MerchantClient,
   DEFAULT_MERCHANT_PAGE_SIZE,
@@ -38,11 +51,30 @@ import { TrackerClient } from './trackerClient';
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
+export type { TaxDeductionPolicy, TaxReceipt } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
-export { MerchantNetworkSDK } from './merchantNetwork';
+export {
+  MerchantNetworkSDK,
+  CATEGORY_FOOD,
+  CATEGORY_WATER,
+  CATEGORY_SHELTER,
+  CATEGORY_MEDICAL,
+  CATEGORY_CLOTHING,
+  CATEGORY_FUEL,
+  STATUS_PENDING,
+  STATUS_TRIAL,
+  STATUS_ACTIVE,
+  STATUS_SUSPENDED,
+  STATUS_GRADUATED,
+  PAYMENT_QR,
+  PAYMENT_USSD,
+  PAYMENT_NFC,
+  PAYMENT_OFFLINE,
+  PAYMENT_ONLINE,
+} from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
 
 // Export i18n (Internationalization) Support

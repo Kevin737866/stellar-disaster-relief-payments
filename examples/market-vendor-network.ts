@@ -1,7 +1,7 @@
 import { 
   createDisasterReliefSDK, 
   TESTNET_CONFIG 
-} from '../sdk/src/index';
+} from 'stellar-disaster-relief-sdk';
 import { 
   MerchantNetworkSDK, 
   CATEGORY_FOOD, 
@@ -14,7 +14,7 @@ import {
   PAYMENT_QR,
   PAYMENT_USSD,
   PAYMENT_OFFLINE
-} from '../sdk/src/merchantNetwork';
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Kenyan Refugee Camp Marketplace Network

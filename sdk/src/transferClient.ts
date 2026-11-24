@@ -8,6 +8,8 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+const { Server } = SorobanRpc;
+
 import { ReadCache } from './readCache';
 import {
   ConditionalTransfer,

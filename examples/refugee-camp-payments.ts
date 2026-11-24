@@ -1,9 +1,12 @@
-import { 
-  createDisasterReliefSDK, 
-  TESTNET_CONFIG, 
+import {
+  CATEGORY_CLOTHING,
+  CATEGORY_FOOD,
+  CATEGORY_MEDICAL,
+  createDisasterReliefSDK,
   DISASTER_TYPES,
-  SUPPLY_TYPES 
-} from '../sdk/src/index';
+  SUPPLY_TYPES,
+  TESTNET_CONFIG,
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Refugee Camp Cash-for-Work Program Example
@@ -272,12 +275,23 @@ async function refugeeCampPayments() {
     ];
 
     for (const merchant of campMerchants) {
+      const category =
+        merchant.businessType === 'pharmacy'
+          ? CATEGORY_MEDICAL
+          : merchant.businessType === 'clothing'
+            ? CATEGORY_CLOTHING
+            : CATEGORY_FOOD;
       const request = sdk.merchantClient.createOnboardingRequest(
         merchant.name,
         merchant.businessType,
-        merchant.location,
+        category,
+        `${merchant.location.latitude},${merchant.location.longitude}`,
+        merchant.location.address,
+        merchant.location.city,
+        merchant.location.country,
+        merchant.location.postalCode,
         merchant.contactInfo,
-        merchant.stellarAddress
+        merchant.verificationDocuments
       );
       
       await sdk.merchantClient.registerMerchant(
@@ -438,9 +452,14 @@ async function refugeeCampPayments() {
     // Step 8: Generate QR codes for offline access
     console.log('📱 Generating QR codes for offline access...');
     for (const worker of refugeeWorkers) {
+      const profile = await sdk.beneficiaryClient.getBeneficiary(worker.beneficiaryId);
+      if (!profile) {
+        console.warn(`⚠️ Skipping QR for unknown beneficiary ${worker.beneficiaryId}`);
+        continue;
+      }
       const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
         worker.beneficiaryId,
-        await sdk.beneficiaryClient.getBeneficiary(worker.beneficiaryId)
+        profile
       );
       console.log(`📲 QR Code for ${worker.name}:`, qrCode.substring(0, 100) + '...');
     }
@@ -537,8 +556,8 @@ async function trackCampSupplies(shipmentId: string) {
     const alerts = await sdk.trackerClient.getTemperatureAlerts();
     if (alerts.length > 0) {
       console.log('🌡️ Temperature Alerts:');
-      alerts.forEach(([id, alert]) => {
-        console.log(`  ⚠️ ${id}: ${alert}`);
+      alerts.forEach(({ shipmentId, alert }) => {
+        console.log(`  ⚠️ ${shipmentId}: ${alert}`);
       });
     }
   } catch (error) {

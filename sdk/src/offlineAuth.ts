@@ -11,16 +11,152 @@ import {
   BeneficiaryIdentity 
 } from './types';
 
+/** Maximum number of paper backup codes issued in one batch. */
+export const MAX_PAPER_BACKUP_CODES = 100;
+
+/** Eight random bytes become 16 uppercase hex characters: XXXX-XXXX-XXXX-XXXX. */
+const PAPER_CODE_BYTES = 8;
+
+/** Fail closed if a broken/rigid random source keeps producing duplicates. */
+const MAX_UNIQUE_CODE_ATTEMPTS = 10;
+
+/** Sixteen random bytes become a 32-character hexadecimal challenge ID. */
+const CHALLENGE_ID_BYTES = 16;
+
+export type SMSChallengeValidationReason =
+  | 'valid'
+  | 'expired'
+  | 'unknown_challenge'
+  | 'already_consumed'
+  | 'invalid_signature'
+  | 'invalid_code'
+  | 'invalid_verifier';
+
+export interface SMSChallengeValidationResult {
+  isValid: boolean;
+  reason: SMSChallengeValidationReason;
+  challengeId?: string;
+  verifierId?: string;
+  consumedAt?: number;
+}
+
+/** Issuer-side record needed to recognise a challenge before consuming it. */
+export interface IssuedSMSChallengeRecord {
+  challengeId: string;
+  idHash: string;
+  phoneNumber: string;
+  codeHash: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+/** Verifier-side tombstone: this authority has accepted this challenge. */
+export interface ConsumedSMSChallengeRecord {
+  challengeId: string;
+  verifierId: string;
+  consumedAt: number;
+}
+
+/** Portable state used to persist or reconcile single-use challenge state. */
+export interface SMSChallengeStateSnapshot {
+  issued: IssuedSMSChallengeRecord[];
+  consumed: ConsumedSMSChallengeRecord[];
+}
+
+/**
+ * Storage contract for challenge issuance and verifier-side consumption.
+ * Implementations must be durable for production verifiers; an in-memory
+ * implementation is provided for tests only.
+ */
+export interface SMSChallengeStateStore {
+  recordIssued(record: IssuedSMSChallengeRecord): void;
+  getIssued(challengeId: string): IssuedSMSChallengeRecord | undefined;
+  listIssued(): IssuedSMSChallengeRecord[];
+  getConsumed(verifierId: string, challengeId: string): ConsumedSMSChallengeRecord | undefined;
+  /** Atomically consume; returns false when already consumed by this verifier. */
+  markConsumed(record: ConsumedSMSChallengeRecord): boolean;
+  listConsumed(verifierId: string): ConsumedSMSChallengeRecord[];
+  /** Reconciliation only: merge a tombstone, keeping the earliest timestamp. */
+  putConsumed(record: ConsumedSMSChallengeRecord): void;
+}
+
+/** Non-durable store for tests and single-process demos. */
+export class InMemorySMSChallengeStateStore implements SMSChallengeStateStore {
+  private issued = new Map<string, IssuedSMSChallengeRecord>();
+  private consumed = new Map<string, ConsumedSMSChallengeRecord>();
+
+  private key(verifierId: string, challengeId: string): string {
+    return `${verifierId}\u0000${challengeId}`;
+  }
+
+  recordIssued(record: IssuedSMSChallengeRecord): void {
+    this.issued.set(record.challengeId, { ...record });
+  }
+
+  getIssued(challengeId: string): IssuedSMSChallengeRecord | undefined {
+    const record = this.issued.get(challengeId);
+    return record ? { ...record } : undefined;
+  }
+
+  listIssued(): IssuedSMSChallengeRecord[] {
+    return Array.from(this.issued.values()).map(record => ({ ...record }));
+  }
+
+  getConsumed(verifierId: string, challengeId: string): ConsumedSMSChallengeRecord | undefined {
+    const record = this.consumed.get(this.key(verifierId, challengeId));
+    return record ? { ...record } : undefined;
+  }
+
+  markConsumed(record: ConsumedSMSChallengeRecord): boolean {
+    const key = this.key(record.verifierId, record.challengeId);
+    if (this.consumed.has(key)) {
+      return false;
+    }
+    this.consumed.set(key, { ...record });
+    return true;
+  }
+
+  listConsumed(verifierId: string): ConsumedSMSChallengeRecord[] {
+    return Array.from(this.consumed.values())
+      .filter(record => record.verifierId === verifierId)
+      .map(record => ({ ...record }));
+  }
+
+  putConsumed(record: ConsumedSMSChallengeRecord): void {
+    this.consumed.set(this.key(record.verifierId, record.challengeId), { ...record });
+  }
+}
+
+export interface OfflineAuthConfig {
+  /** Default verifier authority used when validateSMSCode omits verifierId. */
+  verifierId?: string;
+  /** Durable verifier-side challenge state. Required for SMS/USSD challenges. */
+  challengeStateStore?: SMSChallengeStateStore;
+  /**
+   * Explicit opt-in to non-durable in-memory state. Never enable this for a
+   * verifier that must survive a restart.
+   */
+  allowEphemeralChallengeState?: boolean;
+  [key: string]: any;
+}
+
 /**
  * Offline Authentication Module
  * Provides authentication capabilities without internet connectivity
  */
 export class OfflineAuthClient {
-  private config: any;
+  private config: OfflineAuthConfig;
   private meshNodes: Map<string, BluetoothMeshNode> = new Map();
+  private challengeStateStore?: SMSChallengeStateStore;
+  private issuedChallengeIds = new Set<string>();
 
-  constructor(config: any) {
+  constructor(config: OfflineAuthConfig = {}) {
     this.config = config;
+    if (config.challengeStateStore) {
+      this.challengeStateStore = config.challengeStateStore;
+    } else if (config.allowEphemeralChallengeState) {
+      this.challengeStateStore = new InMemorySMSChallengeStateStore();
+    }
   }
 
   /**
@@ -101,23 +237,29 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate paper backup codes with cryptographic checksums
+   * Generate paper backup codes from a cryptographically secure random source.
+   *
+   * The printed checksum only detects transcription errors; it is not an
+   * authentication tag. Authenticity comes from the hash of the code stored
+   * server-side/on-chain, never from the checksum on the sheet.
    */
   generatePaperBackupCodes(
     idHash: string,
     count: number = 10
   ): PaperBackupCode[] {
+    // Kept for API compatibility; the identifier is deliberately not mixed
+    // into code entropy. Unpredictability comes solely from the CSPRNG.
+    void idHash;
+    this.validatePaperBackupCodeCount(count);
+
     const codes: PaperBackupCode[] = [];
+    const issuedCodes = new Set<string>();
     const timestamp = Date.now();
 
     for (let i = 0; i < count; i++) {
-      // Generate random code
-      const randomData = `${idHash}:${timestamp}:${i}:${Math.random()}`;
-      const code = SHA256(randomData).toString().substring(0, 16).toUpperCase();
-      
-      // Generate checksum
+      const code = this.generateUniquePaperCode(issuedCodes);
       const checksum = this.generateChecksum(code);
-      
+
       // Format code for readability: XXXX-XXXX-XXXX-XXXX
       const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
 
@@ -133,7 +275,8 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Validate paper backup code
+   * Check only that a transcribed code matches its printed checksum.
+   * This detects typos; it MUST NOT be treated as proof of authenticity.
    */
   validatePaperBackupCode(code: string, checksum: string): boolean {
     // Remove formatting
@@ -143,28 +286,41 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate SMS/USSD authentication code for feature phones
+   * Generate a single-use SMS/USSD authentication challenge for feature phones.
+   * The returned challengeId must be presented with the code for validation.
    */
   generateSMSCode(
     idHash: string,
     phoneNumber: string,
     validityMinutes: number = 15
   ): OfflineAuthCode {
+    const store = this.requireChallengeStateStore();
     const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
     const timestamp = Date.now();
-    
+    const challengeId = this.generateUniqueSMSChallengeId(store);
+
     // Generate 6-digit code
-    const codeData = `${idHash}:${phoneNumber}:${timestamp}`;
+    const codeData = `${idHash}:${phoneNumber}:${timestamp}:${challengeId}`;
     const hash = SHA256(codeData).toString();
     const sixDigitCode = parseInt(hash.substring(0, 8), 16) % 1000000;
     const code = sixDigitCode.toString().padStart(6, '0');
-    
-    // Generate signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
+
+    // Bind the challenge ID to the code, phone number, and expiry.
+    const signatureData = `${challengeId}:${code}:${phoneNumber}:${expiresAt}`;
     const signature = SHA256(signatureData).toString();
+
+    store.recordIssued({
+      challengeId,
+      idHash,
+      phoneNumber,
+      codeHash: SHA256(code).toString(),
+      issuedAt: timestamp,
+      expiresAt,
+    });
 
     return {
       type: 'sms',
+      challengeId,
       code,
       idHash,
       expiresAt,
@@ -173,24 +329,108 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Validate SMS/USSD code
+   * Validate an SMS/USSD challenge and atomically consume it for one verifier.
+   *
+   * A challenge may be accepted once per `verifierId`. Different verifier
+   * authorities keep independent ledgers. All offline devices sharing a
+   * verifierId must exchange snapshots with `exportChallengeState` /
+   * `reconcileChallengeState`; see docs/offline-flows.md for the concurrency
+   * limitations and conflict handling.
    */
   validateSMSCode(
+    challengeId: string,
     code: string,
     phoneNumber: string,
     signature: string,
-    expiresAt: number
-  ): boolean {
-    // Check expiration
-    if (Date.now() > expiresAt) {
-      return false;
+    expiresAt: number,
+    verifierId: string = this.config.verifierId || ''
+  ): SMSChallengeValidationResult {
+    const base = { challengeId, verifierId };
+    if (!verifierId || !verifierId.trim()) {
+      return { isValid: false, reason: 'invalid_verifier', ...base };
+    }
+    if (!challengeId || !challengeId.trim()) {
+      return { isValid: false, reason: 'unknown_challenge', ...base };
     }
 
-    // Verify signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const expectedSignature = SHA256(signatureData).toString();
-    
-    return signature === expectedSignature;
+    const store = this.requireChallengeStateStore();
+    const issued = store.getIssued(challengeId);
+    if (!issued || issued.phoneNumber !== phoneNumber || issued.expiresAt !== expiresAt) {
+      return { isValid: false, reason: 'unknown_challenge', ...base };
+    }
+
+    const consumed = store.getConsumed(verifierId, challengeId);
+    if (consumed) {
+      return { isValid: false, reason: 'already_consumed', ...base, consumedAt: consumed.consumedAt };
+    }
+    if (Date.now() > issued.expiresAt) {
+      return { isValid: false, reason: 'expired', ...base };
+    }
+
+    const expectedSignature = SHA256(`${challengeId}:${code}:${phoneNumber}:${expiresAt}`).toString();
+    if (signature !== expectedSignature) {
+      return { isValid: false, reason: 'invalid_signature', ...base };
+    }
+    if (SHA256(code).toString() !== issued.codeHash) {
+      return { isValid: false, reason: 'invalid_code', ...base };
+    }
+
+    const consumedAt = Date.now();
+    if (!store.markConsumed({ challengeId, verifierId, consumedAt })) {
+      const existing = store.getConsumed(verifierId, challengeId);
+      return { isValid: false, reason: 'already_consumed', ...base, consumedAt: existing?.consumedAt };
+    }
+
+    return { isValid: true, reason: 'valid', ...base, consumedAt };
+  }
+
+  /** Snapshot issued challenges and this verifier's consumption tombstones. */
+  exportChallengeState(verifierId: string = this.config.verifierId || ''): SMSChallengeStateSnapshot {
+    const store = this.requireChallengeStateStore();
+    return {
+      issued: store.listIssued().map(record => ({ ...record })),
+      consumed: store.listConsumed(verifierId).map(record => ({ ...record })),
+    };
+  }
+
+  /**
+   * Merge peer snapshots into this verifier's store. Consumption records are
+   * monotonic tombstones: the union is kept and the earliest consumedAt wins.
+   * Conflicting timestamps are reported, never silently overwritten.
+   */
+  reconcileChallengeState(
+    verifierId: string,
+    snapshots: SMSChallengeStateSnapshot[]
+  ): { conflicts: string[] } {
+    const store = this.requireChallengeStateStore();
+    const conflicts = new Set<string>();
+
+    for (const snapshot of snapshots || []) {
+      for (const issued of snapshot.issued || []) {
+        const existing = store.getIssued(issued.challengeId);
+        if (!existing || issued.issuedAt < existing.issuedAt) {
+          store.recordIssued(issued);
+        }
+      }
+
+      for (const consumed of snapshot.consumed || []) {
+        if (consumed.verifierId !== verifierId) {
+          continue;
+        }
+        const existing = store.getConsumed(verifierId, consumed.challengeId);
+        if (!existing) {
+          store.markConsumed(consumed);
+        } else if (existing.consumedAt !== consumed.consumedAt) {
+          conflicts.add(consumed.challengeId);
+          const earliest = Math.min(existing.consumedAt, consumed.consumedAt);
+          if (earliest !== existing.consumedAt) {
+            store.putConsumed({ ...existing, consumedAt: earliest });
+          }
+        }
+      }
+    }
+
+    return { conflicts: Array.from(conflicts) };
   }
 
   /**
@@ -401,6 +641,82 @@ Generated: ${new Date().toISOString()}
 `;
 
     return header + codesList + footer;
+  }
+
+  private validatePaperBackupCodeCount(count: number): void {
+    if (!Number.isInteger(count) || count < 1 || count > MAX_PAPER_BACKUP_CODES) {
+      throw new Error(
+        `Paper backup code count must be an integer between 1 and ${MAX_PAPER_BACKUP_CODES}`
+      );
+    }
+  }
+
+  private generateUniquePaperCode(issuedCodes: Set<string>): string {
+    for (let attempt = 0; attempt < MAX_UNIQUE_CODE_ATTEMPTS; attempt++) {
+      const code = this.generateRandomPaperCode();
+      if (!issuedCodes.has(code)) {
+        issuedCodes.add(code);
+        return code;
+      }
+    }
+    throw new Error('Unable to generate unique paper backup codes from the secure random source');
+  }
+
+  private generateRandomPaperCode(): string {
+    return Array.from(this.getSecureRandomBytes(PAPER_CODE_BYTES))
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase();
+  }
+
+  /**
+   * Prefer Web Crypto (browser and modern Node), then Node's crypto module.
+   * If neither is available, fail closed — never fall back to Math.random().
+   */
+  private getSecureRandomBytes(length: number): Uint8Array {
+    const browserCrypto = (globalThis as any)?.crypto;
+    if (browserCrypto && typeof browserCrypto.getRandomValues === 'function') {
+      return browserCrypto.getRandomValues(new Uint8Array(length)) as Uint8Array;
+    }
+
+    if (typeof require === 'function') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodeCrypto = require('crypto');
+        if (nodeCrypto && typeof nodeCrypto.randomBytes === 'function') {
+          return new Uint8Array(nodeCrypto.randomBytes(length));
+        }
+      } catch {
+        // Fall through to the explicit failure below.
+      }
+    }
+
+    throw new Error(
+      'Cryptographically secure random source unavailable; cannot generate paper backup codes'
+    );
+  }
+
+  private requireChallengeStateStore(): SMSChallengeStateStore {
+    if (!this.challengeStateStore) {
+      throw new Error(
+        'SMS/USSD challenge state store is not configured. Inject a durable ' +
+          'SMSChallengeStateStore or explicitly opt into allowEphemeralChallengeState for tests.'
+      );
+    }
+    return this.challengeStateStore;
+  }
+
+  private generateUniqueSMSChallengeId(store: SMSChallengeStateStore): string {
+    for (let attempt = 0; attempt < MAX_UNIQUE_CODE_ATTEMPTS; attempt++) {
+      const id = Array.from(this.getSecureRandomBytes(CHALLENGE_ID_BYTES))
+        .map(byte => byte.toString(16).padStart(2, '0'))
+        .join('');
+      if (!this.issuedChallengeIds.has(id) && !store.getIssued(id)) {
+        this.issuedChallengeIds.add(id);
+        return id;
+      }
+    }
+    throw new Error('Unable to generate a unique SMS challenge ID from the secure random source');
   }
 
   /**
