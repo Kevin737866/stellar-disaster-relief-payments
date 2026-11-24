@@ -897,26 +897,85 @@ mod beneficiary_tests {
     }
 
     #[test]
-    fn test_update_location() {
+    fn test_reactivate_beneficiary() {
         let env = make_env();
         let client = deploy(&env);
         let registrar = Address::generate(&env);
+        let admin = Address::generate(&env);
         let wallet = Address::generate(&env);
         let factors = make_factors(&env);
 
         client.register_beneficiary(
             &registrar,
-            &str(&env, "ben_loc"),
-            &str(&env, "Location Test"),
+            &str(&env, "ben_reactiv"),
+            &str(&env, "Reactivation Test"),
             &str(&env, "disaster_001"),
-            &str(&env, "Old Camp"),
+            &str(&env, "Camp Alpha"),
+            &wallet,
+            &2u32,
+            &Vec::new(&env),
+            &factors,
+        );
+
+        // Deactivate
+        client.deactivate_beneficiary(&admin, &str(&env, "ben_reactiv"));
+        let inactive = client.get_beneficiary(&str(&env, "ben_reactiv")).unwrap();
+        assert!(!inactive.is_active);
+
+        // Reactivate
+        client.reactivate_beneficiary(
+            &admin,
+            &str(&env, "ben_reactiv"),
+            &str(&env, "Medical clearance received"),
+        );
+
+        let reactivated = client.get_beneficiary(&str(&env, "ben_reactiv")).unwrap();
+        assert!(reactivated.is_active);
+    }
+
+    #[test]
+    #[should_panic(expected = "Beneficiary already active")]
+    fn test_reactivate_already_active_fails() {
+        let env = make_env();
+        let client = deploy(&env);
+        let registrar = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let wallet = Address::generate(&env);
+        let factors = make_factors(&env);
+
+        client.register_beneficiary(
+            &registrar,
+            &str(&env, "ben_active"),
+            &str(&env, "Active Test"),
+            &str(&env, "disaster_001"),
+            &str(&env, "Camp Alpha"),
             &wallet,
             &1u32,
             &Vec::new(&env),
             &factors,
         );
 
-        client.update_location(&wallet, &str(&env, "ben_loc"), &str(&env, "New Shelter Camp"));
+        // Try to reactivate without deactivating first
+        client.reactivate_beneficiary(
+            &admin,
+            &str(&env, "ben_active"),
+            &str(&env, "Should fail"),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Beneficiary not found")]
+    fn test_reactivate_unknown_fails() {
+        let env = make_env();
+        let client = deploy(&env);
+        let admin = Address::generate(&env);
+
+        client.reactivate_beneficiary(
+            &admin,
+            &str(&env, "unknown"),
+            &str(&env, "Should fail"),
+        );
+    }
 
         let profile = client.get_beneficiary(&str(&env, "ben_loc")).unwrap();
         assert_eq!(profile.location, str(&env, "New Shelter Camp"));
