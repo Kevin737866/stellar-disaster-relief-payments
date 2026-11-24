@@ -5,6 +5,9 @@
 
 export type Language = 'en' | 'es' | 'fr' | 'de' | 'pt' | 'ja' | 'zh' | 'ar' | 'hi';
 
+/** Explicit fallback locale used when a translation is unavailable. */
+export const FALLBACK_LOCALE: Language = 'en';
+
 export interface ErrorMessage {
   code: string;
   message: string;
@@ -636,14 +639,52 @@ export const ERROR_MESSAGES: LocalizedErrorMessages = {
   },
 };
 
+export interface MissingTranslation {
+  locale: string;
+  key: string;
+}
+
 /**
- * i18n Manager for handling error messages in multiple languages
+ * Compare locale dictionaries against the fallback locale and report every
+ * missing key as `{ locale, key }`. Locales and keys are sorted so the report
+ * is deterministic.
+ */
+export function findMissingTranslations(
+  messages: LocalizedErrorMessages = ERROR_MESSAGES,
+  referenceLocale: string = FALLBACK_LOCALE,
+): MissingTranslation[] {
+  const reference = messages[referenceLocale];
+  if (!reference) {
+    throw new Error(`Missing reference locale: ${referenceLocale}`);
+  }
+
+  const referenceKeys = Object.keys(reference).sort();
+  const missing: MissingTranslation[] = [];
+
+  for (const locale of Object.keys(messages).sort()) {
+    if (locale === referenceLocale) {
+      continue;
+    }
+    const translations = messages[locale];
+    for (const key of referenceKeys) {
+      if (!translations || !translations[key]) {
+        missing.push({ locale, key });
+      }
+    }
+  }
+
+  return missing;
+}
+
+/**
+ * i18n Manager for handling error messages in multiple languages.
+ * Lookup order: current locale -> fallback locale (`en`) -> generic error.
  */
 export class I18nManager {
   private currentLanguage: Language;
-  private fallbackLanguage: Language = 'en';
+  private fallbackLanguage: Language = FALLBACK_LOCALE;
 
-  constructor(language: Language = 'en') {
+  constructor(language: Language = FALLBACK_LOCALE) {
     this.currentLanguage = language;
   }
 

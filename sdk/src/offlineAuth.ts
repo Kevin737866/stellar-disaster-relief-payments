@@ -1,9 +1,10 @@
-// crypto-js — SHA256 is used for all security-sensitive operations (QR signatures,
-// TOTP, mesh node signatures, paper code hashing).  MD5 is used only for the
-// non-security 8-char display checksum on paper backup codes (human-readable
-// error-detection only; not a security guarantee).  Do not use MD5 for any
-// operation that requires collision or pre-image resistance.
-import { SHA256, MD5 } from 'crypto-js';
+// QR credentials are authenticated with Stellar ed25519 signatures verified
+// against pinned public keys. USSD credentials are authenticated with HMAC over
+// a verifier-side secret. SHA-256 is retained only for non-authenticating
+// identifiers/digests (paper codes, TOTP, mesh request ids). MD5 is used only
+// for the non-security 8-char display checksum on paper backup codes.
+import { SHA256, MD5, HmacSHA256 } from 'crypto-js';
+import { Keypair } from 'stellar-sdk';
 import { 
   OfflineAuthCode, 
   BluetoothMeshNode, 
@@ -11,57 +12,158 @@ import {
   BeneficiaryIdentity 
 } from './types';
 
+export interface OfflineAuthConfig {
+  /** Stellar secret key used to sign offline QR credentials. */
+  signingKey?: string;
+  /** Pinned public keys accepted when verifying offline QR credentials. */
+  pinnedPublicKeys?: string[];
+  /** Verifier-side secret used to authenticate SMS/USSD codes. */
+  ussdSecret?: string;
+}
+
+interface SignedQRPayload {
+  v: 1;
+  id: string;
+  ts: number;
+  exp: number;
+  trust: number;
+  loc: string;
+}
+
+interface SignedUssdPayload {
+  code: string;
+  id: string;
+  phone: string;
+  ts: number;
+  exp: number;
+}
+
+function canonicalQRPayload(payload: SignedQRPayload): string {
+  return JSON.stringify({
+    v: payload.v,
+    id: payload.id,
+    ts: payload.ts,
+    exp: payload.exp,
+    trust: payload.trust,
+    loc: payload.loc,
+  });
+}
+
+function canonicalUssdPayload(payload: SignedUssdPayload): string {
+  return JSON.stringify({
+    code: payload.code,
+    id: payload.id,
+    phone: payload.phone,
+    ts: payload.ts,
+    exp: payload.exp,
+  });
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  let difference = 0;
+  for (let i = 0; i < a.length; i++) {
+    difference |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return difference === 0;
+}
+
 /**
  * Offline Authentication Module
  * Provides authentication capabilities without internet connectivity
  */
 export class OfflineAuthClient {
-  private config: any;
+  private config: OfflineAuthConfig & Record<string, any>;
   private meshNodes: Map<string, BluetoothMeshNode> = new Map();
 
-  constructor(config: any) {
+  constructor(config: OfflineAuthConfig & Record<string, any> = {}) {
     this.config = config;
   }
 
+  private getSigner(): Keypair {
+    const secret = this.config.signingKey ?? this.config.offlineSigningKey ?? this.config.privateKey;
+    if (typeof secret !== 'string' || !secret.trim()) {
+      throw new Error('Offline QR signing key is not configured');
+    }
+    try {
+      return Keypair.fromSecret(secret);
+    } catch {
+      throw new Error('Offline QR signing key is invalid');
+    }
+  }
+
+  private getVerifierKeys(): Keypair[] {
+    const configured = this.config.pinnedPublicKeys
+      ?? this.config.trustedPublicKeys
+      ?? this.config.publicKeys
+      ?? (this.config.publicKey ? [this.config.publicKey] : undefined);
+    if (!Array.isArray(configured) || configured.length === 0) {
+      throw new Error('Trusted offline QR public keys are not configured');
+    }
+
+    const keys: Keypair[] = [];
+    for (const key of configured) {
+      if (typeof key !== 'string' || !key.trim()) {
+        throw new Error('Trusted offline QR public key is invalid');
+      }
+      try {
+        keys.push(Keypair.fromPublicKey(key));
+      } catch {
+        throw new Error('Trusted offline QR public key is invalid');
+      }
+    }
+    return keys;
+  }
+
+  private getUssdSecret(): string {
+    const secret = this.config.ussdSecret
+      ?? this.config.smsSecret
+      ?? this.config.ussdVerificationSecret;
+    if (typeof secret !== 'string' || secret.length === 0) {
+      throw new Error('USSD verification secret is not configured');
+    }
+    return secret;
+  }
+
   /**
-   * Generate QR code with time-based signatures for offline verification
+   * Generate a QR credential signed over the exact canonical payload it encodes.
    */
   generateQRCode(
     idHash: string,
     identity: BeneficiaryIdentity,
     validityMinutes: number = 30
   ): OfflineAuthCode {
-    const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
+    const signer = this.getSigner();
     const timestamp = Date.now();
-    
-    // Create time-based signature
-    const signatureData = `${idHash}:${timestamp}:${expiresAt}:${identity.trustScore}`;
-    const signature = SHA256(signatureData).toString();
-    
-    // Generate compact QR code data
-    const qrData = {
-      v: 1, // version
-      id: idHash.substring(0, 16), // Shortened for QR size
+    const expiresAt = timestamp + (validityMinutes * 60 * 1000);
+    const payload: SignedQRPayload = {
+      v: 1,
+      id: idHash,
       ts: timestamp,
       exp: expiresAt,
       trust: identity.trustScore,
       loc: identity.campLocation,
-      sig: signature.substring(0, 32) // Shortened signature
     };
+    const signature = signer
+      .sign(Buffer.from(canonicalQRPayload(payload), 'utf8'))
+      .toString('base64');
 
     return {
       type: 'qr',
-      code: JSON.stringify(qrData),
+      code: JSON.stringify({ ...payload, sig: signature }),
       idHash,
       expiresAt,
-      signature
+      signature,
     };
   }
 
   /**
-   * Validate QR code offline
+   * Validate QR code offline against pinned public keys.
+   * Missing configuration fails closed with an explicit reason.
    */
-  validateQRCode(qrCodeData: string): {
+  validateQRCode(qrCodeData: string, expectedIdHash?: string): {
     isValid: boolean;
     idHash?: string;
     trustScore?: number;
@@ -70,22 +172,48 @@ export class OfflineAuthClient {
   } {
     try {
       const data = JSON.parse(qrCodeData);
-      
-      // Check version
+      if (!data || typeof data !== 'object') {
+        return { isValid: false, reason: 'Invalid QR code format' };
+      }
       if (data.v !== 1) {
         return { isValid: false, reason: 'Unsupported QR code version' };
       }
-
-      // Check expiration
+      if (
+        typeof data.id !== 'string'
+        || typeof data.ts !== 'number' || !Number.isFinite(data.ts)
+        || typeof data.exp !== 'number' || !Number.isFinite(data.exp)
+        || typeof data.trust !== 'number' || !Number.isFinite(data.trust)
+        || typeof data.loc !== 'string'
+        || typeof data.sig !== 'string'
+      ) {
+        return { isValid: false, reason: 'Invalid QR code format' };
+      }
+      if (expectedIdHash !== undefined && data.id !== expectedIdHash) {
+        return { isValid: false, reason: 'Identity mismatch' };
+      }
       if (Date.now() > data.exp) {
         return { isValid: false, reason: 'QR code expired' };
       }
 
-      // Verify signature
-      const signatureData = `${data.id}:${data.ts}:${data.exp}:${data.trust}`;
-      const expectedSig = SHA256(signatureData).toString().substring(0, 32);
-      
-      if (data.sig !== expectedSig) {
+      const payload: SignedQRPayload = {
+        v: data.v,
+        id: data.id,
+        ts: data.ts,
+        exp: data.exp,
+        trust: data.trust,
+        loc: data.loc,
+      };
+      const signedData = Buffer.from(canonicalQRPayload(payload), 'utf8');
+      const signature = Buffer.from(data.sig, 'base64');
+      const verified = this.getVerifierKeys().some(key => {
+        try {
+          return key.verify(signedData, signature);
+        } catch {
+          return false;
+        }
+      });
+
+      if (!verified) {
         return { isValid: false, reason: 'Invalid signature' };
       }
 
@@ -93,10 +221,13 @@ export class OfflineAuthClient {
         isValid: true,
         idHash: data.id,
         trustScore: data.trust,
-        campLocation: data.loc
+        campLocation: data.loc,
       };
     } catch (error) {
-      return { isValid: false, reason: 'Invalid QR code format' };
+      return {
+        isValid: false,
+        reason: error instanceof Error ? error.message : 'Invalid QR code format',
+      };
     }
   }
 
@@ -143,54 +274,92 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate SMS/USSD authentication code for feature phones
+   * Generate an HMAC-authenticated SMS/USSD code for feature phones.
    */
   generateSMSCode(
     idHash: string,
     phoneNumber: string,
     validityMinutes: number = 15
   ): OfflineAuthCode {
-    const expiresAt = Date.now() + (validityMinutes * 60 * 1000);
+    const secret = this.getUssdSecret();
     const timestamp = Date.now();
-    
-    // Generate 6-digit code
-    const codeData = `${idHash}:${phoneNumber}:${timestamp}`;
-    const hash = SHA256(codeData).toString();
-    const sixDigitCode = parseInt(hash.substring(0, 8), 16) % 1000000;
-    const code = sixDigitCode.toString().padStart(6, '0');
-    
-    // Generate signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const signature = SHA256(signatureData).toString();
+    const expiresAt = timestamp + (validityMinutes * 60 * 1000);
+
+    const seed = canonicalUssdPayload({
+      code: '',
+      id: idHash,
+      phone: phoneNumber,
+      ts: timestamp,
+      exp: expiresAt,
+    });
+    const digest = HmacSHA256(seed, secret).toString();
+    const code = (parseInt(digest.substring(0, 8), 16) % 1_000_000)
+      .toString()
+      .padStart(6, '0');
+
+    const mac = HmacSHA256(canonicalUssdPayload({
+      code,
+      id: idHash,
+      phone: phoneNumber,
+      ts: timestamp,
+      exp: expiresAt,
+    }), secret).toString();
+    const signature = Buffer.from(
+      JSON.stringify({ ts: timestamp, id: idHash, mac }),
+      'utf8',
+    ).toString('base64');
 
     return {
       type: 'sms',
       code,
       idHash,
       expiresAt,
-      signature
+      signature,
     };
   }
 
   /**
-   * Validate SMS/USSD code
+   * Validate an SMS/USSD code using the verifier-side HMAC secret.
+   * Missing secret configuration throws instead of accepting any code.
    */
   validateSMSCode(
     code: string,
     phoneNumber: string,
     signature: string,
-    expiresAt: number
+    expiresAt: number,
+    expectedIdHash?: string
   ): boolean {
-    // Check expiration
-    if (Date.now() > expiresAt) {
+    const secret = this.getUssdSecret();
+    if (Date.now() > expiresAt || !/^\d{6}$/.test(code)) {
       return false;
     }
 
-    // Verify signature
-    const signatureData = `${code}:${phoneNumber}:${expiresAt}`;
-    const expectedSignature = SHA256(signatureData).toString();
-    
-    return signature === expectedSignature;
+    try {
+      const token = JSON.parse(Buffer.from(signature, 'base64').toString('utf8'));
+      if (
+        !token
+        || typeof token.ts !== 'number' || !Number.isFinite(token.ts)
+        || typeof token.id !== 'string'
+        || typeof token.mac !== 'string'
+      ) {
+        return false;
+      }
+      if (expectedIdHash !== undefined && token.id !== expectedIdHash) {
+        return false;
+      }
+
+      const expectedMac = HmacSHA256(canonicalUssdPayload({
+        code,
+        id: token.id,
+        phone: phoneNumber,
+        ts: token.ts,
+        exp: expiresAt,
+      }), secret).toString();
+
+      return constantTimeEquals(token.mac, expectedMac);
+    } catch {
+      return false;
+    }
   }
 
   /**
