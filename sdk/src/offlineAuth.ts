@@ -11,6 +11,15 @@ import {
   BeneficiaryIdentity 
 } from './types';
 
+/** Maximum number of paper backup codes issued in one batch. */
+export const MAX_PAPER_BACKUP_CODES = 100;
+
+/** Eight random bytes become 16 uppercase hex characters: XXXX-XXXX-XXXX-XXXX. */
+const PAPER_CODE_BYTES = 8;
+
+/** Fail closed if a broken/rigid random source keeps producing duplicates. */
+const MAX_UNIQUE_CODE_ATTEMPTS = 10;
+
 /**
  * Offline Authentication Module
  * Provides authentication capabilities without internet connectivity
@@ -101,23 +110,29 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Generate paper backup codes with cryptographic checksums
+   * Generate paper backup codes from a cryptographically secure random source.
+   *
+   * The printed checksum only detects transcription errors; it is not an
+   * authentication tag. Authenticity comes from the hash of the code stored
+   * server-side/on-chain, never from the checksum on the sheet.
    */
   generatePaperBackupCodes(
     idHash: string,
     count: number = 10
   ): PaperBackupCode[] {
+    // Kept for API compatibility; the identifier is deliberately not mixed
+    // into code entropy. Unpredictability comes solely from the CSPRNG.
+    void idHash;
+    this.validatePaperBackupCodeCount(count);
+
     const codes: PaperBackupCode[] = [];
+    const issuedCodes = new Set<string>();
     const timestamp = Date.now();
 
     for (let i = 0; i < count; i++) {
-      // Generate random code
-      const randomData = `${idHash}:${timestamp}:${i}:${Math.random()}`;
-      const code = SHA256(randomData).toString().substring(0, 16).toUpperCase();
-      
-      // Generate checksum
+      const code = this.generateUniquePaperCode(issuedCodes);
       const checksum = this.generateChecksum(code);
-      
+
       // Format code for readability: XXXX-XXXX-XXXX-XXXX
       const formattedCode = code.match(/.{1,4}/g)?.join('-') || code;
 
@@ -133,7 +148,8 @@ export class OfflineAuthClient {
   }
 
   /**
-   * Validate paper backup code
+   * Check only that a transcribed code matches its printed checksum.
+   * This detects typos; it MUST NOT be treated as proof of authenticity.
    */
   validatePaperBackupCode(code: string, checksum: string): boolean {
     // Remove formatting
@@ -401,6 +417,59 @@ Generated: ${new Date().toISOString()}
 `;
 
     return header + codesList + footer;
+  }
+
+  private validatePaperBackupCodeCount(count: number): void {
+    if (!Number.isInteger(count) || count < 1 || count > MAX_PAPER_BACKUP_CODES) {
+      throw new Error(
+        `Paper backup code count must be an integer between 1 and ${MAX_PAPER_BACKUP_CODES}`
+      );
+    }
+  }
+
+  private generateUniquePaperCode(issuedCodes: Set<string>): string {
+    for (let attempt = 0; attempt < MAX_UNIQUE_CODE_ATTEMPTS; attempt++) {
+      const code = this.generateRandomPaperCode();
+      if (!issuedCodes.has(code)) {
+        issuedCodes.add(code);
+        return code;
+      }
+    }
+    throw new Error('Unable to generate unique paper backup codes from the secure random source');
+  }
+
+  private generateRandomPaperCode(): string {
+    return Array.from(this.getSecureRandomBytes(PAPER_CODE_BYTES))
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('')
+      .toUpperCase();
+  }
+
+  /**
+   * Prefer Web Crypto (browser and modern Node), then Node's crypto module.
+   * If neither is available, fail closed — never fall back to Math.random().
+   */
+  private getSecureRandomBytes(length: number): Uint8Array {
+    const browserCrypto = (globalThis as any)?.crypto;
+    if (browserCrypto && typeof browserCrypto.getRandomValues === 'function') {
+      return browserCrypto.getRandomValues(new Uint8Array(length)) as Uint8Array;
+    }
+
+    if (typeof require === 'function') {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const nodeCrypto = require('crypto');
+        if (nodeCrypto && typeof nodeCrypto.randomBytes === 'function') {
+          return new Uint8Array(nodeCrypto.randomBytes(length));
+        }
+      } catch {
+        // Fall through to the explicit failure below.
+      }
+    }
+
+    throw new Error(
+      'Cryptographically secure random source unavailable; cannot generate paper backup codes'
+    );
   }
 
   /**

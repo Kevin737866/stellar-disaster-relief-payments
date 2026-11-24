@@ -16,7 +16,7 @@ export {
   isDisbursementPurposeCategory,
 } from './purposeTaxonomy';
 export { BeneficiaryIdentityClient } from './beneficiaryIdentity';
-export { OfflineAuthClient } from './offlineAuth';
+export { OfflineAuthClient, MAX_PAPER_BACKUP_CODES } from './offlineAuth';
 export {
   MerchantClient,
   DEFAULT_MERCHANT_PAGE_SIZE,
@@ -38,6 +38,7 @@ import { TrackerClient } from './trackerClient';
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
+export type { TaxDeductionPolicy, TaxReceipt } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
