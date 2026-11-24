@@ -1,4 +1,4 @@
-use crate::rbac::{self, ROLE_ADMIN, ROLE_ORACLE};
+use crate::rbac::{self, require_permission, ROLE_ADMIN, ROLE_ORACLE, PERM_MANAGE_FUND};
 use crate::unique_id::*;
 use crate::validation::{require_min_address_count, require_non_empty_address_list};
 use soroban_sdk::{
@@ -565,8 +565,13 @@ impl AidRegistry {
         String::from_str(&env, categorize_purpose(&purpose))
     }
 
-    /// Deactivate expired funds
-    pub fn cleanup_expired_funds(env: Env) {
+    /// Mark expired funds as inactive.
+    ///
+    /// **Required permission:** `PERM_MANAGE_FUND`
+    pub fn cleanup_expired_funds(env: Env, caller: Address) {
+        caller.require_auth();
+        require_permission(&env, &caller, PERM_MANAGE_FUND);
+
         let fund_key = Symbol::new(&env, "fund");
         let mut funds: Map<String, EmergencyFund> = env
             .storage()
@@ -1905,13 +1910,14 @@ impl AidRegistry {
     /// `reason` is stored verbatim and surfaced by `get_pause_state` so a
     /// monitoring alert carries operator context. It is not validated as
     /// non-empty, because refusing to pause over a missing reason during an
-    /// active incident is the wrong trade.
+    /// **Required role:** ADMIN, **required permission:** `PERM_MANAGE_FUND`
     ///
     /// Calling this with `paused = true` when already paused is a no-op that
     /// still re-records `paused_at`; it does not panic, so a retrying operator
     /// script cannot wedge itself.
     pub fn set_paused(env: Env, admin: Address, paused: bool, reason: String) {
         admin.require_auth();
+        rbac::require_role(&env, &admin, ROLE_ADMIN);
 
         env.storage()
             .instance()

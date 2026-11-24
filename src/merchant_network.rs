@@ -1,5 +1,5 @@
 use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
-use crate::rbac::{require_permission, PERM_REGISTER_MERCHANT, PERM_VERIFY_MERCHANT, PERM_PROCESS_PAYMENT, PERM_MANAGE_FUND};
+use crate::rbac::{require_permission, PERM_MANAGE_FUND, PERM_PROCESS_PAYMENT, PERM_REGISTER_MERCHANT, PERM_REVIEW_FRAUD, PERM_VERIFY_MERCHANT};
 
 // Merchant categories for spending rules (stored as u32)
 pub const CATEGORY_FOOD: u32 = 0;
@@ -346,7 +346,7 @@ impl MerchantNetwork {
         env.storage().instance().set(&merchants_key, &merchants);
         
         // Run fraud detection
-        Self::fraud_detection(env.clone(), merchant_id.clone(), amount);
+        Self::run_fraud_detection(env.clone(), merchant_id.clone(), amount);
         
         transaction_id
     }
@@ -402,12 +402,18 @@ impl MerchantNetwork {
         transaction_id
     }
     
-    /// Sync offline transactions (when connectivity returns)
+    /// Sync offline transactions (when connectivity returns).
+    ///
+    /// **Required permission:** `PERM_MANAGE_FUND`
     pub fn sync_offline_transactions(
         env: Env,
+        caller: Address,
         merchant_id: String,
         offline_transaction_ids: Vec<String>,
     ) -> u32 {
+        caller.require_auth();
+        require_permission(&env, &caller, PERM_MANAGE_FUND);
+
         let offline_key = Symbol::new(&env, "offline_transactions");
         let mut offline_txs: Map<String, OfflineTransaction> = env.storage().temporary()
             .get(&offline_key)
@@ -468,9 +474,20 @@ impl MerchantNetwork {
         synced_count
     }
     
-    /// Fraud detection - Pattern analysis for suspicious merchant activity
+    /// Fraud detection - Pattern analysis for suspicious merchant activity.
+    ///
+    /// **Required permission:** `PERM_REVIEW_FRAUD`
+    ///
     /// Target: < 0.5% fraud rate
-    pub fn fraud_detection(env: Env, merchant_id: String, amount: U256) {
+    pub fn fraud_detection(env: Env, caller: Address, merchant_id: String, amount: U256) {
+        caller.require_auth();
+        require_permission(&env, &caller, PERM_REVIEW_FRAUD);
+        Self::run_fraud_detection(env, merchant_id, amount);
+    }
+
+    /// Internal fraud detection logic — shared by `fraud_detection` (public) and
+    /// `process_payment` (which runs checks automatically on each transaction).
+    fn run_fraud_detection(env: Env, merchant_id: String, amount: U256) {
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)
@@ -838,8 +855,13 @@ impl MerchantNetwork {
         env.storage().instance().set(&merchants_key, &merchants);
     }
     
-    /// Reset monthly volume (called periodically)
-    pub fn reset_monthly_volumes(env: Env) {
+    /// Reset monthly volume (called periodically).
+    ///
+    /// **Required permission:** `PERM_MANAGE_FUND`
+    pub fn reset_monthly_volumes(env: Env, caller: Address) {
+        caller.require_auth();
+        require_permission(&env, &caller, PERM_MANAGE_FUND);
+
         let merchants_key = Symbol::new(&env, "merchants");
         let mut merchants: Map<String, Merchant> = env.storage().instance()
             .get(&merchants_key)

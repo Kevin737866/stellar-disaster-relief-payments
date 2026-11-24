@@ -320,8 +320,13 @@ impl CashTransfer {
         }
     }
 
-    /// Cleanup expired transfers
-    pub fn cleanup_expired_transfers(env: Env) {
+    /// Cleanup expired transfers.
+    ///
+    /// **Required permission:** `PERM_MANAGE_FUND`
+    pub fn cleanup_expired_transfers(env: Env, caller: Address) {
+        caller.require_auth();
+        require_permission(&env, &caller, PERM_MANAGE_FUND);
+
         let transfers_key = Symbol::new(&env, "transfers");
         let mut transfers: Map<String, ConditionalTransfer> = env.storage().instance()
             .get(&transfers_key)

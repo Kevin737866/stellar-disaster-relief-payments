@@ -11,10 +11,39 @@
 ///   Merchant    - Process payments, view own transactions
 ///   Oracle      - Submit oracle/sensor data for trigger verification
 ///
-/// Permissions are checked by calling `require_role` or `has_permission` before
-/// any sensitive operation.  The storage layout keeps a `Map<Address, u32>` where
-/// the u32 is a bitmask of the roles granted to that address (multiple roles per
-/// address are supported).
+/// ## Permission-to-operation mapping (complete)
+///
+/// | Permission            | Operations                                                           |
+/// |-----------------------|----------------------------------------------------------------------|
+/// | PERM_MANAGE_ROLES     | rbac::assign_role, rbac::revoke_role, rbac::grant_permission        |
+/// | PERM_CREATE_FUND      | aid_registry::create_fund                                            |
+/// | PERM_MANAGE_FUND      | aid_registry::archive_fund, aid_registry::set_paused,               |
+/// |                       | aid_registry::cleanup_expired_funds,                                 |
+/// |                       | cash_transfer::cleanup_expired_transfers,                            |
+/// |                       | cash_transfer::extend_expiry,                                        |
+/// |                       | merchant_network::reset_monthly_volumes,                             |
+/// |                       | merchant_network::sync_offline_transactions                          |
+/// | PERM_DISBURSE_FUNDS   | aid_registry::submit_disbursement, execute_multi_sig_release         |
+/// | PERM_REGISTER_BENEFICIARY | beneficiary_manager::register_beneficiary                        |
+/// | PERM_VERIFY_BENEFICIARY   | beneficiary_manager::verify_beneficiary                          |
+/// | PERM_DEACTIVATE_BENEFICIARY | beneficiary_manager::deactivate_beneficiary                  |
+/// | PERM_CREATE_TRANSFER  | cash_transfer::create_transfer                                       |
+/// | PERM_PROCESS_PAYMENT  | cash_transfer::spend, merchant_network::process_payment              |
+/// | PERM_REGISTER_MERCHANT | merchant_network::register_merchant                                 |
+/// | PERM_VERIFY_MERCHANT  | merchant_network::review_trial_merchant                              |
+/// | PERM_MANAGE_SHIPMENT  | supply_chain_tracker::create_shipment, add_checkpoint,               |
+/// |                       | assign_transporter                                                   |
+/// | PERM_CONFIRM_DELIVERY | supply_chain_tracker::confirm_delivery                               |
+/// | PERM_SUBMIT_ORACLE_DATA | aid_registry::submit_oracle_data                                   |
+/// | PERM_REVIEW_FRAUD     | anti_fraud::review_transaction, anti_fraud::get_high_risk_entities, |
+/// |                       | merchant_network::fraud_detection,                                   |
+/// |                       | supply_chain_tracker::report_lost                                    |
+/// | PERM_RECALL_FUNDS     | cash_transfer::recall_funds, aid_registry::recall_unused_funds       |
+///
+/// Permissions are checked by calling `require_permission` before any sensitive
+/// operation.  `require_role` is also available for coarser role-only checks.
+/// The storage layout keeps a `Map<Address, u32>` for roles and a
+/// `Map<Address, u64>` for per-address permission overrides.
 
 use soroban_sdk::{contracttype, Address, Env, Map, Symbol, Vec};
 
