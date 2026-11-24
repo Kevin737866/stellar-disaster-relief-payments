@@ -14,15 +14,19 @@
 import {
   Keypair,
   Networks,
-  Server,
+  SorobanRpc,
 } from 'stellar-sdk';
-import { EmergencyFundsClient } from '../sdk/src/emergencyFunds';
-import { DonorTransparencyClient } from '../sdk/src/donorTransparency';
+import {
+  DonorTransparencyClient,
+  EmergencyFundsClient,
+} from 'stellar-disaster-relief-sdk';
+
+const { Server } = SorobanRpc;
 
 // Configuration
 const TESTNET_RPC = 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = 'CARDIO7WBLDQ7FXMXJCQ5DPPNKZMFBFVWDLVZ2HI2KNHQR5YSN5KDVX'; // Replace with actual
-const NETWORK_PASSPHRASE = Networks.TESTNET_NETWORK_PASSPHRASE;
+const NETWORK_PASSPHRASE = Networks.TESTNET;
 
 // Caribbean regions covered
 const CARIBBEAN_REGIONS = [
@@ -407,17 +411,18 @@ async function trackCaribbeanImpact() {
   try {
     console.log('Generating comprehensive impact report for Caribbean fund...\n');
 
-    // Generate impact report
-    const impactReport = await transparency.generateImpactReport(CARIBBEAN_FUND_ID);
+    // Trace the documented fund flow for this donor.
+    const fundFlow = await transparency.trackFundFlow(CARIBBEAN_FUND_ID, donorAddress);
 
     console.log('IMPACT METRICS\n');
-    console.log(`Total Beneficiaries Reached: ${impactReport.totalBeneficiaries}+`);
-    console.log(`Sectors Supported: ${Object.keys(impactReport.sectorBreakdown).join(', ')}`);
-    console.log(`Distribution:`);
-    Object.entries(impactReport.sectorBreakdown).forEach(([sector, count]) => {
-      console.log(`  • ${sector}: ${count} beneficiaries`);
+    console.log(`Initial Funding: ${fundFlow.initialAmount} XLM`);
+    console.log(`Current Balance: ${fundFlow.currentBalance} XLM`);
+    console.log(`Release Events: ${fundFlow.releaseHistory.length}`);
+    console.log('Allocation Breakdown:');
+    Object.entries(fundFlow.allocationBreakdown).forEach(([sector, amount]) => {
+      console.log(`  • ${sector}: ${amount} XLM`);
     });
-    console.log(`\nTransactions: ${impactReport.transactionCount}\n`);
+    console.log('');
 
     // Generate donor dashboard
     console.log('Generating donor transparency dashboard...\n');

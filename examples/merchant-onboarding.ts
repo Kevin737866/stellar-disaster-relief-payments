@@ -1,8 +1,13 @@
-import { 
-  createDisasterReliefSDK, 
-  TESTNET_CONFIG, 
-  DISASTER_TYPES 
-} from '../sdk/src/index';
+import {
+  CATEGORY_CLOTHING,
+  CATEGORY_FOOD,
+  CATEGORY_FUEL,
+  CATEGORY_MEDICAL,
+  CATEGORY_SHELTER,
+  createDisasterReliefSDK,
+  DISASTER_TYPES,
+  TESTNET_CONFIG,
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Merchant Network Onboarding Example
@@ -366,12 +371,27 @@ async function merchantOnboarding() {
     ];
 
     for (const merchant of merchantCategories) {
+      const category =
+        merchant.businessType === 'pharmacy'
+          ? CATEGORY_MEDICAL
+          : merchant.businessType === 'clothing'
+            ? CATEGORY_CLOTHING
+            : merchant.businessType === 'transport'
+              ? CATEGORY_SHELTER
+              : merchant.businessType === 'electronics'
+                ? CATEGORY_FUEL
+                : CATEGORY_FOOD;
       const request = sdk.merchantClient.createOnboardingRequest(
         merchant.name,
         merchant.businessType,
-        merchant.location,
+        category,
+        `${merchant.location.latitude},${merchant.location.longitude}`,
+        merchant.location.address,
+        merchant.location.city,
+        merchant.location.country,
+        merchant.location.postalCode,
         merchant.contactInfo,
-        merchant.stellarAddress
+        merchant.verificationDocuments
       );
       
       await sdk.merchantClient.registerMerchant(
@@ -431,9 +451,14 @@ async function merchantOnboarding() {
     // Step 7: Generate QR codes for all merchants
     console.log('📱 Generating QR codes for merchants...');
     for (const merchant of merchantCategories) {
+      const profile = await sdk.merchantClient.getMerchant(merchant.merchantId);
+      if (!profile) {
+        console.warn(`⚠️ Skipping QR for unknown merchant ${merchant.merchantId}`);
+        continue;
+      }
       const qrCode = sdk.merchantClient.generateMerchantQRCode(
         merchant.merchantId,
-        await sdk.merchantClient.getMerchant(merchant.merchantId)
+        profile
       );
       console.log(`📲 Merchant QR Code for ${merchant.name}:`, qrCode.substring(0, 100) + '...');
     }
@@ -539,8 +564,8 @@ async function generateMerchantReport(merchantId: string) {
     console.log(`  ID: ${merchant?.id}`);
     console.log(`  Type: ${merchant?.businessType}`);
     console.log(`  Location: ${merchant?.location.city}, ${merchant?.location.country}`);
-    console.log(`  Status: ${merchant?.verified ? 'Verified' : 'Pending'}`);
-    console.log(`  Trust Score: ${merchant?.trustScore}/100`);
+    console.log(`  Status: ${merchant?.isVerified ? 'Verified' : 'Pending'}`);
+    console.log(`  Reputation Score: ${merchant?.reputationScore}/100`);
     console.log(`  Active Incentives: ${incentives.length}`);
     
     let totalSpent = BigInt(0);

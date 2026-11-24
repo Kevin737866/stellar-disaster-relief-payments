@@ -7,6 +7,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
+    "typecheck:examples": "tsc --noEmit -p tsconfig.examples.json",
+    "typecheck:examples:negative": "tsc --noEmit -p tsconfig.examples.invalid.json",
     "test": "jest",
     "test:sdk": "jest --selectProjects sdk",
     "test:ui": "jest --selectProjects ui",

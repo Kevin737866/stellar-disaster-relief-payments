@@ -15,8 +15,10 @@
  * 5. USSD/SMS support for feature phones
  */
 
-import { BeneficiaryIdentityClient } from '../sdk/src/beneficiaryIdentity';
-import { OfflineAuthClient } from '../sdk/src/offlineAuth';
+import {
+  BeneficiaryIdentityClient,
+  OfflineAuthClient,
+} from 'stellar-disaster-relief-sdk';
 import { Keypair } from 'stellar-sdk';
 
 // Configuration

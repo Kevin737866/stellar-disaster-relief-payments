@@ -1,9 +1,10 @@
-import { 
-  createDisasterReliefSDK, 
-  TESTNET_CONFIG, 
+import {
+  CATEGORY_WATER,
+  createDisasterReliefSDK,
   DISASTER_TYPES,
-  SUPPLY_TYPES 
-} from '../sdk/src/index';
+  SUPPLY_TYPES,
+  TESTNET_CONFIG,
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Drought Relief Water Distribution Program Example
@@ -257,9 +258,14 @@ async function droughtRelief() {
       const request = sdk.merchantClient.createOnboardingRequest(
         provider.name,
         provider.businessType,
-        provider.location,
+        CATEGORY_WATER,
+        `${provider.location.latitude},${provider.location.longitude}`,
+        provider.location.address,
+        provider.location.city,
+        provider.location.country,
+        provider.location.postalCode,
         provider.contactInfo,
-        provider.stellarAddress
+        provider.verificationDocuments
       );
       
       await sdk.merchantClient.registerMerchant(
@@ -360,7 +366,7 @@ async function droughtRelief() {
       },
       {
         donorId: 'WFP_STORAGE',
-        supplyType: SUPPLY_TYPES.OTHER,
+        supplyType: SUPPLY_TYPES.WATER,
         quantity: '10000',
         unit: 'units',
         originLatLng: '2.0469,45.3182',
@@ -417,9 +423,14 @@ async function droughtRelief() {
     // Step 8: Generate QR codes for water collection points
     console.log('📱 Generating QR codes for water collection...');
     for (const beneficiary of droughtBeneficiaries) {
+      const profile = await sdk.beneficiaryClient.getBeneficiary(beneficiary.beneficiaryId);
+      if (!profile) {
+        console.warn(`⚠️ Skipping QR for unknown beneficiary ${beneficiary.beneficiaryId}`);
+        continue;
+      }
       const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
         beneficiary.beneficiaryId,
-        await sdk.beneficiaryClient.getBeneficiary(beneficiary.beneficiaryId)
+        profile
       );
       console.log(`📲 Water QR Code for ${beneficiary.name}:`, qrCode.substring(0, 100) + '...');
     }
@@ -520,8 +531,8 @@ async function trackWaterSupply(shipmentId: string) {
     const alerts = await sdk.trackerClient.getTemperatureAlerts();
     if (alerts.length > 0) {
       console.log('🧪 Water Quality Alerts:');
-      alerts.forEach(([id, alert]) => {
-        console.log(`  ⚠️ ${id}: ${alert}`);
+      alerts.forEach(({ shipmentId, alert }) => {
+        console.log(`  ⚠️ ${shipmentId}: ${alert}`);
       });
     }
   } catch (error) {

@@ -38,6 +38,25 @@ jobs:
       - name: Run SDK unit tests
         run: npm run test:sdk -- --runInBand
 
+  examples:
+    name: Example type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Type-check examples against the public SDK API
+        run: npm run typecheck:examples
+      - name: Verify invalid example API usage is rejected
+        run: |
+          if npm run typecheck:examples:negative; then
+            echo "Example type-check unexpectedly accepted invalid API usage"
+            exit 1
+          fi
+
   ui:
     name: UI tests
     runs-on: ubuntu-latest
@@ -69,8 +88,8 @@ jobs:
   release-gate:
     name: Release gate
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/'))
-    needs: [contract, sdk, ui, integration]
+    needs: [contract, sdk, examples, ui, integration]
     runs-on: ubuntu-latest
     steps:
       - name: Confirm all required gates passed
-        run: echo "Contract, SDK, UI, integration and performance gates passed."
+        run: echo "Contract, SDK, examples, UI, integration and performance gates passed."

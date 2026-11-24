@@ -1,9 +1,10 @@
-import { 
-  createDisasterReliefSDK, 
-  TESTNET_CONFIG, 
+import {
+  CATEGORY_MEDICAL,
+  createDisasterReliefSDK,
   DISASTER_TYPES,
-  SUPPLY_TYPES 
-} from '../sdk/src/index';
+  SUPPLY_TYPES,
+  TESTNET_CONFIG,
+} from 'stellar-disaster-relief-sdk';
 
 /**
  * Medical Supply Chain Management Example
@@ -256,9 +257,14 @@ async function medicalSupplyChain() {
       const request = sdk.merchantClient.createOnboardingRequest(
         supplier.name,
         supplier.businessType,
-        supplier.location,
+        CATEGORY_MEDICAL,
+        `${supplier.location.latitude},${supplier.location.longitude}`,
+        supplier.location.address,
+        supplier.location.city,
+        supplier.location.country,
+        supplier.location.postalCode,
         supplier.contactInfo,
-        supplier.stellarAddress
+        supplier.verificationDocuments
       );
       
       await sdk.merchantClient.registerMerchant(
@@ -417,9 +423,14 @@ async function medicalSupplyChain() {
     // Step 8: Generate QR codes for medical facilities
     console.log('📱 Generating QR codes for medical facilities...');
     for (const facility of medicalFacilities) {
+      const profile = await sdk.beneficiaryClient.getBeneficiary(facility.beneficiaryId);
+      if (!profile) {
+        console.warn(`⚠️ Skipping QR for unknown beneficiary ${facility.beneficiaryId}`);
+        continue;
+      }
       const qrCode = sdk.beneficiaryClient.generateBeneficiaryQRCode(
         facility.beneficiaryId,
-        await sdk.beneficiaryClient.getBeneficiary(facility.beneficiaryId)
+        profile
       );
       console.log(`📲 Medical QR Code for ${facility.name}:`, qrCode.substring(0, 100) + '...');
     }
@@ -521,10 +532,10 @@ async function trackMedicalShipment(shipmentId: string) {
     
     // Check temperature compliance
     const alerts = await sdk.trackerClient.getTemperatureAlerts();
-    const shipmentAlerts = alerts.filter(([id]) => id.includes(shipmentId));
+    const shipmentAlerts = alerts.filter(({ shipmentId: id }) => id.includes(shipmentId));
     if (shipmentAlerts.length > 0) {
       console.log('🌡️ Temperature Alerts:');
-      shipmentAlerts.forEach(([id, alert]) => {
+      shipmentAlerts.forEach(({ shipmentId: id, alert }) => {
         console.log(`  ⚠️ ${id}: ${alert}`);
       });
     }

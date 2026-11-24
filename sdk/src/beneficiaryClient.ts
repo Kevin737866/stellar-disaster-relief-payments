@@ -7,6 +7,7 @@ import {
   nativeToScVal,
   scValToNative
 } from 'stellar-sdk';
+import { SHA256 } from 'crypto-js';
 const { Server } = SorobanRpc;
 type Server = SorobanRpc.Server;
 

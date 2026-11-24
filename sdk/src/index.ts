@@ -56,7 +56,25 @@ export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
-export { MerchantNetworkSDK } from './merchantNetwork';
+export {
+  MerchantNetworkSDK,
+  CATEGORY_FOOD,
+  CATEGORY_WATER,
+  CATEGORY_SHELTER,
+  CATEGORY_MEDICAL,
+  CATEGORY_CLOTHING,
+  CATEGORY_FUEL,
+  STATUS_PENDING,
+  STATUS_TRIAL,
+  STATUS_ACTIVE,
+  STATUS_SUSPENDED,
+  STATUS_GRADUATED,
+  PAYMENT_QR,
+  PAYMENT_USSD,
+  PAYMENT_NFC,
+  PAYMENT_OFFLINE,
+  PAYMENT_ONLINE,
+} from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
 
 // Export i18n (Internationalization) Support
