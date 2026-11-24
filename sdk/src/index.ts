@@ -64,7 +64,9 @@ export { MerchantApp } from './merchantApp';
 export {
   LEGACY_STORAGE_KEYS,
   MERCHANT_APP_DATASETS,
+  MERCHANT_APP_PERSISTENCE_VERSION,
   MERCHANT_APP_STORAGE_PREFIX,
+  PERSISTED_DATA_VERSION,
 } from './merchantApp';
 export type {
   InventoryItem,
@@ -72,6 +74,8 @@ export type {
   MerchantAppDataset,
   MerchantAppMigrationResult,
   MerchantAppPersistenceConfig,
+  MerchantAppPersistenceReport,
+  MerchantAppRecoveryResult,
   MerchantAppStorage,
   OfflineQueueItem,
   OfflineQueueItemType,
@@ -79,6 +83,10 @@ export type {
   OfflineSyncItemResult,
   OfflineSyncResult,
   OfflineSyncStatus,
+  PersistenceIssue,
+  PersistenceIssueCode,
+  QuarantinedPersistenceData,
+  QuarantinedRecord,
   SupportMessage,
 } from './merchantApp';
 

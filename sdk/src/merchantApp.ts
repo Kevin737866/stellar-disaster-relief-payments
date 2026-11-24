@@ -35,6 +35,70 @@ export const MERCHANT_APP_DATASETS: MerchantAppDataset[] = [
 
 export const MERCHANT_APP_STORAGE_PREFIX = 'merchantApp';
 
+/** Version written to newly persisted datasets. Bare arrays are treated as v1. */
+export const MERCHANT_APP_PERSISTENCE_VERSION = 1;
+/** Alias retained for callers that prefer the shorter name. */
+export const PERSISTED_DATA_VERSION = MERCHANT_APP_PERSISTENCE_VERSION;
+
+export type PersistenceIssueCode =
+  | 'invalid_json'
+  | 'unexpected_shape'
+  | 'unknown_version'
+  | 'invalid_entries';
+
+/** Actionable validation problem surfaced during a persistence load. */
+export interface PersistenceIssue {
+  dataset: MerchantAppDataset;
+  /** Storage key that contained the problematic payload. */
+  key: string;
+  code: PersistenceIssueCode;
+  message: string;
+  recordCount?: number;
+  /** Storage key holding the original values for operator recovery. */
+  quarantinedKey: string;
+}
+
+/** One rejected value kept for operator inspection. */
+export interface QuarantinedRecord {
+  /** Index in the original payload, when the rejection was entry-specific. */
+  index?: number;
+  reason: string;
+  value: unknown;
+}
+
+/** Appended record of data that was not safe to restore directly. */
+export interface QuarantinedPersistenceData {
+  dataset: MerchantAppDataset;
+  sourceKey: string;
+  quarantinedAt: number;
+  version: number;
+  reason: PersistenceIssueCode;
+  message: string;
+  records: QuarantinedRecord[];
+}
+
+/** Validation/quarantine state for the active merchant. */
+export interface MerchantAppPersistenceReport {
+  merchantId: string;
+  issues: PersistenceIssue[];
+  quarantined: Record<MerchantAppDataset, QuarantinedPersistenceData[]>;
+}
+
+/** Outcome of an explicit recovery pass for one dataset. */
+export interface MerchantAppRecoveryResult {
+  dataset: MerchantAppDataset;
+  restored: number;
+  rejected: number;
+  issues: PersistenceIssue[];
+}
+
+/**
+ * Recovery model: a malformed payload or malformed entry is copied to a
+ * per-merchant quarantine key and reported by `getPersistenceReport()`.
+ * Valid records are restored normally, so queued payments are never silently
+ * discarded. Operators can correct storage and call `reloadPersistedData()`,
+ * or pass corrected records to `restoreDataset()`.
+ */
 export interface MerchantAppPersistenceConfig {
   /**
    * Copy legacy unscoped records into this merchant's scoped keys when the
@@ -164,6 +228,74 @@ export interface SupportMessage {
   status: 'pending' | 'sent' | 'read' | 'resolved';
 }
 
+type EntryValidator = (entry: unknown) => string | null;
+
+const SUPPORT_MESSAGE_STATUSES = new Set<SupportMessage['status']>([
+  'pending',
+  'sent',
+  'read',
+  'resolved',
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+const DATASET_VALIDATORS: Record<MerchantAppDataset, EntryValidator> = {
+  offlineQueue(entry) {
+    if (!isRecord(entry)) return 'entry must be an object';
+    if (!isNonEmptyString(entry.id)) return 'id must be a non-empty string';
+    if (
+      entry.type !== 'payment' &&
+      entry.type !== 'inventory_update' &&
+      entry.type !== 'support_message'
+    ) {
+      return 'type must be payment, inventory_update, or support_message';
+    }
+    if (!isFiniteNumber(entry.timestamp)) return 'timestamp must be a finite number';
+    if (!isFiniteNumber(entry.retryCount) || entry.retryCount < 0) {
+      return 'retryCount must be a non-negative finite number';
+    }
+    if (!isRecord(entry.data)) return 'data must be an object';
+    return null;
+  },
+  inventory(entry) {
+    if (!isRecord(entry)) return 'entry must be an object';
+    if (!isNonEmptyString(entry.id)) return 'id must be a non-empty string';
+    if (!isNonEmptyString(entry.name)) return 'name must be a non-empty string';
+    if (!isNonEmptyString(entry.category)) return 'category must be a non-empty string';
+    if (!isFiniteNumber(entry.quantity) || entry.quantity < 0) {
+      return 'quantity must be a non-negative finite number';
+    }
+    if (!isNonEmptyString(entry.unit)) return 'unit must be a non-empty string';
+    if (typeof entry.price !== 'string') return 'price must be a string';
+    if (!isFiniteNumber(entry.lastUpdated)) return 'lastUpdated must be a finite number';
+    return null;
+  },
+  supportMessages(entry) {
+    if (!isRecord(entry)) return 'entry must be an object';
+    if (!isNonEmptyString(entry.id)) return 'id must be a non-empty string';
+    if (!isNonEmptyString(entry.merchantId)) return 'merchantId must be a non-empty string';
+    if (typeof entry.message !== 'string') return 'message must be a string';
+    if (!isFiniteNumber(entry.timestamp)) return 'timestamp must be a finite number';
+    if (typeof entry.isFromMerchant !== 'boolean') {
+      return 'isFromMerchant must be a boolean';
+    }
+    if (typeof entry.status !== 'string' || !SUPPORT_MESSAGE_STATUSES.has(entry.status as SupportMessage['status'])) {
+      return 'status is not a recognized support message status';
+    }
+    return null;
+  },
+};
+
 export class MerchantApp {
   private sdk: MerchantNetworkSDK;
   private config: MerchantAppConfig;
@@ -174,6 +306,7 @@ export class MerchantApp {
   private syncInterval: NodeJS.Timeout | null = null;
   private syncHandlers: OfflineSyncHandlers;
   private persistence: MerchantAppPersistenceConfig;
+  private persistenceIssues: PersistenceIssue[] = [];
   private queueSequence: number = 0;
 
   constructor(config: MerchantAppConfig) {
@@ -762,9 +895,13 @@ export class MerchantApp {
 
   // ============== Local Storage (Merchant-scoped) ==============
 
+  private getStorageScope(): string {
+    return encodeURIComponent(this.config.merchantId);
+  }
+
   /** Stable storage keys for this merchant's datasets. */
   getStorageKeys(): Record<MerchantAppDataset, string> {
-    const scope = encodeURIComponent(this.config.merchantId);
+    const scope = this.getStorageScope();
     return {
       offlineQueue: `${MERCHANT_APP_STORAGE_PREFIX}:${scope}:${LEGACY_STORAGE_KEYS.offlineQueue}`,
       inventory: `${MERCHANT_APP_STORAGE_PREFIX}:${scope}:${LEGACY_STORAGE_KEYS.inventory}`,
@@ -781,6 +918,7 @@ export class MerchantApp {
 
     this.stopAutoSync();
     this.config = { ...this.config, merchantId, merchantKey };
+    this.persistenceIssues = [];
     this.queueSequence = 0;
     this.offlineQueue = [];
     this.inventory = [];
@@ -819,9 +957,9 @@ export class MerchantApp {
         continue;
       }
 
-      const parsed = this.parseStoredDataset<any>(legacy, dataset);
-      storage.setItem(keys[dataset], JSON.stringify(parsed));
-      this.applyDataset(dataset, parsed);
+      const restored = this.readDataset<any>(legacy, dataset, legacyKey);
+      this.persistDataset(dataset, restored.records);
+      this.applyDataset(dataset, restored.records);
       if (options.removeLegacyKeys ?? this.persistence.removeLegacyKeysAfterMigration) {
         storage.removeItem?.(legacyKey);
       }
@@ -853,38 +991,308 @@ export class MerchantApp {
     return true;
   }
 
-  private parseStoredDataset<T>(value: string, dataset: MerchantAppDataset): T[] {
-    try {
-      const parsed = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed as T[];
-      console.warn(`[merchant-app] Ignoring malformed ${dataset} data in local storage`);
-    } catch {
-      console.warn(`[merchant-app] Ignoring unreadable ${dataset} data in local storage`);
+  /** Storage key holding rejected values for the active merchant/dataset. */
+  getQuarantineKey(dataset: MerchantAppDataset): string {
+    return `${MERCHANT_APP_STORAGE_PREFIX}:${this.getStorageScope()}:quarantine:${dataset}`;
+  }
+
+  /** Re-read local storage after an operator corrects a quarantined payload. */
+  reloadPersistedData(): MerchantAppPersistenceReport {
+    this.persistenceIssues = [];
+    this.loadOfflineQueue();
+    this.loadInventory();
+    this.loadSupportMessages();
+    return this.getPersistenceReport();
+  }
+
+  /** Issues and quarantined originals for the active merchant. */
+  getPersistenceReport(): MerchantAppPersistenceReport {
+    const quarantined = {} as Record<MerchantAppDataset, QuarantinedPersistenceData[]>;
+    for (const dataset of MERCHANT_APP_DATASETS) {
+      quarantined[dataset] = this.readQuarantineEntries(this.getQuarantineKey(dataset));
     }
-    return [];
+    return {
+      merchantId: this.config.merchantId,
+      issues: [...this.persistenceIssues],
+      quarantined,
+    };
+  }
+
+  getPersistenceIssues(): PersistenceIssue[] {
+    return [...this.persistenceIssues];
+  }
+
+  /**
+   * Remove quarantined copies after remediation. This does not change the
+   * active dataset; call `reloadPersistedData()` if storage was corrected.
+   */
+  clearQuarantine(dataset?: MerchantAppDataset): void {
+    const datasets = dataset ? [dataset] : MERCHANT_APP_DATASETS;
+    const storage = this.getStorage();
+    for (const name of datasets) {
+      const key = this.getQuarantineKey(name);
+      if (storage.removeItem) {
+        storage.removeItem(key);
+      } else {
+        storage.setItem(
+          key,
+          JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, entries: [] })
+        );
+      }
+    }
+    this.persistenceIssues = this.persistenceIssues.filter(
+      issue => !datasets.includes(issue.dataset)
+    );
+  }
+
+  /**
+   * Explicit recovery path: validate supplied records, restore the valid ones,
+   * and quarantine any that remain invalid.
+   */
+  restoreDataset(dataset: MerchantAppDataset, records: unknown[]): MerchantAppRecoveryResult {
+    const validated = this.validateEntries<unknown>(records, DATASET_VALIDATORS[dataset]);
+    if (validated.invalid.length > 0) {
+      this.appendQuarantine(
+        dataset,
+        this.getStorageKeys()[dataset],
+        'invalid_entries',
+        `${validated.invalid.length} record(s) rejected during recovery`,
+        validated.invalid
+      );
+    }
+    this.persistDataset(dataset, validated.records);
+    this.applyDataset(dataset, validated.records);
+    return {
+      dataset,
+      restored: validated.records.length,
+      rejected: validated.invalid.length,
+      issues: this.persistenceIssues.filter(issue => issue.dataset === dataset),
+    };
+  }
+
+  private recordPersistenceIssue(
+    issue: Omit<PersistenceIssue, 'quarantinedKey'> & { quarantinedKey?: string }
+  ): PersistenceIssue {
+    const full: PersistenceIssue = {
+      ...issue,
+      quarantinedKey: issue.quarantinedKey ?? this.getQuarantineKey(issue.dataset),
+    };
+    const duplicate = this.persistenceIssues.some(existing =>
+      existing.dataset === full.dataset &&
+      existing.key === full.key &&
+      existing.code === full.code &&
+      existing.message === full.message
+    );
+    if (!duplicate) this.persistenceIssues.push(full);
+    console.warn(
+      `[merchant-app] ${full.code} in ${full.dataset} (${full.key}): ${full.message} Original value quarantined at ${full.quarantinedKey}`
+    );
+    return full;
+  }
+
+  private readQuarantineEntries(key: string): QuarantinedPersistenceData[] {
+    const raw = this.getStorage().getItem(key);
+    if (raw === null) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!isRecord(parsed) || !Array.isArray(parsed.entries)) return [];
+      return parsed.entries
+        .filter(isRecord)
+        .filter(entry =>
+          MERCHANT_APP_DATASETS.includes(entry.dataset as MerchantAppDataset) &&
+          Array.isArray(entry.records)
+        )
+        .map(entry => entry as unknown as QuarantinedPersistenceData);
+    } catch {
+      return [];
+    }
+  }
+
+  private appendQuarantine(
+    dataset: MerchantAppDataset,
+    sourceKey: string,
+    reason: PersistenceIssueCode,
+    message: string,
+    records: QuarantinedRecord[]
+  ): string {
+    const key = this.getQuarantineKey(dataset);
+    const storage = this.getStorage();
+    const existing = this.readQuarantineEntries(key);
+    const entry: QuarantinedPersistenceData = {
+      dataset,
+      sourceKey,
+      quarantinedAt: Date.now(),
+      version: MERCHANT_APP_PERSISTENCE_VERSION,
+      reason,
+      message,
+      records,
+    };
+    const duplicate = existing.some(existingEntry =>
+      existingEntry.sourceKey === sourceKey &&
+      existingEntry.reason === reason &&
+      existingEntry.message === message &&
+      JSON.stringify(existingEntry.records) === JSON.stringify(records)
+    );
+    if (!duplicate) {
+      try {
+        storage.setItem(
+          key,
+          JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, entries: [...existing, entry] })
+        );
+      } catch (error) {
+        console.warn(
+          `[merchant-app] Unable to quarantine ${dataset} data at ${key}: ${syncErrorMessage(error)}`
+        );
+      }
+    }
+    this.recordPersistenceIssue({
+      dataset,
+      key: sourceKey,
+      code: reason,
+      message,
+      recordCount: records.length,
+      quarantinedKey: key,
+    });
+    return key;
+  }
+
+  private extractDatasetPayload(parsed: unknown): {
+    entries: unknown[];
+    version: number | null;
+    recognized: boolean;
+  } {
+    if (Array.isArray(parsed)) {
+      return { entries: parsed, version: null, recognized: true };
+    }
+    if (!isRecord(parsed)) {
+      return { entries: [], version: null, recognized: false };
+    }
+    const rawVersion = parsed.version ?? parsed.schemaVersion;
+    let version: number | null = null;
+    if (isFiniteNumber(rawVersion)) {
+      version = rawVersion;
+    } else if (typeof rawVersion === 'string' && /^\d+$/.test(rawVersion)) {
+      version = Number(rawVersion);
+    } else if (rawVersion !== undefined) {
+      return { entries: [], version: null, recognized: false };
+    }
+    const entries = parsed.data ?? parsed.items ?? parsed.records ?? parsed.payload;
+    if (!Array.isArray(entries)) {
+      return { entries: [], version, recognized: false };
+    }
+    return { entries, version, recognized: true };
+  }
+
+  private validateEntries<T>(
+    entries: unknown[],
+    validator: EntryValidator
+  ): { records: T[]; invalid: QuarantinedRecord[] } {
+    const records: T[] = [];
+    const invalid: QuarantinedRecord[] = [];
+    entries.forEach((entry, index) => {
+      const reason = validator(entry);
+      if (reason === null) {
+        records.push(entry as T);
+      } else {
+        invalid.push({ index, reason, value: entry });
+      }
+    });
+    return { records, invalid };
+  }
+
+  private readDataset<T>(
+    raw: string,
+    dataset: MerchantAppDataset,
+    key: string
+  ): { records: T[]; replaceSource: boolean } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      this.appendQuarantine(dataset, key, 'invalid_json', `Unreadable JSON (${syncErrorMessage(error)})`, [
+        { reason: 'invalid_json', value: raw },
+      ]);
+      return { records: [], replaceSource: false };
+    }
+
+    const payload = this.extractDatasetPayload(parsed);
+    const validated = this.validateEntries<T>(payload.entries, DATASET_VALIDATORS[dataset]);
+    if (payload.version !== null && payload.version !== MERCHANT_APP_PERSISTENCE_VERSION) {
+      const quarantined: QuarantinedRecord[] = [
+        { reason: `Unknown schema version ${payload.version}`, value: parsed },
+        ...validated.invalid,
+      ];
+      this.appendQuarantine(
+        dataset,
+        key,
+        'unknown_version',
+        `Unsupported schema version ${payload.version}; recovered ${validated.records.length} record(s)`,
+        quarantined
+      );
+      return { records: validated.records, replaceSource: validated.records.length > 0 };
+    }
+
+    if (!payload.recognized) {
+      this.appendQuarantine(dataset, key, 'unexpected_shape', 'Expected an array or a versioned payload with a data array', [
+        { reason: 'unexpected_shape', value: parsed },
+      ]);
+      return { records: [], replaceSource: false };
+    }
+
+    if (validated.invalid.length > 0) {
+      this.appendQuarantine(
+        dataset,
+        key,
+        'invalid_entries',
+        `${validated.invalid.length} invalid record(s) were quarantined`,
+        validated.invalid
+      );
+    }
+    return {
+      records: validated.records,
+      replaceSource:
+        payload.version !== MERCHANT_APP_PERSISTENCE_VERSION || validated.invalid.length > 0,
+    };
   }
 
   private loadDataset<T>(dataset: MerchantAppDataset): T[] {
     const storage = this.getStorage();
     const key = this.getStorageKeys()[dataset];
     const stored = storage.getItem(key);
-    if (stored !== null) return this.parseStoredDataset<T>(stored, dataset);
+    if (stored !== null) {
+      const restored = this.readDataset<T>(stored, dataset, key);
+      if (restored.replaceSource) this.persistDataset(dataset, restored.records);
+      return restored.records;
+    }
 
     const legacyKey = LEGACY_STORAGE_KEYS[dataset];
     const legacy = storage.getItem(legacyKey);
     if (legacy !== null && this.canClaimLegacyDataset(storage, dataset)) {
-      const parsed = this.parseStoredDataset<T>(legacy, dataset);
-      storage.setItem(key, JSON.stringify(parsed));
+      const restored = this.readDataset<T>(legacy, dataset, legacyKey);
+      this.persistDataset(dataset, restored.records);
       if (this.persistence.removeLegacyKeysAfterMigration) {
         storage.removeItem?.(legacyKey);
       }
-      return parsed;
+      return restored.records;
     }
     return [];
   }
 
+  private persistDataset<T>(dataset: MerchantAppDataset, value: T[]): void {
+    try {
+      this.getStorage().setItem(
+        this.getStorageKeys()[dataset],
+        JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, data: value })
+      );
+    } catch (error) {
+      console.warn(
+        `[merchant-app] Unable to persist ${dataset} data: ${syncErrorMessage(error)}`
+      );
+    }
+  }
+
   private saveDataset<T>(dataset: MerchantAppDataset, value: T[]): void {
-    this.getStorage().setItem(this.getStorageKeys()[dataset], JSON.stringify(value));
+    this.persistDataset(dataset, value);
   }
 
   private applyDataset(dataset: MerchantAppDataset, value: unknown[]): void {

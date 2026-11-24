@@ -1,8 +1,12 @@
 import {
   LEGACY_STORAGE_KEYS,
+  MERCHANT_APP_PERSISTENCE_VERSION,
+  InventoryItem,
   MerchantApp,
+  MerchantAppDataset,
   OfflineQueueItem,
   OfflineSyncResult,
+  SupportMessage,
 } from './merchantApp';
 
 jest.mock('./merchantNetwork', () => {
@@ -69,9 +73,22 @@ function makeItem(overrides: Partial<OfflineQueueItem> = {}): OfflineQueueItem {
   };
 }
 
+function parseStoredPayload<T>(raw: string | null): T[] {
+  if (raw === null) return [];
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed)) return parsed as T[];
+  if (parsed && typeof parsed === 'object' && Array.isArray((parsed as any).data)) {
+    return (parsed as any).data as T[];
+  }
+  return [];
+}
+
+function storedDataset<T>(app: MerchantApp, dataset: MerchantAppDataset): T[] {
+  return parseStoredPayload<T>(localStorage.getItem(app.getStorageKeys()[dataset]));
+}
+
 function storedQueue(app: MerchantApp): OfflineQueueItem[] {
-  const key = app.getStorageKeys().offlineQueue;
-  return JSON.parse(localStorage.getItem(key) ?? '[]') as OfflineQueueItem[];
+  return storedDataset<OfflineQueueItem>(app, 'offlineQueue');
 }
 
 describe('MerchantApp offline queue sync', () => {
@@ -248,7 +265,6 @@ describe('MerchantApp offline queue sync', () => {
       quantity: 4,
       unit: 'box',
       price: '5',
-      lastUpdated: 0,
     });
     const inventoryId = app.getInventoryByCategory('medical')[0].id;
     app.updateInventoryItem(inventoryId, { quantity: 2 });
@@ -372,7 +388,6 @@ describe('MerchantApp merchant-scoped persistence', () => {
       quantity: 5,
       unit: 'L',
       price: '1',
-      lastUpdated: 0,
     });
     const messageA = await appA.sendSupportMessage('message from A');
 
@@ -390,7 +405,6 @@ describe('MerchantApp merchant-scoped persistence', () => {
       quantity: 2,
       unit: 'box',
       price: '5',
-      lastUpdated: 0,
     });
     const messageB = await appB.sendSupportMessage('message from B');
 
@@ -408,8 +422,8 @@ describe('MerchantApp merchant-scoped persistence', () => {
     expect(appA.getSupportMessages().map(item => item.id)).toEqual([messageA]);
     expect(appB.getSupportMessages().map(item => item.id)).toEqual([messageB]);
 
-    const storedA = JSON.parse(storage.getItem(appA.getStorageKeys().offlineQueue) ?? '[]');
-    const storedB = JSON.parse(storage.getItem(appB.getStorageKeys().offlineQueue) ?? '[]');
+    const storedA = storedQueue(appA);
+    const storedB = storedQueue(appB);
     expect(storedA.some((item: OfflineQueueItem) => item.id === paymentA)).toBe(true);
     expect(storedB.some((item: OfflineQueueItem) => item.id === paymentB)).toBe(true);
     expect(storedA.some((item: OfflineQueueItem) => item.id === paymentB)).toBe(false);
@@ -425,7 +439,6 @@ describe('MerchantApp merchant-scoped persistence', () => {
       quantity: 7,
       unit: 'piece',
       price: '3',
-      lastUpdated: 0,
     });
     const messageId = await app.sendSupportMessage('restart check');
     const originalQueue = app.getOfflineQueue();
@@ -478,9 +491,10 @@ describe('MerchantApp merchant-scoped persistence', () => {
       'Legacy water',
     ]);
     expect(migratedApp.getSupportMessages().map(item => item.id)).toEqual(['legacy-message']);
-    expect(
-      JSON.parse(storage.getItem(migratedApp.getStorageKeys().offlineQueue) ?? '[]')
-    ).toEqual(legacyQueue);
+    expect(storedQueue(migratedApp)).toEqual(legacyQueue);
+    expect(JSON.parse(storage.getItem(migratedApp.getStorageKeys().offlineQueue) ?? '{}').version).toBe(
+      MERCHANT_APP_PERSISTENCE_VERSION
+    );
     expect(storage.getItem(LEGACY_STORAGE_KEYS.offlineQueue)).not.toBeNull();
   });
 
@@ -522,5 +536,224 @@ describe('MerchantApp merchant-scoped persistence', () => {
     expect(app.getStorageKeys().inventory).toContain('merchant-switched');
     expect(app.getInventoryByCategory('food')).toHaveLength(0);
     expect(app.getOfflineQueue()).toHaveLength(0);
+  });
+});
+
+describe('MerchantApp persisted data validation', () => {
+  const apps: MerchantApp[] = [];
+  let storage: MemoryStorage;
+  let warnSpy: jest.SpyInstance;
+
+  function makeInventory(overrides: Partial<InventoryItem> = {}): InventoryItem {
+    return {
+      id: 'valid-inv',
+      name: 'Valid water',
+      category: 'food',
+      quantity: 3,
+      unit: 'L',
+      price: '1',
+      lastUpdated: 0,
+      ...overrides,
+    };
+  }
+
+  function makeSupport(overrides: Partial<SupportMessage> = {}): SupportMessage {
+    return {
+      id: 'valid-message',
+      merchantId: 'merchant-valid',
+      message: 'valid support',
+      timestamp: 1,
+      isFromMerchant: true,
+      status: 'pending',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    storage = new MemoryStorage();
+    (global as any).localStorage = storage;
+    mockNetworkSync.mockReset();
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    apps.splice(0).forEach(app => app.destroy());
+    warnSpy.mockRestore();
+  });
+
+  function createApp(merchantId: string): MerchantApp {
+    const app = new MerchantApp({
+      rpcUrl: 'http://localhost:8000',
+      network: 'testnet',
+      merchantId,
+      merchantKey: `${merchantId}-key`,
+      persistence: { storage },
+    });
+    apps.push(app);
+    return app;
+  }
+
+  it('restores valid unversioned and versioned payloads without quarantine', () => {
+    const app = createApp('merchant-valid');
+    const legacyQueue = [makeItem({ id: 'legacy-scoped-payment' })];
+    storage.setItem(app.getStorageKeys().offlineQueue, JSON.stringify(legacyQueue));
+    storage.setItem(
+      app.getStorageKeys().inventory,
+      JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, data: [makeInventory()] })
+    );
+    storage.setItem(
+      app.getStorageKeys().supportMessages,
+      JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, data: [makeSupport()] })
+    );
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getOfflineQueue()).toEqual(legacyQueue);
+    expect(app.getInventoryByCategory('food').map(item => item.id)).toEqual(['valid-inv']);
+    expect(app.getSupportMessages().map(message => message.id)).toEqual(['valid-message']);
+    expect(report.issues).toEqual([]);
+    expect(report.quarantined.offlineQueue).toEqual([]);
+    expect(JSON.parse(storage.getItem(app.getStorageKeys().offlineQueue) ?? '{}').version).toBe(
+      MERCHANT_APP_PERSISTENCE_VERSION
+    );
+    expect(storedQueue(app)).toEqual(legacyQueue);
+  });
+
+  it('quarantines malformed JSON without throwing during initialization', () => {
+    const app = createApp('merchant-json');
+    const raw = '{not json';
+    storage.setItem(app.getStorageKeys().offlineQueue, raw);
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getOfflineQueue()).toEqual([]);
+    expect(report.issues).toEqual([
+      expect.objectContaining({
+        dataset: 'offlineQueue',
+        code: 'invalid_json',
+        key: app.getStorageKeys().offlineQueue,
+      }),
+    ]);
+    expect(report.quarantined.offlineQueue[0].reason).toBe('invalid_json');
+    expect(report.quarantined.offlineQueue[0].records[0].value).toBe(raw);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('invalid_json'));
+    expect(storage.getItem(app.getStorageKeys().offlineQueue)).toBe(raw);
+  });
+
+  it('quarantines wrong top-level shapes without throwing', () => {
+    const app = createApp('merchant-shape');
+    storage.setItem(app.getStorageKeys().inventory, JSON.stringify({ unexpected: true }));
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getInventoryByCategory('food')).toEqual([]);
+    expect(report.issues).toEqual([
+      expect.objectContaining({ dataset: 'inventory', code: 'unexpected_shape' }),
+    ]);
+    expect(report.quarantined.inventory[0].reason).toBe('unexpected_shape');
+  });
+
+  it('reports unknown versions while recovering structurally valid records', () => {
+    const app = createApp('merchant-version');
+    const futureQueue = [makeItem({ id: 'future-payment' })];
+    storage.setItem(
+      app.getStorageKeys().offlineQueue,
+      JSON.stringify({ version: 99, data: futureQueue })
+    );
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getOfflineQueue()).toEqual(futureQueue);
+    expect(report.issues).toEqual([
+      expect.objectContaining({ dataset: 'offlineQueue', code: 'unknown_version' }),
+    ]);
+    expect(report.quarantined.offlineQueue[0].reason).toBe('unknown_version');
+    expect(storedQueue(app)).toEqual(futureQueue);
+    expect(JSON.parse(storage.getItem(app.getStorageKeys().offlineQueue) ?? '{}').version).toBe(
+      MERCHANT_APP_PERSISTENCE_VERSION
+    );
+  });
+
+  it('quarantines invalid queue entries while keeping valid payments restored', () => {
+    const app = createApp('merchant-entries');
+    const validPayment = makeItem({ id: 'valid-payment' });
+    const validSupportQueue = makeItem({
+      id: 'valid-support',
+      type: 'support_message',
+      data: { id: 'valid-message' },
+    });
+    const invalid = {
+      id: 42,
+      type: 'payment',
+      data: {},
+      timestamp: 1,
+      retryCount: 0,
+    };
+    storage.setItem(
+      app.getStorageKeys().offlineQueue,
+      JSON.stringify({ version: MERCHANT_APP_PERSISTENCE_VERSION, data: [validPayment, invalid, validSupportQueue] })
+    );
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getOfflineQueue().map(item => item.id)).toEqual(['valid-payment', 'valid-support']);
+    expect(report.issues).toEqual([
+      expect.objectContaining({
+        dataset: 'offlineQueue',
+        code: 'invalid_entries',
+        recordCount: 1,
+      }),
+    ]);
+    expect(report.quarantined.offlineQueue[0].records[0]).toMatchObject({
+      index: 1,
+      reason: expect.stringContaining('id'),
+    });
+    expect(storedQueue(app).map(item => item.id)).toEqual(['valid-payment', 'valid-support']);
+  });
+
+  it('quarantines invalid inventory and support entries independently', () => {
+    const app = createApp('merchant-datasets');
+    storage.setItem(
+      app.getStorageKeys().inventory,
+      JSON.stringify([makeInventory(), makeInventory({ id: '' })])
+    );
+    storage.setItem(
+      app.getStorageKeys().supportMessages,
+      JSON.stringify([makeSupport(), makeSupport({ status: 'unknown' as SupportMessage['status'] })])
+    );
+
+    const report = app.reloadPersistedData();
+
+    expect(app.getInventoryByCategory('food').map(item => item.id)).toEqual(['valid-inv']);
+    expect(app.getSupportMessages().map(message => message.id)).toEqual(['valid-message']);
+    expect(report.issues.map(issue => issue.code)).toEqual(
+      expect.arrayContaining(['invalid_entries', 'invalid_entries'])
+    );
+    expect(report.quarantined.inventory[0].records[0].index).toBe(1);
+    expect(report.quarantined.supportMessages[0].records[0].reason).toMatch(/status/);
+  });
+
+  it('supports explicit recovery after an operator corrects storage', () => {
+    const app = createApp('merchant-recovery');
+    const key = app.getStorageKeys().offlineQueue;
+    storage.setItem(key, '{bad');
+    app.reloadPersistedData();
+    expect(app.getPersistenceReport().quarantined.offlineQueue).toHaveLength(1);
+
+    storage.setItem(
+      key,
+      JSON.stringify({
+        version: MERCHANT_APP_PERSISTENCE_VERSION,
+        data: [makeItem({ id: 'operator-recovered-payment' })],
+      })
+    );
+    const report = app.reloadPersistedData();
+
+    expect(app.getOfflineQueue().map(item => item.id)).toEqual(['operator-recovered-payment']);
+    expect(report.issues).toEqual([]);
+    expect(report.quarantined.offlineQueue).toHaveLength(1);
+
+    app.clearQuarantine('offlineQueue');
+    expect(app.getPersistenceReport().quarantined.offlineQueue).toEqual([]);
   });
 });
