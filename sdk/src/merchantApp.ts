@@ -16,14 +16,87 @@ export interface MerchantAppConfig {
   network: 'testnet' | 'mainnet' | 'standalone';
   merchantId: string;
   merchantKey: string;
+  /** Optional remote acknowledgement hooks for non-payment queue items. */
+  syncHandlers?: OfflineSyncHandlers;
 }
+
+export type OfflineQueueItemType = 'payment' | 'inventory_update' | 'support_message';
 
 export interface OfflineQueueItem {
   id: string;
-  type: 'payment' | 'inventory_update' | 'support_message';
+  type: OfflineQueueItemType;
   data: any;
   timestamp: number;
   retryCount: number;
+}
+
+/** Optional hooks used to acknowledge non-payment items during sync. */
+export interface OfflineSyncHandlers {
+  inventoryUpdate?: (item: OfflineQueueItem) => void | Promise<void>;
+  supportMessage?: (item: OfflineQueueItem) => void | Promise<void>;
+}
+
+export type OfflineSyncStatus = 'synced' | 'failed' | 'unsupported';
+
+/** Outcome of one queued item during a sync pass. */
+export interface OfflineSyncItemResult {
+  id: string;
+  type: string;
+  status: OfflineSyncStatus;
+  reason?: string;
+  retryCount: number;
+}
+
+/** Per-item report returned by `syncOfflineTransactions`. */
+export interface OfflineSyncResult {
+  success: boolean;
+  syncedCount: number;
+  failedCount: number;
+  unsupportedCount: number;
+  remainingCount: number;
+  syncedIds: string[];
+  failedIds: string[];
+  unsupportedIds: string[];
+  unsupportedTypes: string[];
+  results: OfflineSyncItemResult[];
+  /** Aliases for consumers that prefer status-grouped arrays. */
+  synced: OfflineSyncItemResult[];
+  failed: OfflineSyncItemResult[];
+  unsupported: OfflineSyncItemResult[];
+  outcomes: OfflineSyncItemResult[];
+  syncedItems: OfflineQueueItem[];
+  failedItems: OfflineQueueItem[];
+  unsupportedItems: OfflineQueueItem[];
+}
+
+function emptySyncResult(remainingCount: number): OfflineSyncResult {
+  return {
+    success: true,
+    syncedCount: 0,
+    failedCount: 0,
+    unsupportedCount: 0,
+    remainingCount,
+    syncedIds: [],
+    failedIds: [],
+    unsupportedIds: [],
+    unsupportedTypes: [],
+    results: [],
+    synced: [],
+    failed: [],
+    unsupported: [],
+    outcomes: [],
+    syncedItems: [],
+    failedItems: [],
+    unsupportedItems: [],
+  };
+}
+
+function syncErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
 }
 
 export interface InventoryItem {
@@ -53,9 +126,12 @@ export class MerchantApp {
   private supportMessages: SupportMessage[] = [];
   private isOnline: boolean = true;
   private syncInterval: NodeJS.Timeout | null = null;
+  private syncHandlers: OfflineSyncHandlers;
+  private queueSequence: number = 0;
 
   constructor(config: MerchantAppConfig) {
     this.config = config;
+    this.syncHandlers = config.syncHandlers ?? {};
     this.sdk = new MerchantNetworkSDK({
       rpcUrl: config.rpcUrl,
       network: config.network,
@@ -132,7 +208,7 @@ export class MerchantApp {
     token: string,
     purpose: string
   ): Promise<string> {
-    const offlineId = `offline_${Date.now()}`;
+    const offlineId = this.nextQueueId('offline');
     
     const queueItem: OfflineQueueItem = {
       id: offlineId,
@@ -166,41 +242,179 @@ export class MerchantApp {
   }
 
   /**
-   * Sync offline transactions (when connectivity returns)
+   * Sync every queued item with a per-item outcome.
+   *
+   * Successfully synced items are removed individually. Failed items stay in
+   * the queue with an incremented retryCount. Unknown types are reported as
+   * `unsupported` (and left in the queue) instead of being silently retained.
    */
-  async syncOfflineTransactions(): Promise<number> {
+  async syncOfflineTransactions(): Promise<OfflineSyncResult> {
     if (this.offlineQueue.length === 0) {
-      return 0;
+      return emptySyncResult(0);
     }
 
-    const paymentItems = this.offlineQueue.filter(item => item.type === 'payment');
-    const transactionIds = paymentItems.map(item => item.id);
+    const snapshot = [...this.offlineQueue];
+    const result = emptySyncResult(snapshot.length);
+    const syncedIds = new Set<string>();
 
-    try {
-      const syncedCount = await this.sdk.syncOfflineTransactions(
-        this.config.merchantKey,
-        this.config.merchantId,
-        transactionIds
-      );
-
-      // Remove synced items from queue
-      this.offlineQueue = this.offlineQueue.filter(
-        item => !transactionIds.includes(item.id)
-      );
-      this.saveOfflineQueue();
-
-      return syncedCount;
-    } catch (error) {
-      console.error('Failed to sync offline transactions:', error);
-      // Increment retry count for failed items
-      this.offlineQueue.forEach(item => {
-        if (item.type === 'payment') {
-          item.retryCount++;
+    for (const item of snapshot) {
+      try {
+        switch (item.type) {
+          case 'payment':
+            await this.syncPaymentItem(item);
+            break;
+          case 'inventory_update':
+            await this.syncInventoryUpdateItem(item);
+            break;
+          case 'support_message':
+            await this.syncSupportMessageItem(item);
+            break;
+          default: {
+            const type = String((item as OfflineQueueItem).type);
+            const reason = `Unsupported offline queue item type "${type}"`;
+            console.warn(`[merchant-app] ${reason}`, item.id);
+            const unsupported: OfflineSyncItemResult = {
+              id: item.id,
+              type,
+              status: 'unsupported',
+              reason,
+              retryCount: item.retryCount,
+            };
+            result.results.push(unsupported);
+            result.outcomes.push(unsupported);
+            result.unsupported.push(unsupported);
+            result.unsupportedItems.push(item);
+            result.unsupportedIds.push(item.id);
+            if (!result.unsupportedTypes.includes(type)) {
+              result.unsupportedTypes.push(type);
+            }
+            continue;
+          }
         }
-      });
-      this.saveOfflineQueue();
-      throw error;
+
+        const synced: OfflineSyncItemResult = {
+          id: item.id,
+          type: item.type,
+          status: 'synced',
+          retryCount: item.retryCount,
+        };
+        result.results.push(synced);
+        result.outcomes.push(synced);
+        result.synced.push(synced);
+        result.syncedItems.push(item);
+        result.syncedIds.push(item.id);
+        syncedIds.add(item.id);
+      } catch (error: unknown) {
+        item.retryCount += 1;
+        const failed: OfflineSyncItemResult = {
+          id: item.id,
+          type: item.type,
+          status: 'failed',
+          reason: syncErrorMessage(error),
+          retryCount: item.retryCount,
+        };
+        result.results.push(failed);
+        result.outcomes.push(failed);
+        result.failed.push(failed);
+        result.failedItems.push(item);
+        result.failedIds.push(item.id);
+      }
     }
+
+    if (syncedIds.size > 0) {
+      this.offlineQueue = this.offlineQueue.filter(item => !syncedIds.has(item.id));
+    }
+    this.saveOfflineQueue();
+
+    result.syncedCount = result.synced.length;
+    result.failedCount = result.failed.length;
+    result.unsupportedCount = result.unsupported.length;
+    result.remainingCount = this.offlineQueue.length;
+    result.success = result.failedCount === 0 && result.unsupportedCount === 0;
+    return result;
+  }
+
+  /** Alias for `syncOfflineTransactions` for callers that want the full report. */
+  async syncOfflineQueue(): Promise<OfflineSyncResult> {
+    return this.syncOfflineTransactions();
+  }
+
+  /** Legacy numeric view of the last sync pass's successful item count. */
+  async syncOfflineTransactionsCount(): Promise<number> {
+    return (await this.syncOfflineTransactions()).syncedCount;
+  }
+
+  /** Explicitly discard a queued item (e.g. an unsupported type). */
+  rejectQueueItem(id: string): boolean {
+    const originalLength = this.offlineQueue.length;
+    this.offlineQueue = this.offlineQueue.filter(item => item.id !== id);
+    if (this.offlineQueue.length !== originalLength) {
+      this.saveOfflineQueue();
+      return true;
+    }
+    return false;
+  }
+
+  /** Returns a copy of the current offline queue for inspection. */
+  getOfflineQueue(): OfflineQueueItem[] {
+    return this.offlineQueue.map(item => ({
+      ...item,
+      data: item.data && typeof item.data === 'object' ? { ...item.data } : item.data,
+    }));
+  }
+
+  private nextQueueId(prefix: string): string {
+    this.queueSequence += 1;
+    return `${prefix}_${Date.now()}_${this.queueSequence}`;
+  }
+
+  private async syncPaymentItem(item: OfflineQueueItem): Promise<void> {
+    const acknowledged = await this.sdk.syncOfflineTransactions(
+      this.config.merchantKey,
+      this.config.merchantId,
+      [item.id]
+    );
+    if (!acknowledged || acknowledged < 1) {
+      throw new Error(`Payment ${item.id} was not acknowledged by the network`);
+    }
+  }
+
+  private async syncInventoryUpdateItem(item: OfflineQueueItem): Promise<void> {
+    const data = item.data ?? {};
+    const itemId = data.itemId ?? data.id;
+    const updates = data.updates;
+    if (!itemId || !updates || typeof updates !== 'object') {
+      throw new Error('Invalid inventory_update queue payload');
+    }
+
+    if (this.syncHandlers.inventoryUpdate) {
+      await this.syncHandlers.inventoryUpdate(item);
+    }
+
+    const index = this.inventory.findIndex(inventoryItem => inventoryItem.id === itemId);
+    if (index === -1) {
+      throw new Error(`Inventory item ${itemId} not found`);
+    }
+    this.inventory[index] = {
+      ...this.inventory[index],
+      ...updates,
+      lastUpdated: Date.now(),
+    };
+    this.saveInventory();
+  }
+
+  private async syncSupportMessageItem(item: OfflineQueueItem): Promise<void> {
+    const data = item.data ?? {};
+    const messageId = data.id ?? data.messageId ?? item.id;
+    const message = this.supportMessages.find(candidate => candidate.id === messageId);
+    if (!message) {
+      throw new Error(`Support message ${messageId} not found`);
+    }
+
+    if (this.syncHandlers.supportMessage) {
+      await this.syncHandlers.supportMessage(item);
+    }
+    await this.syncSupportMessage(message);
   }
 
   /**
@@ -262,6 +476,11 @@ export class MerchantApp {
    * Get pending offline transactions count
    */
   getPendingOfflineCount(): number {
+    return this.offlineQueue.length;
+  }
+
+  /** Pending count restricted to payment queue items. */
+  getPendingPaymentCount(): number {
     return this.offlineQueue.filter(item => item.type === 'payment').length;
   }
 
@@ -359,7 +578,7 @@ export class MerchantApp {
    */
   private queueInventoryUpdate(itemId: string, updates: Partial<InventoryItem>): void {
     const queueItem: OfflineQueueItem = {
-      id: `inv_update_${Date.now()}`,
+      id: this.nextQueueId('inv_update'),
       type: 'inventory_update',
       data: { itemId, updates },
       timestamp: Date.now(),
@@ -392,7 +611,26 @@ export class MerchantApp {
       return this.syncSupportMessage(supportMessage);
     }
 
+    this.queueSupportMessage(supportMessage);
     return supportMessage.id;
+  }
+
+  /** Queue an offline support message for later acknowledgement. */
+  private queueSupportMessage(message: SupportMessage): void {
+    const queueItem: OfflineQueueItem = {
+      id: this.nextQueueId('support_sync'),
+      type: 'support_message',
+      data: {
+        id: message.id,
+        messageId: message.id,
+        merchantId: message.merchantId,
+      },
+      timestamp: Date.now(),
+      retryCount: 0,
+    };
+
+    this.offlineQueue.push(queueItem);
+    this.saveOfflineQueue();
   }
 
   /**
@@ -439,7 +677,9 @@ export class MerchantApp {
 
     // Sync when coming back online
     if (wasOffline && online) {
-      this.syncOfflineTransactions();
+      this.syncOfflineTransactions().catch(err =>
+        console.error('Sync on reconnect failed:', err)
+      );
     }
   }
 
