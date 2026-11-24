@@ -9,6 +9,8 @@ import {
   xdr,
   Keypair,
   BASE_FEE,
+  nativeToScVal,
+  scValToNative,
 } from 'stellar-sdk';
 import {
   FundCreationError,
@@ -120,6 +122,92 @@ export interface FundStatus {
   beneficiaryCount: number;
 }
 
+/** Geofence coordinates are stored on-chain as degrees * 1e6. */
+const GEOCOORDINATE_SCALE = 1e6;
+
+/**
+ * Reads a field from a decoded contract record, tolerating both the snake_case
+ * keys produced by `scValToNative` for the Rust structs and camelCase keys.
+ */
+function pickField(raw: any, snake: string, camel: string): any {
+  if (raw === null || raw === undefined) {
+    return undefined;
+  }
+  if (raw[snake] !== undefined) {
+    return raw[snake];
+  }
+  return raw[camel];
+}
+
+function toStringValue(value: any, fallback = ''): string {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  return String(value);
+}
+
+function toNumberValue(value: any, fallback = 0): number {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function toBooleanValue(value: any): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function decodeTrigger(raw: any): Trigger {
+  return {
+    id: toStringValue(pickField(raw, 'id', 'id')),
+    fundId: toStringValue(pickField(raw, 'fund_id', 'fundId')),
+    triggerType: toStringValue(
+      pickField(raw, 'trigger_type', 'triggerType'),
+      'manual'
+    ) as Trigger['triggerType'],
+    threshold: toStringValue(pickField(raw, 'threshold', 'threshold')),
+    oracleSource: toStringValue(pickField(raw, 'oracle_source', 'oracleSource')),
+    autoReleaseAmount: toStringValue(
+      pickField(raw, 'auto_release_amount', 'autoReleaseAmount'),
+      '0'
+    ),
+    geofenceLatitude:
+      toNumberValue(pickField(raw, 'geofence_latitude', 'geofenceLatitude')) /
+      GEOCOORDINATE_SCALE,
+    geofenceLongitude:
+      toNumberValue(pickField(raw, 'geofence_longitude', 'geofenceLongitude')) /
+      GEOCOORDINATE_SCALE,
+    geofenceRadiusKm: toNumberValue(
+      pickField(raw, 'geofence_radius_km', 'geofenceRadiusKm')
+    ),
+    minOracleConfirmations: toNumberValue(
+      pickField(raw, 'min_oracle_confirmations', 'minOracleConfirmations')
+    ),
+    isActive: toBooleanValue(pickField(raw, 'is_active', 'isActive')),
+    lastTriggered: toNumberValue(pickField(raw, 'last_triggered', 'lastTriggered')),
+    triggerCount: toNumberValue(pickField(raw, 'trigger_count', 'triggerCount')),
+    lastVerified: toNumberValue(pickField(raw, 'last_verified', 'lastVerified')),
+  };
+}
+
+function decodeFundAllocation(raw: any): FundAllocation {
+  const rawBeneficiaries = pickField(raw, 'beneficiaries', 'beneficiaries');
+  const beneficiaries = Array.isArray(rawBeneficiaries)
+    ? rawBeneficiaries.map((beneficiary: any) => toStringValue(beneficiary))
+    : [];
+
+  return {
+    sector: toStringValue(pickField(raw, 'sector', 'sector')),
+    amount: toStringValue(pickField(raw, 'amount', 'amount'), '0'),
+    beneficiaries,
+    proofOfNeed: toStringValue(pickField(raw, 'proof_of_need', 'proofOfNeed')),
+    allocatedAt: toNumberValue(pickField(raw, 'allocated_at', 'allocatedAt')),
+    minAmount: toStringValue(pickField(raw, 'min_amount', 'minAmount'), '0'),
+    maxAmount: toStringValue(pickField(raw, 'max_amount', 'maxAmount'), '0'),
+  };
+}
+
 /**
  * Emergency Fund SDK Client
  * Manages creation, deployment, monitoring, and execution of emergency funds
@@ -130,6 +218,7 @@ export class EmergencyFundsClient {
   private signingKey: Keypair;
   private server: any;
   private networkPassphrase: string;
+  private contract: any;
 
   constructor(
     contractId: string,
@@ -141,6 +230,7 @@ export class EmergencyFundsClient {
     this.signingKey = signingKey;
     this.server = server;
     this.networkPassphrase = networkPassphrase;
+    this.contract = new Contract(this.contractId) as any;
   }
 
   /**
@@ -535,8 +625,15 @@ export class EmergencyFundsClient {
    */
   async getFundTriggers(fundId: string): Promise<Trigger[]> {
     try {
-      // Query contract for triggers
-      return [];
+      const result = await this.contract.call(
+        'get_fund_triggers',
+        nativeToScVal(fundId)
+      );
+      const records = scValToNative(result.result.retval);
+      if (!Array.isArray(records)) {
+        throw new Error('Unexpected contract response for fund triggers');
+      }
+      return records.map(decodeTrigger);
     } catch (error: any) {
       throw new NetworkError('get fund triggers', error.message, { fundId });
     }
@@ -547,8 +644,15 @@ export class EmergencyFundsClient {
    */
   async getFundAllocations(fundId: string): Promise<FundAllocation[]> {
     try {
-      // Query contract for allocations
-      return [];
+      const result = await this.contract.call(
+        'get_fund_allocations',
+        nativeToScVal(fundId)
+      );
+      const records = scValToNative(result.result.retval);
+      if (!Array.isArray(records)) {
+        throw new Error('Unexpected contract response for fund allocations');
+      }
+      return records.map(decodeFundAllocation);
     } catch (error: any) {
       throw new NetworkError('get fund allocations', error.message, { fundId });
     }
