@@ -38,7 +38,23 @@ import { TrackerClient } from './trackerClient';
 // Export Emergency Funds SDK
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
-export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
+export {
+  FundExpiryNotificationsClient,
+  NotificationConfigError,
+  validateExpiryNotificationConfig,
+  MIN_NOTIFICATION_THRESHOLD_DAYS,
+  MAX_NOTIFICATION_THRESHOLD_DAYS,
+  MAX_NOTIFICATION_TEMPLATE_LENGTH,
+} from './fundExpiryNotifications';
+export type {
+  ExpiryNotificationConfig,
+  NotificationConfigErrorCode,
+  NotificationConfigRecord,
+  NotificationConfigStore,
+  NotificationConfigUpdateResult,
+  NotificationConfigLoadResult,
+  FundExpiryNotificationsClientOptions,
+} from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
