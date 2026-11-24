@@ -7,6 +7,11 @@ import {
   Keypair,
   BASE_FEE,
 } from 'stellar-sdk';
+import { logger } from './logger';
+
+export type NotificationChannel = 'email' | 'sms' | 'webhook';
+
+const DELIVERY_CHANNELS: NotificationChannel[] = ['email', 'sms', 'webhook'];
 
 export interface ExpiryNotification {
   id: string;
@@ -19,14 +24,72 @@ export interface ExpiryNotification {
   availableAmount: string;
   adminAddress: string;
   notificationSentAt: number;
-  notificationStatus: 'pending' | 'sent' | 'acknowledged';
+  notificationStatus: 'pending' | 'sent' | 'acknowledged' | 'failed';
 }
+
+/** Everything a delivery provider needs in order to send one channel message. */
+export interface NotificationDeliveryRequest {
+  channel: NotificationChannel;
+  notification: ExpiryNotification;
+  fundId: string;
+  fundName: string;
+  recipient: string;
+  /** Alias of `recipient` for SMTP-style providers. */
+  to: string;
+  adminAddress: string;
+  subject: string;
+  message: string;
+  /** Alias of `message` for providers that expect a body. */
+  body: string;
+  /** Structured payload, primarily for webhook providers. */
+  payload: Record<string, unknown>;
+  expiresAt: number;
+  daysUntilExpiry: number;
+  availableAmount: string;
+}
+
+/** Confirmation returned by a provider after it attempts delivery. */
+export interface DeliveryReceipt {
+  accepted: boolean;
+  reason?: string;
+  messageId?: string;
+}
+
+/** Alias retained for callers that prefer the shorter result name. */
+export type DeliveryResult = DeliveryReceipt;
+
+/**
+ * Contract implemented by every channel provider. `send` must only resolve
+ * when the provider has accepted the message; rejection or `accepted: false`
+ * is surfaced as a failed notification log.
+ */
+export interface NotificationDeliveryProvider {
+  send(request: NotificationDeliveryRequest): Promise<DeliveryReceipt | void>;
+}
+
+export type EmailDeliveryProvider = NotificationDeliveryProvider;
+export type SmsDeliveryProvider = NotificationDeliveryProvider;
+export type SMSDeliveryProvider = NotificationDeliveryProvider;
+export type WebhookDeliveryProvider = NotificationDeliveryProvider;
+
+/** Providers keyed by the channels they deliver. */
+export interface NotificationDeliveryProviders {
+  email?: EmailDeliveryProvider;
+  sms?: SmsDeliveryProvider;
+  webhook?: WebhookDeliveryProvider;
+}
+
+/** Aliases for callers that use alternate naming. */
+export type DeliveryProviders = NotificationDeliveryProviders;
+export type NotificationProviders = NotificationDeliveryProviders;
 
 export interface ExpiryNotificationConfig {
   notificationThresholdDays: number; // Days before expiry to send notification
   enableAutoNotifications: boolean;
   emailTemplate?: string;
   smsTemplate?: string;
+  /** Delivery providers for the channels passed to `sendExpiryNotifications`. */
+  deliveryProviders?: NotificationDeliveryProviders;
 }
 
 export interface NotificationLog {
@@ -38,6 +101,81 @@ export interface NotificationLog {
   status: 'sent' | 'failed' | 'bounced';
   message: string;
   retryCount: number;
+  /** Actionable explanation when `status` is `failed`. */
+  reason?: string;
+  /** Provider-issued identifier when the provider accepted the message. */
+  providerMessageId?: string;
+}
+
+function defaultNotificationConfig(): ExpiryNotificationConfig {
+  return {
+    notificationThresholdDays: 7,
+    enableAutoNotifications: true,
+  };
+}
+
+function isDeliveryProviderBag(value: unknown): value is NotificationDeliveryProviders {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return DELIVERY_CHANNELS.some((channel) => record[channel] !== undefined);
+}
+
+function extractDeliveryProviders(
+  config: ExpiryNotificationConfig | NotificationDeliveryProviders | undefined
+): NotificationDeliveryProviders {
+  if (!config || typeof config !== 'object') return {};
+  const record = config as Record<string, any>;
+  const nested = record.deliveryProviders ?? record.providers ?? record.notificationProviders;
+  return {
+    ...(isDeliveryProviderBag(record) ? (record as NotificationDeliveryProviders) : {}),
+    ...(nested && typeof nested === 'object' ? (nested as NotificationDeliveryProviders) : {}),
+  };
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
+}
+
+/** A resolved provider call is acceptance unless it explicitly reports rejection. */
+function normalizeDeliveryReceipt(result: unknown, channel: NotificationChannel): DeliveryReceipt {
+  if (result === undefined || result === null) {
+    return { accepted: true };
+  }
+  if (typeof result === 'boolean') {
+    return result
+      ? { accepted: true }
+      : { accepted: false, reason: `${channel} delivery provider rejected the notification` };
+  }
+  if (typeof result === 'string') {
+    const rejected = new Set(['failed', 'failure', 'rejected', 'reject', 'bounced', 'error', 'false']);
+    return rejected.has(result.trim().toLowerCase())
+      ? { accepted: false, reason: `${channel} delivery provider rejected the notification: ${result}` }
+      : { accepted: true };
+  }
+  if (typeof result === 'object') {
+    const receipt = result as Record<string, any>;
+    const status = typeof receipt.status === 'string' ? receipt.status.toLowerCase() : undefined;
+    const rejectedStatuses = ['failed', 'failure', 'rejected', 'reject', 'bounced', 'error'];
+    const explicitlyRejected =
+      receipt.accepted === false ||
+      receipt.success === false ||
+      receipt.delivered === false ||
+      receipt.ok === false ||
+      (status !== undefined && rejectedStatuses.includes(status));
+
+    const messageId = receipt.messageId ?? receipt.providerMessageId ?? receipt.id;
+    if (explicitlyRejected) {
+      const reason = receipt.reason ?? receipt.error ?? receipt.message
+        ?? `${channel} delivery provider rejected the notification`;
+      return { accepted: false, reason: String(reason), messageId };
+    }
+    return { accepted: true, messageId };
+  }
+  return { accepted: true };
 }
 
 /**
@@ -50,22 +188,62 @@ export class FundExpiryNotificationsClient {
   private server: any;
   private networkPassphrase: string;
   private notificationConfig: ExpiryNotificationConfig;
+  private deliveryProviders: NotificationDeliveryProviders;
 
+  /**
+   * `deliveryProviders` (or `notificationConfig.deliveryProviders`) must
+   * include a provider for every requested channel; otherwise that channel's
+   * delivery is reported as failed with an actionable reason.
+   */
   constructor(
     contractId: string,
     signingKey: Keypair,
     server: any,
-    notificationConfig: ExpiryNotificationConfig = {
-      notificationThresholdDays: 7, // Notify 7 days before expiry
-      enableAutoNotifications: true,
-    },
-    networkPassphrase: string = Networks.TESTNET
+    notificationConfig: ExpiryNotificationConfig | NotificationDeliveryProviders = defaultNotificationConfig(),
+    networkPassphrase: string | NotificationDeliveryProviders = Networks.TESTNET,
+    deliveryProviders: NotificationDeliveryProviders = {}
   ) {
+    // Providers may be supplied as a dedicated argument or on the config, so
+    // both wiring styles are accepted without changing the existing signature.
+    const configIsProviderBag = isDeliveryProviderBag(notificationConfig);
+    const passphraseIsProviderBag = isDeliveryProviderBag(networkPassphrase);
+    const resolvedConfig = configIsProviderBag
+      ? defaultNotificationConfig()
+      : (notificationConfig as ExpiryNotificationConfig);
+
     this.contractId = contractId;
     this.signingKey = signingKey;
     this.server = server;
-    this.networkPassphrase = networkPassphrase;
-    this.notificationConfig = notificationConfig;
+    this.networkPassphrase = passphraseIsProviderBag
+      ? Networks.TESTNET
+      : (networkPassphrase as string);
+    this.notificationConfig = resolvedConfig;
+    this.deliveryProviders = {
+      ...(configIsProviderBag
+        ? (notificationConfig as NotificationDeliveryProviders)
+        : extractDeliveryProviders(resolvedConfig)),
+      ...(passphraseIsProviderBag ? (networkPassphrase as NotificationDeliveryProviders) : {}),
+      ...deliveryProviders,
+    };
+  }
+
+  /** Alias for the configured delivery providers. */
+  get providers(): NotificationDeliveryProviders {
+    return this.deliveryProviders;
+  }
+
+  set providers(providers: NotificationDeliveryProviders) {
+    this.deliveryProviders = providers;
+  }
+
+  /** Registers or replaces providers for individual channels. */
+  setDeliveryProviders(providers: NotificationDeliveryProviders): void {
+    this.deliveryProviders = { ...this.deliveryProviders, ...providers };
+  }
+
+  /** Alias of `setDeliveryProviders`. */
+  configureDeliveryProviders(providers: NotificationDeliveryProviders): void {
+    this.setDeliveryProviders(providers);
   }
 
   /**
@@ -139,7 +317,7 @@ export class FundExpiryNotificationsClient {
    */
   async sendExpiryNotifications(
     notifications: ExpiryNotification[],
-    channels: ('email' | 'sms' | 'webhook')[] = ['email']
+    channels: NotificationChannel[] = ['email']
   ): Promise<{ success: boolean; sentCount: number; failedCount: number; logs: NotificationLog[] }> {
     try {
       let sentCount = 0;
@@ -158,14 +336,19 @@ export class FundExpiryNotificationsClient {
             }
           } catch (error: any) {
             failedCount++;
+            const reason = `Unexpected error delivering ${channel} notification: ${toErrorMessage(error)}`;
+            logger.error(
+              `[expiry-notifications] fundId=${notification.fundId} channel=${channel} ${reason}`
+            );
             logs.push({
               id: `${notification.fundId}_${channel}_${Date.now()}`,
               fundId: notification.fundId,
-              notificationType: channel as 'email' | 'sms' | 'webhook',
+              notificationType: channel,
               recipient: notification.adminAddress,
               sentAt: Math.floor(Date.now() / 1000),
               status: 'failed',
-              message: error.message,
+              message: `Delivery failed: ${reason}`,
+              reason,
               retryCount: 0,
             });
           }
@@ -184,45 +367,132 @@ export class FundExpiryNotificationsClient {
   }
 
   /**
-   * Sends notification via specific channel
+   * Sends notification via a specific channel. A `sent` log is only produced
+   * after the configured provider accepts the delivery.
    */
   private async sendNotificationViaChannel(
     notification: ExpiryNotification,
-    channel: 'email' | 'sms' | 'webhook'
+    channel: NotificationChannel
   ): Promise<NotificationLog> {
     const message = this.generateNotificationMessage(notification, channel);
     const timestamp = Math.floor(Date.now() / 1000);
-    const logId = `${notification.fundId}_${channel}_${timestamp}`;
-
-    // Simulate sending notification
-    // In production, integrate with actual notification services
-    let status: 'sent' | 'failed' | 'bounced' = 'sent';
-
-    try {
-      if (channel === 'email') {
-        // Call email service
-        // await sendEmail(notification.adminAddress, 'Fund Expiry Notification', message);
-      } else if (channel === 'sms') {
-        // Call SMS service
-        // await sendSMS(notification.adminAddress, message);
-      } else if (channel === 'webhook') {
-        // Call webhook
-        // await notifyWebhook(notification.adminAddress, message);
-      }
-    } catch (error) {
-      status = 'failed';
-    }
-
-    return {
-      id: logId,
+    const log: NotificationLog = {
+      id: `${notification.fundId}_${channel}_${timestamp}`,
       fundId: notification.fundId,
       notificationType: channel,
       recipient: notification.adminAddress,
       sentAt: timestamp,
-      status,
+      status: 'failed',
       message,
       retryCount: 0,
     };
+
+    const provider = this.deliveryProviders[channel];
+    if (!provider) {
+      const reason =
+        `No ${channel} delivery provider is configured. Pass deliveryProviders.${channel} ` +
+        `to the FundExpiryNotificationsClient constructor (or set ` +
+        `notificationConfig.deliveryProviders.${channel}) so delivery can be confirmed.`;
+      logger.warn(
+        `[expiry-notifications] fundId=${notification.fundId} channel=${channel} ${reason}`
+      );
+      return { ...log, message: `Delivery failed: ${reason}`, reason };
+    }
+
+    try {
+      const request = this.buildDeliveryRequest(notification, channel, message);
+      const receipt = await this.invokeDeliveryProvider(provider, channel, request);
+      const providerMessageId = receipt.messageId ? { providerMessageId: receipt.messageId } : {};
+      if (!receipt.accepted) {
+        const reason = receipt.reason ?? `${channel} delivery provider did not accept the notification`;
+        logger.error(
+          `[expiry-notifications] fundId=${notification.fundId} channel=${channel} ${reason}`
+        );
+        return {
+          ...log,
+          message: `Delivery failed: ${reason}`,
+          reason,
+          ...providerMessageId,
+        };
+      }
+      return { ...log, status: 'sent', ...providerMessageId };
+    } catch (error: unknown) {
+      const reason = `Failed to deliver ${channel} notification: ${toErrorMessage(error)}`;
+      logger.error(
+        `[expiry-notifications] fundId=${notification.fundId} channel=${channel} ${reason}`
+      );
+      return { ...log, message: `Delivery failed: ${reason}`, reason };
+    }
+  }
+
+  /** Builds the payload passed to a channel provider. */
+  private buildDeliveryRequest(
+    notification: ExpiryNotification,
+    channel: NotificationChannel,
+    message: string
+  ): NotificationDeliveryRequest {
+    const subject = `Fund Expiry Notification: ${notification.fundName}`;
+    return {
+      channel,
+      notification,
+      fundId: notification.fundId,
+      fundName: notification.fundName,
+      recipient: notification.adminAddress,
+      to: notification.adminAddress,
+      adminAddress: notification.adminAddress,
+      subject,
+      message,
+      body: message,
+      payload: {
+        notificationId: notification.id,
+        fundId: notification.fundId,
+        fundName: notification.fundName,
+        daysUntilExpiry: notification.daysUntilExpiry,
+        availableAmount: notification.availableAmount,
+        message,
+      },
+      expiresAt: notification.expiresAt,
+      daysUntilExpiry: notification.daysUntilExpiry,
+      availableAmount: notification.availableAmount,
+    };
+  }
+
+  /**
+   * Calls the provider's delivery method. `send` is the documented contract;
+   * channel-specific names are also accepted for common provider adapters.
+   */
+  private async invokeDeliveryProvider(
+    provider: NotificationDeliveryProvider,
+    channel: NotificationChannel,
+    request: NotificationDeliveryRequest
+  ): Promise<DeliveryReceipt> {
+    const candidate = provider as any;
+    const channelMethods: Record<NotificationChannel, string[]> = {
+      email: ['sendEmail', 'sendMail'],
+      sms: ['sendSms', 'sendSMS'],
+      webhook: ['postWebhook', 'notifyWebhook'],
+    };
+    const methods = [
+      ...(typeof candidate === 'function' ? [candidate] : []),
+      ...channelMethods[channel].map((name) => candidate?.[name]),
+      candidate?.send,
+      candidate?.deliver,
+    ].filter((method): method is (...args: any[]) => any => typeof method === 'function');
+
+    if (methods.length === 0) {
+      return {
+        accepted: false,
+        reason: `The configured ${channel} delivery provider has no send() method`,
+      };
+    }
+
+    const result = await methods[0].call(
+      typeof candidate === 'function' ? undefined : candidate,
+      request,
+      request.message,
+      request.notification
+    );
+    return normalizeDeliveryReceipt(result, channel);
   }
 
   /**
@@ -315,6 +585,9 @@ export class FundExpiryNotificationsClient {
   ): Promise<{ success: boolean; updatedAt: number }> {
     try {
       this.notificationConfig = { ...this.notificationConfig, ...newConfig };
+      if (newConfig.deliveryProviders) {
+        this.setDeliveryProviders(newConfig.deliveryProviders);
+      }
       return {
         success: true,
         updatedAt: Math.floor(Date.now() / 1000),

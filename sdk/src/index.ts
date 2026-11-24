@@ -39,11 +39,39 @@ import { TrackerClient } from './trackerClient';
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
+export type {
+  DeliveryProviders,
+  DeliveryReceipt,
+  DeliveryResult,
+  EmailDeliveryProvider,
+  ExpiryNotification,
+  ExpiryNotificationConfig,
+  NotificationChannel,
+  NotificationDeliveryProvider,
+  NotificationDeliveryProviders,
+  NotificationDeliveryRequest,
+  NotificationLog,
+  NotificationProviders,
+  SMSDeliveryProvider,
+  SmsDeliveryProvider,
+  WebhookDeliveryProvider,
+} from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
+export type {
+  InventoryItem,
+  MerchantAppConfig,
+  OfflineQueueItem,
+  OfflineQueueItemType,
+  OfflineSyncHandlers,
+  OfflineSyncItemResult,
+  OfflineSyncResult,
+  OfflineSyncStatus,
+  SupportMessage,
+} from './merchantApp';
 
 // Export i18n (Internationalization) Support
 export { I18nManager, defaultI18n, ERROR_MESSAGES } from './i18n';
