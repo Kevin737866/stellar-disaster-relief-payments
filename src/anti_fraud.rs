@@ -1,5 +1,16 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64};
-use crate::rbac::{require_permission, PERM_REVIEW_FRAUD, PERM_UPDATE_RISK_PROFILE};
+use crate::rbac::{self, ROLE_AUDITOR};
+use crate::unique_id::*;
+use soroban_sdk::{contract, contractimpl, u64, Address, Env, Map, String, Symbol, Vec, U256};
+
+// Performance optimization constants
+/// Maximum transactions to scan for velocity check (bounds iteration)
+pub const MAX_VELOCITY_SCAN: u32 = 1000;
+/// Maximum transactions to scan for amount anomaly check
+pub const MAX_AMOUNT_SCAN: u32 = 500;
+/// Maximum interaction patterns to check
+pub const MAX_PATTERN_SCAN: u32 = 200;
+/// Maximum risk profiles to scan for high-risk queries
+pub const MAX_RISK_PROFILE_SCAN: u32 = 500;
 
 #[contract]
 pub struct AntiFraud;
@@ -8,12 +19,12 @@ pub struct AntiFraud;
 pub struct FraudPattern {
     pub id: String,
     pub pattern_type: String, // "duplicate_registration", "suspicious_transactions", "velocity_check"
-    pub severity: String, // "low", "medium", "high", "critical"
+    pub severity: String,     // "low", "medium", "high", "critical"
     pub description: String,
     pub detected_at: u64,
     pub entities_involved: Vec<String>, // beneficiary IDs, merchant IDs, etc.
-    pub confidence_score: u32, // 0-100
-    pub status: String, // "detected", "investigating", "resolved", "false_positive"
+    pub confidence_score: u32,          // 0-100
+    pub status: String,                 // "detected", "investigating", "resolved", "false_positive"
     pub resolution_notes: String,
 }
 
@@ -21,7 +32,7 @@ pub struct FraudPattern {
 pub struct RiskProfile {
     pub entity_id: String,
     pub entity_type: String, // "beneficiary", "merchant", "donor"
-    pub risk_score: u32, // 0-100
+    pub risk_score: u32,     // 0-100
     pub last_updated: u64,
     pub risk_factors: Vec<RiskFactor>,
     pub flagged_transactions: u32,
@@ -62,21 +73,33 @@ impl AntiFraud {
         device_fingerprint: String,
     ) -> (bool, String) {
         // Check for duplicate registrations using various factors
-        let risk_score = Self::calculate_registration_risk(&env, &beneficiary_id, &verification_factors, &location, &device_fingerprint);
-        
+        let risk_score = Self::calculate_registration_risk(
+            &env,
+            &beneficiary_id,
+            &verification_factors,
+            &location,
+            &device_fingerprint,
+        );
+
         if risk_score > 70 {
             // High risk - flag for manual review
             Self::create_fraud_alert(
                 &env,
                 "duplicate_registration",
                 "high",
-                &format!("High risk registration detected for beneficiary {}", beneficiary_id),
+                &format!(
+                    "High risk registration detected for beneficiary {}",
+                    beneficiary_id
+                ),
                 vec![beneficiary_id],
                 risk_score,
             );
-            return (false, String::from_str(&env, "Registration flagged for review"));
+            return (
+                false,
+                String::from_str(&env, "Registration flagged for review"),
+            );
         }
-        
+
         // Create risk profile
         let risk_profile = RiskProfile {
             entity_id: beneficiary_id,
@@ -87,19 +110,24 @@ impl AntiFraud {
             flagged_transactions: 0,
             total_transactions: 0,
         };
-        
+
         let profiles_key = Symbol::new(&env, "risk_profiles");
-        let mut profiles: Map<String, RiskProfile> = env.storage().instance()
+        let mut profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
             .get(&profiles_key)
             .unwrap_or(Map::new(&env));
-        
+
         profiles.set(beneficiary_id, risk_profile);
         env.storage().instance().set(&profiles_key, &profiles);
-        
+
         (true, String::from_str(&env, "Registration approved"))
     }
 
     /// Calculate registration risk score
+    ///
+    /// Evaluates device fingerprint patterns and checks against existing profiles.
+    /// Note: Factors similarity and location clustering contain inert/placeholder heuristics as noted below.
     fn calculate_registration_risk(
         env: &Env,
         beneficiary_id: &String,
@@ -108,41 +136,46 @@ impl AntiFraud {
         device_fingerprint: &String,
     ) -> u32 {
         let mut risk_score = 0u32;
-        
+
         // Check for similar verification factors (potential duplicate)
         let profiles_key = Symbol::new(env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
+        let profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
             .get(&profiles_key)
             .unwrap_or(Map::new(env));
-        
+
         for (_, existing_profile) in profiles.iter() {
             if existing_profile.entity_type == String::from_str(env, "beneficiary") {
-                // Simple similarity check (in production, use more sophisticated algorithms)
+                // [INERT / PLACEHOLDER HEURISTIC]: calculate_similarity is called with an empty
+                // slice (&[]), always returning 0. Full factor comparison is not yet implemented.
                 if Self::calculate_similarity(verification_factors, &[]) > 80 {
                     risk_score += 40;
                 }
-                
-                // Check location clustering (multiple registrations from same location)
+
+                // [INERT / PLACEHOLDER HEURISTIC]: location_similarity returns a static 50 score
+                // for any non-empty location; coordinate-based geospatial proximity is not computed.
                 if Self::location_similarity(location, &existing_profile.entity_id) > 90 {
                     risk_score += 20;
                 }
             }
         }
-        
-        // Check device fingerprint patterns
+
+        // Check device fingerprint patterns (active heuristic)
         if Self::is_suspicious_device(device_fingerprint) {
             risk_score += 30;
         }
-        
+
         risk_score.min(100)
     }
 
-    /// Simple similarity calculation (placeholder for more sophisticated ML)
+    /// [INERT / PLACEHOLDER HEURISTIC]: Simple similarity calculation (placeholder for more sophisticated ML)
+    /// Always returns 0 when factors2 is empty. Verification factor vector comparison is not yet functional.
     fn calculate_similarity(factors1: &[String], factors2: &[String]) -> u32 {
         if factors2.is_empty() {
             return 0;
         }
-        
+
         let mut matches = 0;
         for factor1 in factors1.iter() {
             for factor2 in factors2.iter() {
@@ -152,11 +185,12 @@ impl AntiFraud {
                 }
             }
         }
-        
+
         (matches * 100) / factors1.len() as u32
     }
 
-    /// Location similarity check
+    /// [INERT / PLACEHOLDER HEURISTIC]: Location similarity check
+    /// Returns fixed placeholder score (50 if location non-empty, else 0); geospatial distance calculation is not implemented.
     fn location_similarity(location1: &str, entity_id: &str) -> u32 {
         // Simple string similarity (in production, use geospatial analysis)
         if location1.len() > 0 {
@@ -183,34 +217,37 @@ impl AntiFraud {
     ) -> (bool, Vec<String>) {
         let mut risk_factors = Vec::new(&env);
         let mut risk_score = 0u32;
-        
+
         // Velocity check - too many transactions in short time
         if Self::is_velocity_breach(&env, &beneficiary_id, timestamp) {
             risk_factors.push_back(String::from_str(&env, "High transaction velocity"));
             risk_score += 30;
         }
-        
+
         // Amount anomaly - unusually large or small amounts
         if Self::is_amount_anomaly(&env, &beneficiary_id, amount) {
             risk_factors.push_back(String::from_str(&env, "Unusual transaction amount"));
             risk_score += 25;
         }
-        
+
         // Merchant-beneficiary pattern analysis
         if Self::is_suspicious_pattern(&env, &beneficiary_id, &merchant_id) {
-            risk_factors.push_back(String::from_str(&env, "Suspicious merchant interaction pattern"));
+            risk_factors.push_back(String::from_str(
+                &env,
+                "Suspicious merchant interaction pattern",
+            ));
             risk_score += 35;
         }
-        
+
         // Geographic anomaly
         if Self::is_geographic_anomaly(&env, &beneficiary_id, timestamp) {
             risk_factors.push_back(String::from_str(&env, "Geographic location anomaly"));
             risk_score += 20;
         }
-        
+
         // Update risk profile
         Self::update_risk_profile(&env, &beneficiary_id, risk_score, risk_factors.len() as u32);
-        
+
         if risk_score > 60 {
             // Create suspicious transaction record
             let suspicious_tx = SuspiciousTransaction {
@@ -226,94 +263,125 @@ impl AntiFraud {
                 reviewer: None,
                 review_notes: String::from_str(&env, ""),
             };
-            
+
             let suspicious_key = Symbol::new(&env, "suspicious_transactions");
-            let mut suspicious: Map<String, SuspiciousTransaction> = env.storage().instance()
+            let mut suspicious: Map<String, SuspiciousTransaction> = env
+                .storage()
+                .instance()
                 .get(&suspicious_key)
                 .unwrap_or(Map::new(&env));
-            
+
             suspicious.set(suspicious_tx.id.clone(), suspicious_tx);
             env.storage().instance().set(&suspicious_key, &suspicious);
-            
+
             return (false, risk_factors);
         }
-        
+
         (true, risk_factors)
     }
 
-    /// Check for velocity breaches
+    /// Check for velocity breaches (bounded scan for performance)
     fn is_velocity_breach(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if more than 10 transactions in last hour
         let transactions_key = Symbol::new(env, "transaction_history");
-        let transactions: Map<String, (u64, U256)> = env.storage().instance()
+        let transactions: Map<String, (u64, U256)> = env
+            .storage()
+            .instance()
             .get(&transactions_key)
             .unwrap_or(Map::new(env));
-        
+
         let mut recent_count = 0;
+        let mut scanned = 0u32;
+
         for (_, (tx_timestamp, _)) in transactions.iter() {
+            if scanned >= MAX_VELOCITY_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+
             if timestamp - tx_timestamp < 3600 && tx_timestamp <= timestamp {
                 recent_count += 1;
+                if recent_count > 10 {
+                    return true; // Early exit when threshold exceeded
+                }
             }
         }
-        
+
         recent_count > 10
     }
 
-    /// Check for amount anomalies
+    /// Check for amount anomalies (bounded scan for performance)
     fn is_amount_anomaly(env: &Env, beneficiary_id: &String, amount: U256) -> bool {
         // Check if amount is significantly different from average
         let transactions_key = Symbol::new(env, "transaction_history");
-        let transactions: Map<String, (u64, U256)> = env.storage().instance()
+        let transactions: Map<String, (u64, U256)> = env
+            .storage()
+            .instance()
             .get(&transactions_key)
             .unwrap_or(Map::new(env));
-        
+
         let mut total_amount = U256::from_u64(0);
-        let mut count = 0;
-        
+        let mut count = 0u32;
+        let mut scanned = 0u32;
+
         for (_, (_, tx_amount)) in transactions.iter() {
+            if scanned >= MAX_AMOUNT_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+
             total_amount += tx_amount;
             count += 1;
         }
-        
+
         if count == 0 {
             return false;
         }
-        
+
         let average = total_amount / U256::from_u64(count as u64);
-        
+
         // Flag if amount is more than 3x average or less than 1/10 of average
         amount > average * 3 || amount < average / 10
     }
 
-    /// Check for suspicious merchant interaction patterns
+    /// Check for suspicious merchant interaction patterns (bounded scan for performance)
     fn is_suspicious_pattern(env: &Env, beneficiary_id: &String, merchant_id: &String) -> bool {
         // Check if beneficiary always transacts with same merchant
         let patterns_key = Symbol::new(env, "interaction_patterns");
-        let patterns: Map<String, Map<String, u32>> = env.storage().instance()
+        let patterns: Map<String, Map<String, u32>> = env
+            .storage()
+            .instance()
             .get(&patterns_key)
             .unwrap_or(Map::new(env));
-        
+
         if let Some(beneficiary_patterns) = patterns.get(beneficiary_id) {
             let mut total_interactions = 0;
             let mut merchant_interactions = 0;
-            
+            let mut scanned = 0u32;
+
             for (merchant, count) in beneficiary_patterns.iter() {
+                if scanned >= MAX_PATTERN_SCAN {
+                    break; // Bound the scan for performance
+                }
+                scanned += 1;
+
                 total_interactions += count;
                 if merchant == merchant_id {
                     merchant_interactions = count;
                 }
             }
-            
+
             if total_interactions > 0 {
                 let percentage = (merchant_interactions * 100) / total_interactions;
                 return percentage > 80; // More than 80% with same merchant
             }
         }
-        
+
         false
     }
 
-    /// Check for geographic anomalies
+    /// [INERT / PLACEHOLDER HEURISTIC]: Check for geographic anomalies
+    /// Returns false unconditionally because transaction GPS/location telemetry is not currently captured on-chain.
     fn is_geographic_anomaly(env: &Env, beneficiary_id: &String, timestamp: u64) -> bool {
         // Check if transactions are happening in impossible locations
         // This would require location data from transactions
@@ -321,12 +389,19 @@ impl AntiFraud {
     }
 
     /// Update risk profile
-    fn update_risk_profile(env: &Env, beneficiary_id: &String, risk_score: u32, flagged_count: u32) {
+    fn update_risk_profile(
+        env: &Env,
+        beneficiary_id: &String,
+        risk_score: u32,
+        flagged_count: u32,
+    ) {
         let profiles_key = Symbol::new(env, "risk_profiles");
-        let mut profiles: Map<String, RiskProfile> = env.storage().instance()
+        let mut profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
             .get(&profiles_key)
             .unwrap_or(Map::new(env));
-        
+
         if let Some(mut profile) = profiles.get(beneficiary_id) {
             profile.risk_score = (profile.risk_score + risk_score) / 2; // Average with previous
             profile.last_updated = env.ledger().timestamp();
@@ -345,7 +420,9 @@ impl AntiFraud {
         entities: Vec<String>,
         confidence_score: u32,
     ) {
-        let alert_id = format!("alert_{}_{}", pattern_type, env.ledger().timestamp());
+        // Use first entity for alert ID, or pattern_type if no entities
+        let entity_id = entities.get(0).unwrap_or(String::from_str(env, "unknown"));
+        let alert_id = generate_fraud_alert_id(env, &entity_id, pattern_type);
         let alert = FraudPattern {
             id: alert_id,
             pattern_type: String::from_str(env, pattern_type),
@@ -357,12 +434,14 @@ impl AntiFraud {
             status: String::from_str(env, "detected"),
             resolution_notes: String::from_str(env, ""),
         };
-        
+
         let alerts_key = Symbol::new(env, "fraud_alerts");
-        let mut alerts: Map<String, FraudPattern> = env.storage().instance()
+        let mut alerts: Map<String, FraudPattern> = env
+            .storage()
+            .instance()
             .get(&alerts_key)
             .unwrap_or(Map::new(env));
-        
+
         alerts.set(alert.id.clone(), alert);
         env.storage().instance().set(&alerts_key, &alerts);
     }
@@ -370,20 +449,24 @@ impl AntiFraud {
     /// Get risk profile for entity
     pub fn get_risk_profile(env: Env, entity_id: String) -> Option<RiskProfile> {
         let profiles_key = Symbol::new(&env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
+        let profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
             .get(&profiles_key)
             .unwrap_or(Map::new(&env));
-        
+
         profiles.get(entity_id)
     }
 
     /// Get fraud alerts
     pub fn get_fraud_alerts(env: Env) -> Vec<FraudPattern> {
         let alerts_key = Symbol::new(&env, "fraud_alerts");
-        let alerts: Map<String, FraudPattern> = env.storage().instance()
+        let alerts: Map<String, FraudPattern> = env
+            .storage()
+            .instance()
             .get(&alerts_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut result = Vec::new(&env);
         for (_, alert) in alerts.iter() {
             result.push_back(alert);
@@ -400,13 +483,15 @@ impl AntiFraud {
         notes: String,
     ) {
         reviewer.require_auth();
-        require_permission(&env, &reviewer, PERM_REVIEW_FRAUD);
-        
+        rbac::require_role(&env, &reviewer, ROLE_AUDITOR);
+
         let suspicious_key = Symbol::new(&env, "suspicious_transactions");
-        let mut suspicious: Map<String, SuspiciousTransaction> = env.storage().instance()
+        let mut suspicious: Map<String, SuspiciousTransaction> = env
+            .storage()
+            .instance()
             .get(&suspicious_key)
             .unwrap_or(Map::new(&env));
-        
+
         if let Some(mut transaction) = suspicious.get(transaction_id.clone()) {
             transaction.status = status;
             transaction.reviewer = Some(reviewer);
@@ -416,15 +501,27 @@ impl AntiFraud {
         }
     }
 
-    /// Get high-risk entities
-    pub fn get_high_risk_entities(env: Env, threshold: u32) -> Vec<RiskProfile> {
+    /// Get high-risk entities (bounded scan for performance)
+    pub fn get_high_risk_entities(env: Env, reviewer: Address, threshold: u32) -> Vec<RiskProfile> {
+        reviewer.require_auth();
+        rbac::require_role(&env, &reviewer, ROLE_AUDITOR);
+
         let profiles_key = Symbol::new(&env, "risk_profiles");
-        let profiles: Map<String, RiskProfile> = env.storage().instance()
+        let profiles: Map<String, RiskProfile> = env
+            .storage()
+            .instance()
             .get(&profiles_key)
             .unwrap_or(Map::new(&env));
-        
+
         let mut high_risk = Vec::new(&env);
+        let mut scanned = 0u32;
+
         for (_, profile) in profiles.iter() {
+            if scanned >= MAX_RISK_PROFILE_SCAN {
+                break; // Bound the scan for performance
+            }
+            scanned += 1;
+
             if profile.risk_score >= threshold {
                 high_risk.push_back(profile);
             }
