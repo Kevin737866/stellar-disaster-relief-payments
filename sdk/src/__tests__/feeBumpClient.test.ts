@@ -149,10 +149,19 @@ describe('FeeBumpClient', () => {
       expect(Number(minFee)).toBeGreaterThanOrEqual(500 * 10);
     });
 
+    it('returns the exact minimum for a known inner fee', () => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair, '500');
+      expect(client.getMinBumpFee(xdr)).toBe('5000');
+    });
+
     it('throws for invalid XDR', () => {
       expect(() => client.getMinBumpFee('not-valid-xdr')).toThrow(
         'Invalid inner transaction XDR'
       );
+    });
+
+    it('throws for an empty inner envelope', () => {
+      expect(() => client.getMinBumpFee('')).toThrow('Invalid inner transaction XDR');
     });
 
     it('throws when given a fee bump transaction XDR', () => {
@@ -214,6 +223,28 @@ describe('FeeBumpClient', () => {
         })
       ).rejects.toThrow('below the required minimum');
     });
+
+    const invalidFees: Array<[string, string]> = [
+      ['non-numeric', 'not-a-fee'],
+      ['fractional', '1.5'],
+      ['zero', '0'],
+      ['negative', '-100'],
+      ['scientific notation', '1e3'],
+      ['unsafe integer', '9007199254740992'],
+    ];
+
+    it.each(invalidFees)('rejects %s newBaseFee before any RPC call', async (_label, fee) => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair);
+      await expect(
+        client.bumpFee({
+          feeSourceKey: feeSourceKeypair.secret(),
+          innerTransactionXdr: xdr,
+          newBaseFee: fee,
+        })
+      ).rejects.toThrow(/Invalid newBaseFee/);
+      expect(horizonCallMock).not.toHaveBeenCalled();
+      expect(mockSendTransaction).not.toHaveBeenCalled();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -271,6 +302,18 @@ describe('FeeBumpClient', () => {
       // Verify sendTransaction was called with a FeeBumpTransaction.
       const submittedTx = mockSendTransaction.mock.calls[0][0];
       expect(submittedTx).toBeInstanceOf(FeeBumpTransaction);
+    });
+
+    it('accepts newBaseFee exactly at the computed minimum', async () => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair, '500');
+      const minFee = client.getMinBumpFee(xdr);
+      const result = await client.bumpFee({
+        feeSourceKey: feeSourceKeypair.secret(),
+        innerTransactionXdr: xdr,
+        newBaseFee: minFee,
+      });
+      expect(result.status).toBe('PENDING');
+      expect(mockSendTransaction).toHaveBeenCalledTimes(1);
     });
 
     it('defaults to the minimum fee when newBaseFee is omitted', async () => {

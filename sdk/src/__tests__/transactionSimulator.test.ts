@@ -402,6 +402,18 @@ describe('FeeBumpClient.simulateBump', () => {
       });
       expect(result.success).toBe(true);
     });
+
+    it('accepts newBaseFee exactly at the computed minimum', async () => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair, '500');
+      const minFee = client.getMinBumpFee(xdr);
+      const result = await client.simulateBump({
+        feeSourceKey: feeSourceKeypair.secret(),
+        innerTransactionXdr: xdr,
+        newBaseFee: minFee,
+      });
+      expect(result.success).toBe(true);
+      expect(mockSimulateTransaction).toHaveBeenCalledTimes(1);
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -446,6 +458,28 @@ describe('FeeBumpClient.simulateBump', () => {
           newBaseFee: '1',
         })
       ).rejects.toThrow('below the required minimum');
+    });
+
+    const invalidFees: Array<[string, string]> = [
+      ['non-numeric', 'not-a-fee'],
+      ['fractional', '1.5'],
+      ['zero', '0'],
+      ['negative', '-100'],
+      ['scientific notation', '1e3'],
+      ['unsafe integer', '9007199254740992'],
+    ];
+
+    it.each(invalidFees)('rejects %s newBaseFee before simulation', async (_label, fee) => {
+      const xdr = buildSignedTxXdr(innerSourceKeypair);
+      await expect(
+        client.simulateBump({
+          feeSourceKey: feeSourceKeypair.secret(),
+          innerTransactionXdr: xdr,
+          newBaseFee: fee,
+        })
+      ).rejects.toThrow(/Invalid newBaseFee/);
+      expect(mockSimulateTransaction).not.toHaveBeenCalled();
+      expect(mockSendTransaction).not.toHaveBeenCalled();
     });
   });
 

@@ -15,6 +15,15 @@ import { TransactionSimulator, SimulationResult } from './transactionSimulator';
 /** Minimum multiplier over the inner transaction's per-op fee rate. */
 const MIN_FEE_MULTIPLIER = 10;
 
+/** Strict decimal stroop format: no signs, fractions, exponents, or separators. */
+const STROOPS_PATTERN = /^\d+$/;
+
+/** Largest stroop value that can be compared precisely as a JS number. */
+const MAX_SAFE_STROOPS = BigInt(Number.MAX_SAFE_INTEGER);
+
+/** XDR Int64 limit for the total fee of a fee-bump transaction. */
+const MAX_FEE_BUMP_TOTAL_STROOPS = BigInt('9223372036854775807');
+
 export interface FeeBumpOptions {
   /** Secret key of the account paying the bump fee. */
   feeSourceKey: string;
@@ -22,8 +31,9 @@ export interface FeeBumpOptions {
   innerTransactionXdr: string;
   /**
    * New base fee per operation in stroops.
-   * Must be >= inner tx per-op fee * MIN_FEE_MULTIPLIER and >= BASE_FEE.
-   * Defaults to inner per-op fee * MIN_FEE_MULTIPLIER.
+   * Must be a positive whole-number integer within the supported range, and
+   * >= inner tx per-op fee * MIN_FEE_MULTIPLIER and >= BASE_FEE.
+   * Defaults to the computed minimum.
    */
   newBaseFee?: string;
 }
@@ -68,6 +78,44 @@ function computeMinBumpFee(innerTx: Transaction): string {
   return String(minFee);
 }
 
+function invalidBaseFeeError(value: unknown): Error {
+  return new Error(
+    `Invalid newBaseFee: fee must be a positive whole-number integer in stroops within the supported range (1-${MAX_SAFE_STROOPS}); received "${String(value)}"`
+  );
+}
+
+/**
+ * Strictly parses and validates a per-operation fee before it reaches the
+ * Stellar SDK. `Number('abc')` is NaN, which silently defeats `<` checks, and
+ * integers above Number.MAX_SAFE_INTEGER lose precision, so both are rejected
+ * here instead of during transaction construction.
+ */
+function resolveBaseFee(newBaseFee: string | undefined, innerTx: Transaction): string {
+  const minFee = computeMinBumpFee(innerTx);
+  const rawFee = newBaseFee ?? minFee;
+  const trimmed = typeof rawFee === 'string' ? rawFee.trim() : '';
+
+  if (!STROOPS_PATTERN.test(trimmed)) {
+    throw invalidBaseFeeError(rawFee);
+  }
+
+  const stroops = BigInt(trimmed);
+  const maxPerOperation = MAX_FEE_BUMP_TOTAL_STROOPS / BigInt(innerTx.operations.length + 1);
+  const maxSupported = maxPerOperation < MAX_SAFE_STROOPS ? maxPerOperation : MAX_SAFE_STROOPS;
+
+  if (stroops < 1n || stroops > maxSupported) {
+    throw invalidBaseFeeError(rawFee);
+  }
+
+  if (stroops < BigInt(minFee)) {
+    throw new Error(
+      `newBaseFee (${trimmed}) is below the required minimum of ${minFee} stroops.`
+    );
+  }
+
+  return stroops.toString();
+}
+
 export class FeeBumpClient {
   private rpcServer: SorobanRpc.Server;
   private horizonServer: Horizon.Server;
@@ -88,7 +136,8 @@ export class FeeBumpClient {
    * the RPC simulation endpoint without submitting it. Useful for validating
    * construction and estimating fees before calling {@link bumpFee}.
    *
-   * @throws if the inner transaction XDR is invalid or the fee source key is bad.
+   * @throws if the inner transaction XDR is invalid, the fee source key is bad,
+   *   or newBaseFee is not a valid whole-number stroop value.
    */
   async simulateBump(options: FeeBumpOptions): Promise<SimulationResult> {
     const { feeSourceKey, innerTransactionXdr, newBaseFee } = options;
@@ -113,14 +162,7 @@ export class FeeBumpClient {
       throw new Error(`Invalid inner transaction XDR: ${err.message}`);
     }
 
-    const minFee = computeMinBumpFee(innerTx);
-    const baseFee = newBaseFee ?? minFee;
-
-    if (Number(baseFee) < Number(minFee)) {
-      throw new Error(
-        `newBaseFee (${baseFee}) is below the required minimum of ${minFee} stroops.`
-      );
-    }
+    const baseFee = resolveBaseFee(newBaseFee, innerTx);
 
     const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
       feeSourceKeypair,
@@ -140,10 +182,12 @@ export class FeeBumpClient {
    * - The fee source address is a valid Stellar address.
    * - The inner transaction XDR is a valid signed Transaction (not already a fee bump).
    * - The inner transaction is still pending (not yet confirmed).
-   * - The new base fee meets protocol minimums.
+   * - The new base fee is a valid whole-number stroop value and meets protocol minimums.
+   *
+   * Fee validation happens before any Horizon/RPC call.
    *
    * @throws if the inner transaction is already confirmed or is itself a fee bump.
-   * @throws if the new base fee is below the required minimum.
+   * @throws if the new base fee is malformed or below the required minimum.
    */
   async bumpFee(options: FeeBumpOptions): Promise<FeeBumpResult> {
     const { feeSourceKey, innerTransactionXdr, newBaseFee } = options;
@@ -169,21 +213,15 @@ export class FeeBumpClient {
       throw new Error(`Invalid inner transaction XDR: ${err.message}`);
     }
 
+    // Validate input before any Horizon/RPC call so malformed fees cannot reach
+    // fee-bump construction or the network.
+    const baseFee = resolveBaseFee(newBaseFee, innerTx);
+
     // Ensure the transaction is still pending.
     const pending = await isTransactionPending(this.horizonServer, innerTx.hash().toString('hex'));
     if (!pending) {
       throw new Error(
         `Transaction ${innerTx.hash().toString('hex')} is already confirmed and cannot be fee bumped.`
-      );
-    }
-
-    // Determine and validate the bump fee.
-    const minFee = computeMinBumpFee(innerTx);
-    const baseFee = newBaseFee ?? minFee;
-
-    if (Number(baseFee) < Number(minFee)) {
-      throw new Error(
-        `newBaseFee (${baseFee}) is below the required minimum of ${minFee} stroops.`
       );
     }
 
