@@ -61,9 +61,18 @@ export { DuplicatePreventionClient } from './duplicatePrevention';
 // Export Merchant Network SDK
 export { MerchantNetworkSDK } from './merchantNetwork';
 export { MerchantApp } from './merchantApp';
+export {
+  LEGACY_STORAGE_KEYS,
+  MERCHANT_APP_DATASETS,
+  MERCHANT_APP_STORAGE_PREFIX,
+} from './merchantApp';
 export type {
   InventoryItem,
   MerchantAppConfig,
+  MerchantAppDataset,
+  MerchantAppMigrationResult,
+  MerchantAppPersistenceConfig,
+  MerchantAppStorage,
   OfflineQueueItem,
   OfflineQueueItemType,
   OfflineSyncHandlers,

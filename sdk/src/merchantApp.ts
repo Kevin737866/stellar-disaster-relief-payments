@@ -11,6 +11,48 @@ import { MerchantNetworkSDK, Merchant, Transaction, Settlement, CATEGORY_FOOD, C
  * - USSD code support for feature phones
  */
 
+/** Minimal storage contract used for local persistence. */
+export interface MerchantAppStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
+}
+
+/** Legacy unscoped keys written by earlier versions of the app. */
+export const LEGACY_STORAGE_KEYS = {
+  offlineQueue: 'offlineQueue',
+  inventory: 'inventory',
+  supportMessages: 'supportMessages',
+} as const;
+
+export type MerchantAppDataset = keyof typeof LEGACY_STORAGE_KEYS;
+
+export const MERCHANT_APP_DATASETS: MerchantAppDataset[] = [
+  'offlineQueue',
+  'inventory',
+  'supportMessages',
+];
+
+export const MERCHANT_APP_STORAGE_PREFIX = 'merchantApp';
+
+export interface MerchantAppPersistenceConfig {
+  /**
+   * Copy legacy unscoped records into this merchant's scoped keys when the
+   * scoped key is missing. Off by default so one account never inherits
+   * another account's legacy data accidentally.
+   */
+  migrateLegacyKeys?: boolean;
+  /** Remove the legacy key after a successful migration. Default: false. */
+  removeLegacyKeysAfterMigration?: boolean;
+  /** Storage implementation. Defaults to the global `localStorage` when present. */
+  storage?: MerchantAppStorage;
+}
+
+export interface MerchantAppMigrationResult {
+  migrated: MerchantAppDataset[];
+  skipped: MerchantAppDataset[];
+}
+
 export interface MerchantAppConfig {
   rpcUrl: string;
   network: 'testnet' | 'mainnet' | 'standalone';
@@ -18,6 +60,10 @@ export interface MerchantAppConfig {
   merchantKey: string;
   /** Optional remote acknowledgement hooks for non-payment queue items. */
   syncHandlers?: OfflineSyncHandlers;
+  /** Merchant-scoped local persistence options. */
+  persistence?: MerchantAppPersistenceConfig;
+  /** Shorthand for `persistence.migrateLegacyKeys`. */
+  migrateLegacyKeys?: boolean;
 }
 
 export type OfflineQueueItemType = 'payment' | 'inventory_update' | 'support_message';
@@ -127,11 +173,18 @@ export class MerchantApp {
   private isOnline: boolean = true;
   private syncInterval: NodeJS.Timeout | null = null;
   private syncHandlers: OfflineSyncHandlers;
+  private persistence: MerchantAppPersistenceConfig;
   private queueSequence: number = 0;
 
   constructor(config: MerchantAppConfig) {
     this.config = config;
     this.syncHandlers = config.syncHandlers ?? {};
+    this.persistence = {
+      storage: config.persistence?.storage,
+      migrateLegacyKeys: config.migrateLegacyKeys ?? config.persistence?.migrateLegacyKeys ?? false,
+      removeLegacyKeysAfterMigration:
+        config.persistence?.removeLegacyKeysAfterMigration ?? false,
+    };
     this.sdk = new MerchantNetworkSDK({
       rpcUrl: config.rpcUrl,
       network: config.network,
@@ -707,40 +760,165 @@ export class MerchantApp {
     }
   }
 
-  // ============== Local Storage (Simplified) ==============
+  // ============== Local Storage (Merchant-scoped) ==============
+
+  /** Stable storage keys for this merchant's datasets. */
+  getStorageKeys(): Record<MerchantAppDataset, string> {
+    const scope = encodeURIComponent(this.config.merchantId);
+    return {
+      offlineQueue: `${MERCHANT_APP_STORAGE_PREFIX}:${scope}:${LEGACY_STORAGE_KEYS.offlineQueue}`,
+      inventory: `${MERCHANT_APP_STORAGE_PREFIX}:${scope}:${LEGACY_STORAGE_KEYS.inventory}`,
+      supportMessages: `${MERCHANT_APP_STORAGE_PREFIX}:${scope}:${LEGACY_STORAGE_KEYS.supportMessages}`,
+    };
+  }
+
+  /**
+   * Switch the active merchant without exposing the previous merchant's data.
+   * The new account only sees records stored under its own scoped keys.
+   */
+  switchMerchant(merchantId: string, merchantKey: string = this.config.merchantKey): void {
+    if (merchantId === this.config.merchantId) return;
+
+    this.stopAutoSync();
+    this.config = { ...this.config, merchantId, merchantKey };
+    this.queueSequence = 0;
+    this.offlineQueue = [];
+    this.inventory = [];
+    this.supportMessages = [];
+    this.loadOfflineQueue();
+    this.loadInventory();
+    this.loadSupportMessages();
+    this.startAutoSync();
+  }
+
+  /** Alias of `switchMerchant`. */
+  switchAccount(merchantId: string, merchantKey?: string): void {
+    this.switchMerchant(merchantId, merchantKey ?? this.config.merchantKey);
+  }
+
+  /**
+   * Opt-in migration of legacy unscoped records into this merchant's keys.
+   * Existing scoped data is never overwritten.
+   */
+  migrateLegacyData(
+    options: { removeLegacyKeys?: boolean } = {}
+  ): MerchantAppMigrationResult {
+    const storage = this.getStorage();
+    const keys = this.getStorageKeys();
+    const result: MerchantAppMigrationResult = { migrated: [], skipped: [] };
+
+    for (const dataset of MERCHANT_APP_DATASETS) {
+      if (storage.getItem(keys[dataset]) !== null) {
+        result.skipped.push(dataset);
+        continue;
+      }
+      const legacyKey = LEGACY_STORAGE_KEYS[dataset];
+      const legacy = storage.getItem(legacyKey);
+      if (legacy === null || !this.canClaimLegacyDataset(storage, dataset, true)) {
+        result.skipped.push(dataset);
+        continue;
+      }
+
+      const parsed = this.parseStoredDataset<any>(legacy, dataset);
+      storage.setItem(keys[dataset], JSON.stringify(parsed));
+      this.applyDataset(dataset, parsed);
+      if (options.removeLegacyKeys ?? this.persistence.removeLegacyKeysAfterMigration) {
+        storage.removeItem?.(legacyKey);
+      }
+      result.migrated.push(dataset);
+    }
+    return result;
+  }
+
+  private getStorage(): MerchantAppStorage {
+    if (this.persistence.storage) return this.persistence.storage;
+    if (typeof localStorage !== 'undefined') return localStorage;
+    return { getItem: () => null, setItem: () => undefined };
+  }
+
+  private legacyClaimKey(dataset: MerchantAppDataset): string {
+    return `${MERCHANT_APP_STORAGE_PREFIX}:legacyMigration:${dataset}:owner`;
+  }
+
+  private canClaimLegacyDataset(
+    storage: MerchantAppStorage,
+    dataset: MerchantAppDataset,
+    explicitMigration = false
+  ): boolean {
+    if (!explicitMigration && !this.persistence.migrateLegacyKeys) return false;
+    const claimKey = this.legacyClaimKey(dataset);
+    const owner = storage.getItem(claimKey);
+    if (owner !== null && owner !== this.config.merchantId) return false;
+    storage.setItem(claimKey, this.config.merchantId);
+    return true;
+  }
+
+  private parseStoredDataset<T>(value: string, dataset: MerchantAppDataset): T[] {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return parsed as T[];
+      console.warn(`[merchant-app] Ignoring malformed ${dataset} data in local storage`);
+    } catch {
+      console.warn(`[merchant-app] Ignoring unreadable ${dataset} data in local storage`);
+    }
+    return [];
+  }
+
+  private loadDataset<T>(dataset: MerchantAppDataset): T[] {
+    const storage = this.getStorage();
+    const key = this.getStorageKeys()[dataset];
+    const stored = storage.getItem(key);
+    if (stored !== null) return this.parseStoredDataset<T>(stored, dataset);
+
+    const legacyKey = LEGACY_STORAGE_KEYS[dataset];
+    const legacy = storage.getItem(legacyKey);
+    if (legacy !== null && this.canClaimLegacyDataset(storage, dataset)) {
+      const parsed = this.parseStoredDataset<T>(legacy, dataset);
+      storage.setItem(key, JSON.stringify(parsed));
+      if (this.persistence.removeLegacyKeysAfterMigration) {
+        storage.removeItem?.(legacyKey);
+      }
+      return parsed;
+    }
+    return [];
+  }
+
+  private saveDataset<T>(dataset: MerchantAppDataset, value: T[]): void {
+    this.getStorage().setItem(this.getStorageKeys()[dataset], JSON.stringify(value));
+  }
+
+  private applyDataset(dataset: MerchantAppDataset, value: unknown[]): void {
+    if (dataset === 'offlineQueue') {
+      this.offlineQueue = value as OfflineQueueItem[];
+    } else if (dataset === 'inventory') {
+      this.inventory = value as InventoryItem[];
+    } else {
+      this.supportMessages = value as SupportMessage[];
+    }
+  }
 
   private loadOfflineQueue(): void {
-    // In production, use AsyncStorage or similar
-    const stored = localStorage.getItem('offlineQueue');
-    if (stored) {
-      this.offlineQueue = JSON.parse(stored);
-    }
+    this.offlineQueue = this.loadDataset<OfflineQueueItem>('offlineQueue');
   }
 
   private saveOfflineQueue(): void {
-    localStorage.setItem('offlineQueue', JSON.stringify(this.offlineQueue));
+    this.saveDataset('offlineQueue', this.offlineQueue);
   }
 
   private loadInventory(): void {
-    const stored = localStorage.getItem('inventory');
-    if (stored) {
-      this.inventory = JSON.parse(stored);
-    }
+    this.inventory = this.loadDataset<InventoryItem>('inventory');
   }
 
   private saveInventory(): void {
-    localStorage.setItem('inventory', JSON.stringify(this.inventory));
+    this.saveDataset('inventory', this.inventory);
   }
 
   private loadSupportMessages(): void {
-    const stored = localStorage.getItem('supportMessages');
-    if (stored) {
-      this.supportMessages = JSON.parse(stored);
-    }
+    this.supportMessages = this.loadDataset<SupportMessage>('supportMessages');
   }
 
   private saveSupportMessages(): void {
-    localStorage.setItem('supportMessages', JSON.stringify(this.supportMessages));
+    this.saveDataset('supportMessages', this.supportMessages);
   }
 
   // ============== Settlement ==============
