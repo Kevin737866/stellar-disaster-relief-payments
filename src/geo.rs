@@ -8,7 +8,7 @@ use soroban_sdk::{Env, String, Vec, f64};
 /// 
 /// Storage formats:
 /// - Contract storage: GeoPoint (f64 lat, f64 lng)
-/// - External APIs: String "lat,lng" or JSON
+/// - External APIs: String "lat,lng" (decimal degrees, e.g. `18.5944,-72.3074`) or JSON
 /// - Legacy migration: from_scaled_i64(i64) for 1e6 scaled integers
 
 /// Scaling factor for legacy integer coordinate storage (1e6)
@@ -74,7 +74,17 @@ impl GeoPoint {
         )
     }
 
-    /// Parse from string "lat,lng" format
+    /// Parse the stable `<latitude>,<longitude>` decimal-degree format.
+    ///
+    /// Accepted input: exactly two comma-separated fields. Each field is an
+    /// `f64` decimal number with an optional sign and optional exponent, and
+    /// surrounding whitespace is trimmed. NaN and infinity are rejected.
+    /// Latitudes must be in [-90, 90] and longitudes in [-180, 180].
+    ///
+    /// Errors are `"Invalid coordinate format, expected 'lat,lng'"` for a
+    /// wrong field count, `"Invalid latitude"` / `"Invalid longitude"` for
+    /// unparsable or non-finite fields, and the corresponding range error for
+    /// out-of-bounds coordinates.
     pub fn from_string(env: &Env, s: &String) -> Result<Self, String> {
         let str_val = s.to_string();
         let parts: Vec<&str> = str_val.split(',').collect();
@@ -83,12 +93,22 @@ impl GeoPoint {
         }
         let lat = parts[0].trim().parse::<f64>()
             .map_err(|_| String::from_str(env, "Invalid latitude"))?;
+        if !lat.is_finite() {
+            return Err(String::from_str(env, "Invalid latitude"));
+        }
         let lng = parts[1].trim().parse::<f64>()
             .map_err(|_| String::from_str(env, "Invalid longitude"))?;
+        if !lng.is_finite() {
+            return Err(String::from_str(env, "Invalid longitude"));
+        }
         Self::new(lat, lng)
     }
 
-    /// Convert to string "lat,lng" format
+    /// Format as `<latitude>,<longitude>` decimal degrees.
+    ///
+    /// Emits Rust's shortest round-trippable `f64` representation for each
+    /// field: no surrounding whitespace, exactly one comma, and enough
+    /// precision that `from_string` recovers the original coordinates.
     pub fn to_string(&self, env: &Env) -> String {
         String::from_str(env, &format!("{},{}", self.latitude, self.longitude))
     }
@@ -357,6 +377,100 @@ mod tests {
         assert!(GeoBounds::from_radius(&center, f64::NAN).is_err());
         assert!(GeoBounds::from_radius(&center, f64::INFINITY).is_err());
         assert!(GeoBounds::from_radius(&center, f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_from_string_table() {
+        let env = Env::default();
+        let cases = [
+            ("18.5944,-72.3074", 18.5944, -72.3074),
+            ("-18.5944,72.3074", -18.5944, 72.3074),
+            ("0,0", 0.0, 0.0),
+            ("90,180", MAX_LATITUDE, MAX_LONGITUDE),
+            ("-90,-180", MIN_LATITUDE, MIN_LONGITUDE),
+            ("  18.5944 , -72.3074  ", 18.5944, -72.3074),
+            (
+                "18.5944123456789,-72.3074123456789",
+                18.5944123456789,
+                -72.3074123456789,
+            ),
+            ("+89.99999999999999,-0.000001", 89.99999999999999, -0.000001),
+        ];
+
+        for (input, latitude, longitude) in cases {
+            let parsed = GeoPoint::from_string(&env, &String::from_str(&env, input)).unwrap();
+            assert_eq!(parsed.latitude, latitude, "input: {}", input);
+            assert_eq!(parsed.longitude, longitude, "input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_to_string_table() {
+        let env = Env::default();
+        let cases = [
+            (18.5944, -72.3074, "18.5944,-72.3074"),
+            (-18.5944, 72.3074, "-18.5944,72.3074"),
+            (0.0, 0.0, "0,0"),
+            (-0.0, -0.0, "-0,-0"),
+            (MAX_LATITUDE, MAX_LONGITUDE, "90,180"),
+            (MIN_LATITUDE, MIN_LONGITUDE, "-90,-180"),
+            (
+                18.5944123456789,
+                -72.3074123456789,
+                "18.5944123456789,-72.3074123456789",
+            ),
+        ];
+
+        for (latitude, longitude, expected) in cases {
+            let point = GeoPoint::new(latitude, longitude).unwrap();
+            assert_eq!(point.to_string(&env).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_geo_point_string_round_trip() {
+        let env = Env::default();
+        let points = [
+            GeoPoint::new(18.5944, -72.3074).unwrap(),
+            GeoPoint::new(-18.5944, 72.3074).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(MAX_LATITUDE, MAX_LONGITUDE).unwrap(),
+            GeoPoint::new(MIN_LATITUDE, MIN_LONGITUDE).unwrap(),
+            GeoPoint::new(18.5944123456789, -72.3074123456789).unwrap(),
+            GeoPoint::new(0.000001, -179.99999999999997).unwrap(),
+        ];
+
+        for point in points {
+            let encoded = point.to_string(&env);
+            let decoded = GeoPoint::from_string(&env, &encoded).unwrap();
+            assert_eq!(decoded, point, "encoded: {}", encoded.to_string());
+        }
+    }
+
+    #[test]
+    fn test_from_string_errors() {
+        let env = Env::default();
+        let cases = [
+            ("18.5944", "Invalid coordinate format, expected 'lat,lng'"),
+            (
+                "18.5944,-72.3074,0",
+                "Invalid coordinate format, expected 'lat,lng'",
+            ),
+            ("", "Invalid coordinate format, expected 'lat,lng'"),
+            ("abc,0", "Invalid latitude"),
+            ("0,abc", "Invalid longitude"),
+            ("18.5944,", "Invalid longitude"),
+            (",-72.3074", "Invalid latitude"),
+            ("NaN,0", "Invalid latitude"),
+            ("0,infinity", "Invalid longitude"),
+            ("91,0", "Latitude out of range [-90, 90]"),
+            ("0,181", "Longitude out of range [-180, 180]"),
+        ];
+
+        for (input, expected_error) in cases {
+            let error = GeoPoint::from_string(&env, &String::from_str(&env, input)).unwrap_err();
+            assert_eq!(error.to_string(), expected_error, "input: {}", input);
+        }
     }
 
     #[test]
