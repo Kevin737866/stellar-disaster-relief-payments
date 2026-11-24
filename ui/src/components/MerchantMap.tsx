@@ -1,7 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { MerchantClient } from '../../sdk/src/merchantClient';
-import { Merchant, Location, NetworkConfig } from '../../sdk/src/types';
+import { Merchant, NetworkConfig } from '../../sdk/src/types';
 import { StellarNetworkConfig } from '../../sdk/src/networkConfig';
+
+/**
+ * Maps the form's string businessType to the numeric category the contract expects.
+ * 0=food, 1=water, 2=shelter, 3=medical, 4=clothing, 5=fuel
+ */
+export const BUSINESS_TYPE_TO_CATEGORY: Record<string, number> = {
+  grocery:       0,
+  hardware:      0,
+  restaurant:    0,
+  transport:     0,
+  communication: 0,
+  pharmacy:      3,
+  fuel_station:  5,
+  clothing:      4,
+};
 
 interface MerchantMapProps {
   merchantClient: MerchantClient;
@@ -30,10 +45,6 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
     name: '',
     businessType: 'grocery',
     contactInfo: '',
-    stellarAddress: '',
-    acceptedTokens: 'XLM',
-    dailyLimit: '1000',
-    monthlyLimit: '10000',
     location: {
       latitude: '',
       longitude: '',
@@ -41,8 +52,6 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
       city: '',
       country: '',
       postalCode: '',
-      facilityName: '',
-      contactPerson: ''
     }
   });
 
@@ -80,22 +89,24 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
     e.preventDefault();
     try {
       setLoading(true);
-      
-      const location: Location = {
-        latitude: parseFloat(onboardingForm.location.latitude),
-        longitude: parseFloat(onboardingForm.location.longitude),
-        address: onboardingForm.location.address,
-        city: onboardingForm.location.city,
-        country: onboardingForm.location.country,
-        postalCode: onboardingForm.location.postalCode
-      };
+
+      const lat = parseFloat(onboardingForm.location.latitude);
+      const lng = parseFloat(onboardingForm.location.longitude);
+      const locationLatLng = `${lat},${lng}`;
+      const category = BUSINESS_TYPE_TO_CATEGORY[onboardingForm.businessType] ?? 0;
 
       const request = merchantClient.createOnboardingRequest(
         onboardingForm.name,
         onboardingForm.businessType,
-        location,
+        category,
+        locationLatLng,
+        onboardingForm.location.address,
+        onboardingForm.location.city,
+        onboardingForm.location.country,
+        onboardingForm.location.postalCode,
         onboardingForm.contactInfo,
-        onboardingForm.stellarAddress
+        [],    // vouchers — not collected by this form
+        false  // emergencyFastTrack — not exposed by this form
       );
 
       await merchantClient.registerMerchant(
@@ -110,10 +121,6 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
         name: '',
         businessType: 'grocery',
         contactInfo: '',
-        stellarAddress: '',
-        acceptedTokens: 'XLM',
-        dailyLimit: '1000',
-        monthlyLimit: '10000',
         location: {
           latitude: '',
           longitude: '',
@@ -121,15 +128,13 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
           city: '',
           country: '',
           postalCode: '',
-          facilityName: '',
-          contactPerson: ''
         }
       });
       loadVerificationQueue();
       alert('Merchant registered successfully! Awaiting verification.');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to onboard merchant:', error);
-      alert('Failed to onboard merchant');
+      alert(`Failed to register merchant: ${error?.message ?? error}`);
     } finally {
       setLoading(false);
     }
@@ -268,43 +273,6 @@ export const MerchantMap: React.FC<MerchantMapProps> = ({
                   placeholder="Contact Information"
                   value={onboardingForm.contactInfo}
                   onChange={(e) => setOnboardingForm({...onboardingForm, contactInfo: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input
-                  type="text"
-                  placeholder="Stellar Address"
-                  value={onboardingForm.stellarAddress}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, stellarAddress: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-                <input
-                  type="text"
-                  placeholder="Accepted Tokens (comma-separated)"
-                  value={onboardingForm.acceptedTokens}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, acceptedTokens: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                />
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input
-                  type="number"
-                  placeholder="Daily Limit"
-                  value={onboardingForm.dailyLimit}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, dailyLimit: e.target.value})}
-                  className="px-3 py-2 border rounded"
-                  required
-                />
-                <input
-                  type="number"
-                  placeholder="Monthly Limit"
-                  value={onboardingForm.monthlyLimit}
-                  onChange={(e) => setOnboardingForm({...onboardingForm, monthlyLimit: e.target.value})}
                   className="px-3 py-2 border rounded"
                   required
                 />
