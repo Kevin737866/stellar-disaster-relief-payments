@@ -8,7 +8,7 @@ use soroban_sdk::{Env, String, Vec, f64};
 /// 
 /// Storage formats:
 /// - Contract storage: GeoPoint (f64 lat, f64 lng)
-/// - External APIs: String "lat,lng" or JSON
+/// - External APIs: String "lat,lng" (decimal degrees, e.g. `18.5944,-72.3074`) or JSON
 /// - Legacy migration: from_scaled_i64(i64) for 1e6 scaled integers
 
 /// Scaling factor for legacy integer coordinate storage (1e6)
@@ -22,6 +22,21 @@ pub const MIN_LONGITUDE: f64 = -180.0;
 
 /// Earth's radius in kilometers (WGS84 mean radius)
 pub const EARTH_RADIUS_KM: f64 = 6371.0;
+
+/// Shared radius policy for all geographic helpers.
+///
+/// A radius in kilometers must be finite and non-negative. Zero is valid and
+/// means an exact-point query: `is_within_radius` matches only points at zero
+/// distance, while `bounding_box` collapses to the center coordinate.
+fn validate_radius_km(radius_km: f64) -> Result<f64, String> {
+    if !radius_km.is_finite() || radius_km < 0.0 {
+        return Err(String::from_str(
+            &Env::default(),
+            "Radius must be finite and non-negative",
+        ));
+    }
+    Ok(radius_km)
+}
 
 /// Standardized geographic point using f64 degrees
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,7 +74,17 @@ impl GeoPoint {
         )
     }
 
-    /// Parse from string "lat,lng" format
+    /// Parse the stable `<latitude>,<longitude>` decimal-degree format.
+    ///
+    /// Accepted input: exactly two comma-separated fields. Each field is an
+    /// `f64` decimal number with an optional sign and optional exponent, and
+    /// surrounding whitespace is trimmed. NaN and infinity are rejected.
+    /// Latitudes must be in [-90, 90] and longitudes in [-180, 180].
+    ///
+    /// Errors are `"Invalid coordinate format, expected 'lat,lng'"` for a
+    /// wrong field count, `"Invalid latitude"` / `"Invalid longitude"` for
+    /// unparsable or non-finite fields, and the corresponding range error for
+    /// out-of-bounds coordinates.
     pub fn from_string(env: &Env, s: &String) -> Result<Self, String> {
         let str_val = s.to_string();
         let parts: Vec<&str> = str_val.split(',').collect();
@@ -68,12 +93,22 @@ impl GeoPoint {
         }
         let lat = parts[0].trim().parse::<f64>()
             .map_err(|_| String::from_str(env, "Invalid latitude"))?;
+        if !lat.is_finite() {
+            return Err(String::from_str(env, "Invalid latitude"));
+        }
         let lng = parts[1].trim().parse::<f64>()
             .map_err(|_| String::from_str(env, "Invalid longitude"))?;
+        if !lng.is_finite() {
+            return Err(String::from_str(env, "Invalid longitude"));
+        }
         Self::new(lat, lng)
     }
 
-    /// Convert to string "lat,lng" format
+    /// Format as `<latitude>,<longitude>` decimal degrees.
+    ///
+    /// Emits Rust's shortest round-trippable `f64` representation for each
+    /// field: no surrounding whitespace, exactly one comma, and enough
+    /// precision that `from_string` recovers the original coordinates.
     pub fn to_string(&self, env: &Env) -> String {
         String::from_str(env, &format!("{},{}", self.latitude, self.longitude))
     }
@@ -90,24 +125,32 @@ impl GeoPoint {
         r * c
     }
 
-    /// Check if point is within radius (km) of another point
-    pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> bool {
-        self.distance_to(center) <= radius_km
+    /// Check if point is within radius (km) of another point.
+    ///
+    /// A zero radius matches only points at zero distance. Negative and
+    /// non-finite radii return a validation error.
+    pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> Result<bool, String> {
+        let radius_km = validate_radius_km(radius_km)?;
+        Ok(self.distance_to(center) <= radius_km)
     }
 
-    /// Calculate bounding box for a radius (returns min_lat, max_lat, min_lng, max_lng)
-    pub fn bounding_box(&self, radius_km: f64) -> (f64, f64, f64, f64) {
+    /// Calculate bounding box for a radius (returns min_lat, max_lat, min_lng, max_lng).
+    ///
+    /// A zero radius produces a degenerate box at this point. Negative and
+    /// non-finite radii return a validation error.
+    pub fn bounding_box(&self, radius_km: f64) -> Result<(f64, f64, f64, f64), String> {
+        let radius_km = validate_radius_km(radius_km)?;
         // 1 degree latitude ~= 111 km
         let lat_delta = radius_km / 111.0;
         // 1 degree longitude ~= 111 km * cos(lat)
         let lng_delta = radius_km / (111.0 * self.latitude.to_radians().cos().max(0.1));
         
-        (
+        Ok((
             (self.latitude - lat_delta).max(MIN_LATITUDE),
             (self.latitude + lat_delta).min(MAX_LATITUDE),
             (self.longitude - lng_delta).max(MIN_LONGITUDE),
             (self.longitude + lng_delta).min(MAX_LONGITUDE),
-        )
+        ))
     }
 }
 
@@ -125,10 +168,13 @@ impl GeoBounds {
         GeoBounds { min_lat, max_lat, min_lng, max_lng }
     }
 
-    /// Create bounds from center point and radius
-    pub fn from_radius(center: &GeoPoint, radius_km: f64) -> Self {
-        let (min_lat, max_lat, min_lng, max_lng) = center.bounding_box(radius_km);
-        GeoBounds::new(min_lat, max_lat, min_lng, max_lng)
+    /// Create bounds from center point and radius.
+    ///
+    /// A zero radius produces bounds containing only the center point.
+    /// Negative and non-finite radii return a validation error.
+    pub fn from_radius(center: &GeoPoint, radius_km: f64) -> Result<Self, String> {
+        let (min_lat, max_lat, min_lng, max_lng) = center.bounding_box(radius_km)?;
+        Ok(GeoBounds::new(min_lat, max_lat, min_lng, max_lng))
     }
 
     /// Check if a point is within bounds
@@ -275,7 +321,7 @@ mod tests {
     #[test]
     fn test_bounding_box() {
         let center = GeoPoint::new(18.5944, -72.3074).unwrap();
-        let bounds = GeoBounds::from_radius(&center, 10.0); // 10km radius
+        let bounds = GeoBounds::from_radius(&center, 10.0).unwrap(); // 10km radius
         assert!(bounds.contains(&center));
         
         let nearby = GeoPoint::new(18.6, -72.3).unwrap();
@@ -283,6 +329,148 @@ mod tests {
         
         let far = GeoPoint::new(19.0, -72.0).unwrap();
         assert!(!bounds.contains(&far));
+    }
+
+    #[test]
+    fn test_is_within_radius_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let nearby = GeoPoint::new(18.6, -72.3).unwrap();
+
+        assert!(center.is_within_radius(&center, 0.0).unwrap());
+        assert!(!nearby.is_within_radius(&center, 0.0).unwrap());
+        assert!(nearby.is_within_radius(&center, 10.0).unwrap());
+        assert!(nearby.is_within_radius(&center, -1.0).is_err());
+        assert!(nearby.is_within_radius(&center, f64::NAN).is_err());
+        assert!(nearby.is_within_radius(&center, f64::INFINITY).is_err());
+        assert!(nearby.is_within_radius(&center, f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_bounding_box_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+
+        let zero = center.bounding_box(0.0).unwrap();
+        assert_eq!(
+            zero,
+            (center.latitude, center.latitude, center.longitude, center.longitude)
+        );
+        let positive = center.bounding_box(10.0).unwrap();
+        assert!(positive.0 < center.latitude && positive.1 > center.latitude);
+        assert!(positive.2 < center.longitude && positive.3 > center.longitude);
+        assert!(center.bounding_box(-1.0).is_err());
+        assert!(center.bounding_box(f64::NAN).is_err());
+        assert!(center.bounding_box(f64::INFINITY).is_err());
+        assert!(center.bounding_box(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_from_radius_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let nearby = GeoPoint::new(18.6, -72.3).unwrap();
+
+        let zero = GeoBounds::from_radius(&center, 0.0).unwrap();
+        assert!(zero.contains(&center));
+        assert!(!zero.contains(&nearby));
+        let positive = GeoBounds::from_radius(&center, 10.0).unwrap();
+        assert!(positive.contains(&nearby));
+        assert!(GeoBounds::from_radius(&center, -1.0).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::NAN).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::INFINITY).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_from_string_table() {
+        let env = Env::default();
+        let cases = [
+            ("18.5944,-72.3074", 18.5944, -72.3074),
+            ("-18.5944,72.3074", -18.5944, 72.3074),
+            ("0,0", 0.0, 0.0),
+            ("90,180", MAX_LATITUDE, MAX_LONGITUDE),
+            ("-90,-180", MIN_LATITUDE, MIN_LONGITUDE),
+            ("  18.5944 , -72.3074  ", 18.5944, -72.3074),
+            (
+                "18.5944123456789,-72.3074123456789",
+                18.5944123456789,
+                -72.3074123456789,
+            ),
+            ("+89.99999999999999,-0.000001", 89.99999999999999, -0.000001),
+        ];
+
+        for (input, latitude, longitude) in cases {
+            let parsed = GeoPoint::from_string(&env, &String::from_str(&env, input)).unwrap();
+            assert_eq!(parsed.latitude, latitude, "input: {}", input);
+            assert_eq!(parsed.longitude, longitude, "input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_to_string_table() {
+        let env = Env::default();
+        let cases = [
+            (18.5944, -72.3074, "18.5944,-72.3074"),
+            (-18.5944, 72.3074, "-18.5944,72.3074"),
+            (0.0, 0.0, "0,0"),
+            (-0.0, -0.0, "-0,-0"),
+            (MAX_LATITUDE, MAX_LONGITUDE, "90,180"),
+            (MIN_LATITUDE, MIN_LONGITUDE, "-90,-180"),
+            (
+                18.5944123456789,
+                -72.3074123456789,
+                "18.5944123456789,-72.3074123456789",
+            ),
+        ];
+
+        for (latitude, longitude, expected) in cases {
+            let point = GeoPoint::new(latitude, longitude).unwrap();
+            assert_eq!(point.to_string(&env).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_geo_point_string_round_trip() {
+        let env = Env::default();
+        let points = [
+            GeoPoint::new(18.5944, -72.3074).unwrap(),
+            GeoPoint::new(-18.5944, 72.3074).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(MAX_LATITUDE, MAX_LONGITUDE).unwrap(),
+            GeoPoint::new(MIN_LATITUDE, MIN_LONGITUDE).unwrap(),
+            GeoPoint::new(18.5944123456789, -72.3074123456789).unwrap(),
+            GeoPoint::new(0.000001, -179.99999999999997).unwrap(),
+        ];
+
+        for point in points {
+            let encoded = point.to_string(&env);
+            let decoded = GeoPoint::from_string(&env, &encoded).unwrap();
+            assert_eq!(decoded, point, "encoded: {}", encoded.to_string());
+        }
+    }
+
+    #[test]
+    fn test_from_string_errors() {
+        let env = Env::default();
+        let cases = [
+            ("18.5944", "Invalid coordinate format, expected 'lat,lng'"),
+            (
+                "18.5944,-72.3074,0",
+                "Invalid coordinate format, expected 'lat,lng'",
+            ),
+            ("", "Invalid coordinate format, expected 'lat,lng'"),
+            ("abc,0", "Invalid latitude"),
+            ("0,abc", "Invalid longitude"),
+            ("18.5944,", "Invalid longitude"),
+            (",-72.3074", "Invalid latitude"),
+            ("NaN,0", "Invalid latitude"),
+            ("0,infinity", "Invalid longitude"),
+            ("91,0", "Latitude out of range [-90, 90]"),
+            ("0,181", "Longitude out of range [-180, 180]"),
+        ];
+
+        for (input, expected_error) in cases {
+            let error = GeoPoint::from_string(&env, &String::from_str(&env, input)).unwrap_err();
+            assert_eq!(error.to_string(), expected_error, "input: {}", input);
+        }
     }
 
     #[test]
