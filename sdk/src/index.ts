@@ -39,6 +39,23 @@ import { TrackerClient } from './trackerClient';
 export { EmergencyFundsClient } from './emergencyFunds';
 export { DonorTransparencyClient } from './donorTransparency';
 export { FundExpiryNotificationsClient } from './fundExpiryNotifications';
+export type {
+  DeliveryProviders,
+  DeliveryReceipt,
+  DeliveryResult,
+  EmailDeliveryProvider,
+  ExpiryNotification,
+  ExpiryNotificationConfig,
+  NotificationChannel,
+  NotificationDeliveryProvider,
+  NotificationDeliveryProviders,
+  NotificationDeliveryRequest,
+  NotificationLog,
+  NotificationProviders,
+  SMSDeliveryProvider,
+  SmsDeliveryProvider,
+  WebhookDeliveryProvider,
+} from './fundExpiryNotifications';
 export { DuplicatePreventionClient } from './duplicatePrevention';
 
 // Export Merchant Network SDK
