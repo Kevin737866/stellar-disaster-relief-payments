@@ -583,14 +583,14 @@ export class EmergencyFundsClient {
         nativeToScVal(limit)
       );
 
-      const directValue = this.extractDisbursementReturnValue(operation);
+      const directValue = this.extractContractReturnValue(operation);
       if (directValue !== undefined) {
         return this.toDisbursementPage(directValue, offset);
       }
 
       // Real `Contract.call` returns an operation. Simulate it as a read to obtain
       // the contract's return value without submitting a transaction.
-      const simulatedValue = await this.simulateDisbursementRead(operation);
+      const simulatedValue = await this.simulateContractRead(operation);
       return this.toDisbursementPage(simulatedValue, offset);
     } catch (error: any) {
       throw new NetworkError('get disbursement history', error.message, { fundId, offset, limit });
@@ -610,7 +610,7 @@ export class EmergencyFundsClient {
     }
   }
 
-  private async simulateDisbursementRead(operation: any): Promise<unknown> {
+  private async simulateContractRead(operation: any): Promise<unknown> {
     if (typeof this.server?.simulateTransaction !== 'function') {
       throw new Error('contract result did not include a return value and simulateTransaction is unavailable');
     }
@@ -625,14 +625,14 @@ export class EmergencyFundsClient {
       .build();
 
     const response = await this.server.simulateTransaction(transaction);
-    const returnValue = this.extractDisbursementReturnValue(response);
+    const returnValue = this.extractContractReturnValue(response);
     if (returnValue === undefined) {
       throw new Error('simulation response did not include a contract return value');
     }
     return returnValue;
   }
 
-  private extractDisbursementReturnValue(response: any): unknown | undefined {
+  private extractContractReturnValue(response: any): unknown | undefined {
     if (response === undefined || response === null) return undefined;
 
     const errorMessage = response?.error ?? response?.result?.error;
@@ -900,18 +900,58 @@ export class EmergencyFundsClient {
   }
 
   /**
-   * Gets metadata for a fund
+   * Gets metadata for a fund.
+   *
+   * An empty object is returned only when the contract query succeeds with an
+   * empty metadata map. RPC, simulation, and decoding failures are surfaced as
+   * errors instead of an empty success response.
    */
   async getMetadata(fundId: string): Promise<Record<string, string>> {
     try {
       const contract = new Contract(this.contractId) as any;
+      const operation = await contract.call('get_metadata', nativeToScVal(fundId));
 
-      // Note: This would typically use contract.call() in a simulation
-      // For now, returning a placeholder structure
-      return {};
+      const directValue = this.extractContractReturnValue(operation);
+      const value = directValue !== undefined ? directValue : await this.simulateContractRead(operation);
+      return this.toMetadataMap(value);
     } catch (error: any) {
       throw new NetworkError('get fund metadata', error.message, { fundId });
     }
+  }
+
+  private toMetadataMap(value: unknown): Record<string, string> {
+    let decoded: unknown;
+    try {
+      decoded = scValToNative(value as any);
+    } catch (error: any) {
+      throw new Error(`failed to decode metadata: ${error.message}`);
+    }
+
+    const entries: Array<[unknown, unknown]> = decoded instanceof Map
+      ? Array.from(decoded.entries())
+      : Array.isArray(decoded)
+        ? decoded.map((entry) => {
+            if (!Array.isArray(entry) || entry.length !== 2) {
+              throw new Error('contract result included invalid metadata entry');
+            }
+            return [entry[0], entry[1]] as [unknown, unknown];
+          })
+        : decoded && typeof decoded === 'object'
+          ? Object.entries(decoded as Record<string, unknown>)
+          : [];
+
+    if (!decoded || (typeof decoded !== 'object' && !Array.isArray(decoded))) {
+      throw new Error('contract result did not include a metadata map');
+    }
+
+    const metadata: Record<string, string> = {};
+    for (const [key, entryValue] of entries) {
+      if (typeof entryValue !== 'string') {
+        throw new Error('contract result included non-string metadata value');
+      }
+      metadata[String(key)] = entryValue;
+    }
+    return metadata;
   }
 
   /**
