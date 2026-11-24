@@ -29,6 +29,32 @@ export interface ExpiryNotificationConfig {
   smsTemplate?: string;
 }
 
+/**
+ * Per-fund data returned by the provider. `undefined` means the fund does not
+ * exist; the caller decides whether that is an error or a skip.
+ */
+export interface FundExpiryData {
+  fundId: string;
+  fundName: string;
+  expiresAt: number; // unix seconds
+  totalAmount: string;
+  releasedAmount: string;
+  availableAmount: string;
+  adminAddress: string;
+  /** True if the admin has already acknowledged / handled this expiry. */
+  handled?: boolean;
+  /** True for funds that never expire — these are always skipped. */
+  neverExpires?: boolean;
+}
+
+/**
+ * Pluggable data source for {@link FundExpiryNotificationsClient.checkExpiringFunds}.
+ * In production this wraps a contract read; in tests it is injected directly.
+ */
+export interface FundExpiryDataProvider {
+  getFund(fundId: string): Promise<FundExpiryData | undefined>;
+}
+
 export interface NotificationLog {
   id: string;
   fundId: string;
@@ -50,6 +76,7 @@ export class FundExpiryNotificationsClient {
   private server: any;
   private networkPassphrase: string;
   private notificationConfig: ExpiryNotificationConfig;
+  private dataProvider?: FundExpiryDataProvider;
 
   constructor(
     contractId: string,
@@ -59,13 +86,22 @@ export class FundExpiryNotificationsClient {
       notificationThresholdDays: 7, // Notify 7 days before expiry
       enableAutoNotifications: true,
     },
-    networkPassphrase: string = Networks.TESTNET
+    networkPassphrase: string = Networks.TESTNET,
+    dataProvider?: FundExpiryDataProvider
   ) {
     this.contractId = contractId;
     this.signingKey = signingKey;
     this.server = server;
     this.networkPassphrase = networkPassphrase;
     this.notificationConfig = notificationConfig;
+    this.dataProvider = dataProvider;
+  }
+
+  /**
+   * Override the data source used by {@link checkExpiringFunds}.
+   */
+  setDataProvider(provider: FundExpiryDataProvider): void {
+    this.dataProvider = provider;
   }
 
   /**
@@ -120,17 +156,61 @@ export class FundExpiryNotificationsClient {
    * Returns list of funds requiring notifications
    */
   async checkExpiringFunds(fundIds: string[]): Promise<ExpiryNotification[]> {
-    try {
-      const expiringFunds: ExpiryNotification[] = [];
-      const currentTime = Math.floor(Date.now() / 1000); // Current time in seconds
-      const thresholdSeconds = this.notificationConfig.notificationThresholdDays * 24 * 60 * 60;
-
-      // This would typically query the contract or a backend service
-      // For now, returning empty array as placeholder
-      return expiringFunds;
-    } catch (error: any) {
-      throw new Error(`Failed to check expiring funds: ${error.message}`);
+    if (!this.dataProvider) {
+      throw new Error(
+        'checkExpiringFunds requires a data provider; pass one to the ' +
+          'constructor or call setDataProvider() before calling this method.'
+      );
     }
+
+    const currentTime = Math.floor(Date.now() / 1000);
+    const thresholdSeconds =
+      this.notificationConfig.notificationThresholdDays * 24 * 60 * 60;
+    const expiringFunds: ExpiryNotification[] = [];
+
+    for (const fundId of fundIds) {
+      // Provider errors (RPC, decoding, etc.) surface to the caller rather
+      // than being silently turned into an empty success — operators need
+      // to know when the lookup failed, not treat it as "no expiries".
+      const fund = await this.dataProvider.getFund(fundId);
+      if (fund === undefined) {
+        // Missing fund: skip rather than fabricate a notification.
+        continue;
+      }
+      if (fund.neverExpires) {
+        continue;
+      }
+      if (fund.handled) {
+        continue;
+      }
+
+      const secondsUntilExpiry = fund.expiresAt - currentTime;
+      // Already expired funds are past the window — they are handled by a
+      // separate post-expiry path and must not re-enter the pre-expiry queue.
+      if (secondsUntilExpiry <= 0) {
+        continue;
+      }
+      if (secondsUntilExpiry > thresholdSeconds) {
+        continue;
+      }
+
+      const daysUntilExpiry = Math.ceil(secondsUntilExpiry / (24 * 60 * 60));
+      expiringFunds.push({
+        id: `${fund.fundId}_expiry_${currentTime}`,
+        fundId: fund.fundId,
+        fundName: fund.fundName,
+        expiresAt: fund.expiresAt,
+        daysUntilExpiry,
+        totalAmount: fund.totalAmount,
+        releasedAmount: fund.releasedAmount,
+        availableAmount: fund.availableAmount,
+        adminAddress: fund.adminAddress,
+        notificationSentAt: currentTime,
+        notificationStatus: 'pending',
+      });
+    }
+
+    return expiringFunds;
   }
 
   /**
