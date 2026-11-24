@@ -62,6 +62,33 @@ expire, and which abuse-resistance controls are **not** yet implemented.
   **No function currently checks that timestamp**, so do not treat a temporary
   credential as automatically revoked.
 
+### SMS/USSD single-use challenges
+
+- `OfflineAuthClient.generateSMSCode` returns a `challengeId` alongside the
+  6-digit code. The ID, code, phone number, expiry, and signature must all be
+  presented to `validateSMSCode`.
+- Validation is scoped to a `verifierId` (the verifier authority). A challenge
+  can be accepted at most once per verifier: `markConsumed` is an atomic
+  check-and-set on the verifier's tombstone store.
+- Outcomes are explicit: `valid`, `expired`, `unknown_challenge`,
+  `already_consumed`, `invalid_signature`, `invalid_code`, and
+  `invalid_verifier`. The signature is an unkeyed integrity checksum over the
+  public challenge fields; it is not proof of issuer authenticity.
+- The SDK refuses to issue or validate SMS challenges without a
+  `SMSChallengeStateStore`; `allowEphemeralChallengeState` exists only for
+  tests/demos. State therefore does **not** silently reset on restart — a
+  production verifier must inject a durable store or restore a snapshot before
+  validating.
+- For multiple offline devices, either give each device a distinct
+  `verifierId` (independent authorities) or share one authority and exchange
+  `exportChallengeState`/`reconcileChallengeState` snapshots. Reconciliation
+  keeps the union of tombstones and the earliest `consumedAt`; conflicting
+  timestamps are returned in `conflicts` for investigation. Two devices that
+  both validate the same challenge while disconnected can each record a local
+  success before reconciliation — this is reported, not hidden. Treat those
+  conflicts as incidents and assign per-device authorities where strict
+  at-most-once acceptance is required.
+
 ### Online merchant limits
 
 Online `process_payment` enforces the merchant's daily/monthly limits, token
@@ -188,6 +215,7 @@ deployment runbook and communicate it to merchants before distribution.
 | Concern | Source |
 | --- | --- |
 | Offline envelope serialize/sign/import/decode | `sdk/src/offlineSigner.ts` |
+| SMS/USSD single-use challenge state | `sdk/src/offlineAuth.ts` |
 | Beneficiary QR generation/validation | `sdk/src/beneficiaryClient.ts` |
 | USSD session state machine | `sdk/src/beneficiaryClient.ts` |
 | Recovery-code generation | `src/beneficiary_manager.rs` |

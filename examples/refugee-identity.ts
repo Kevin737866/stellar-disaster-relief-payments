@@ -41,7 +41,13 @@ async function main() {
   console.log('═══════════════════════════════════════════════════════════\n');
 
   const identityClient = new BeneficiaryIdentityClient(config);
-  const offlineClient = new OfflineAuthClient(config);
+  // Demo only: SMS/USSD challenges need a durable, verifier-scoped store in
+  // production so consumption survives restarts and can be reconciled.
+  const offlineClient = new OfflineAuthClient({
+    ...config,
+    verifierId: 'zaatari-helpdesk-1',
+    allowEphemeralChallengeState: true,
+  });
 
   // Scenario 1: New Refugee Registration
   console.log('📋 SCENARIO 1: New Refugee Registration');
@@ -211,18 +217,21 @@ async function main() {
     console.log(`\nFatima enters: ${offlineBundle.smsCode?.code}\n`);
 
     const smsValidation = offlineClient.validateSMSCode(
+      offlineBundle.smsCode!.challengeId!,
       offlineBundle.smsCode!.code,
       '+962791234567',
       offlineBundle.smsCode!.signature,
       offlineBundle.smsCode!.expiresAt
     );
 
-    if (smsValidation) {
+    if (smsValidation.isValid) {
       ussdMenu = offlineClient.formatUSSDMenu('verify_success', {
         trustScore: identity.trustScore,
         location: identity.campLocation
       });
       console.log(ussdMenu + '\n');
+    } else {
+      console.log(`✗ Verification failed: ${smsValidation.reason}\n`);
     }
 
     // Scenario 4: Lost Phone - Social Recovery
