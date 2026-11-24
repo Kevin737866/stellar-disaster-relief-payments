@@ -129,7 +129,7 @@ pub struct Trigger {
     pub auto_release_amount: U256,
     pub geofence_latitude: i64,  // Stored as degrees * 1e6
     pub geofence_longitude: i64, // Stored as degrees * 1e6
-    pub geofence_radius_km: u64,
+    pub geofence_radius_km: u64, // Kilometers (not meters; cf. GeofenceZone.radius_meters)
     pub min_oracle_confirmations: u32,
     pub is_active: bool,
     pub last_triggered: u64,
