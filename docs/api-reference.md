@@ -628,7 +628,13 @@ pub fn assign_transporter(
 
 #### `confirm_delivery`
 
-Records final delivery confirmation from recipient.
+Records a delivery event from a recipient. Received quantities must be positive
+and no greater than the shipment's outstanding quantity. A short delivery leaves
+the shipment in `"partially_delivered"`; additional confirmations are accepted
+while quantity remains outstanding. The shipment becomes `"delivered"` only when
+the sum of accepted confirmations equals its declared quantity. Zero-quantity,
+over-delivery, and confirmations for delivered or lost shipments are rejected.
+No exception path for shortages is currently supported.
 
 ```rust
 pub fn confirm_delivery(
@@ -642,7 +648,8 @@ pub fn confirm_delivery(
 )
 ```
 
-Sets shipment status to `"delivered"`.
+Sets shipment status to `"partially_delivered"` or `"delivered"` based on the
+cumulative confirmed quantity.
 
 ---
 
@@ -656,13 +663,25 @@ pub fn get_shipment(env: Env, shipment_id: String) -> Option<SupplyShipment>
 
 #### `get_shipment_history`
 
-Returns full shipment history including delivery confirmation.
+Returns the shipment and its latest delivery confirmation.
 
 ```rust
 pub fn get_shipment_history(
     env: Env,
     shipment_id: String,
 ) -> (Option<SupplyShipment>, Option<RecipientConfirmation>)
+```
+
+#### `get_delivery_confirmations`
+
+Returns all accepted delivery confirmations in receipt order. Their
+`received_quantity` values sum to the quantity accounted for so far.
+
+```rust
+pub fn get_delivery_confirmations(
+    env: Env,
+    shipment_id: String,
+) -> Vec<RecipientConfirmation>
 ```
 
 ---
@@ -673,7 +692,8 @@ pub fn get_shipment_history(
 |--------|---------|
 | `"in_transit"` | Initial state after creation |
 | `"at_checkpoint"` | More than 2 checkpoints logged |
-| `"delivered"` | `confirm_delivery` called |
+| `"partially_delivered"` | At least one delivery confirmation exists, with quantity outstanding |
+| `"delivered"` | Confirmed delivery quantity equals the declared shipment quantity |
 | `"lost"` | Manually marked lost |
 
 ---

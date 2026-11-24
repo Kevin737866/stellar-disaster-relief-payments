@@ -2,7 +2,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
-use crate::rbac::{self, ROLE_ADMIN, ROLE_AUDITOR, ROLE_NGO, ROLE_OPERATOR};
+use crate::rbac::{self, ROLE_ADMIN, ROLE_AUDITOR, ROLE_NGO, ROLE_OPERATOR, ROLE_RECIPIENT};
 
 // ── BeneficiaryManager ───────────────────────────────────────────────────────
 
@@ -478,9 +478,10 @@ mod supply_chain_tests {
     }
 
     #[test]
-    fn test_anyone_can_confirm_delivery() {
-        let (env, _, ngo) = setup();
+    fn test_recipient_can_confirm_delivery() {
+        let (env, admin, ngo) = setup();
         let recipient = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
         let contract_id = env.register_contract(None, SupplyChainTracker);
         let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
         client.create_shipment(
@@ -505,6 +506,176 @@ mod supply_chain_tests {
             &Vec::new(&env),
         );
         let shipment = client.get_shipment(&String::from_str(&env, "s3")).unwrap();
+        assert_eq!(shipment.current_status, String::from_str(&env, "delivered"));
+    }
+
+    #[test]
+    fn test_partial_deliveries_accumulate_until_shipment_is_complete() {
+        let (env, admin, ngo) = setup();
+        let recipient = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
+        let contract_id = env.register_contract(None, SupplyChainTracker);
+        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
+        client.create_shipment(
+            &ngo,
+            &String::from_str(&env, "s_partial"),
+            &String::from_str(&env, "donor"),
+            &String::from_str(&env, "water"),
+            &U256::from_u64(&env, 10),
+            &String::from_str(&env, "liters"),
+            &make_location(&env),
+            &make_location(&env),
+            &(env.ledger().timestamp() + 86400),
+            &None,
+            &Vec::new(&env),
+        );
+
+        client.confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "s_partial"),
+            &String::from_str(&env, "recipient"),
+            &U256::from_u64(&env, 4),
+            &String::from_str(&env, "partial delivery"),
+            &Vec::new(&env),
+        );
+        let shipment = client
+            .get_shipment(&String::from_str(&env, "s_partial"))
+            .unwrap();
+        assert_eq!(
+            shipment.current_status,
+            String::from_str(&env, "partially_delivered")
+        );
+
+        client.confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "s_partial"),
+            &String::from_str(&env, "recipient"),
+            &U256::from_u64(&env, 6),
+            &String::from_str(&env, "remaining delivery"),
+            &Vec::new(&env),
+        );
+        let shipment = client
+            .get_shipment(&String::from_str(&env, "s_partial"))
+            .unwrap();
+        assert_eq!(shipment.current_status, String::from_str(&env, "delivered"));
+
+        let confirmations =
+            client.get_delivery_confirmations(&String::from_str(&env, "s_partial"));
+        assert_eq!(confirmations.len(), 2);
+        let total_received = confirmations
+            .iter()
+            .fold(U256::from_u64(0), |total, confirmation| {
+                total + confirmation.received_quantity
+            });
+        assert_eq!(total_received, U256::from_u64(&env, 10));
+    }
+
+    #[test]
+    fn test_invalid_delivery_quantities_and_repeated_confirmations_do_not_change_state() {
+        let (env, admin, ngo) = setup();
+        let recipient = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
+        let contract_id = env.register_contract(None, SupplyChainTracker);
+        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
+        client.create_shipment(
+            &ngo,
+            &String::from_str(&env, "s_bounds"),
+            &String::from_str(&env, "donor"),
+            &String::from_str(&env, "water"),
+            &U256::from_u64(&env, 10),
+            &String::from_str(&env, "liters"),
+            &make_location(&env),
+            &make_location(&env),
+            &(env.ledger().timestamp() + 86400),
+            &None,
+            &Vec::new(&env),
+        );
+
+        assert!(client
+            .try_confirm_delivery(
+                &recipient,
+                &String::from_str(&env, "s_bounds"),
+                &String::from_str(&env, "recipient"),
+                &U256::from_u64(&env, 0),
+                &String::from_str(&env, "zero"),
+                &Vec::new(&env),
+            )
+            .is_err());
+        assert!(client
+            .try_confirm_delivery(
+                &recipient,
+                &String::from_str(&env, "s_bounds"),
+                &String::from_str(&env, "recipient"),
+                &U256::from_u64(&env, 11),
+                &String::from_str(&env, "over-delivery"),
+                &Vec::new(&env),
+            )
+            .is_err());
+        assert!(client
+            .get_delivery_confirmations(&String::from_str(&env, "s_bounds"))
+            .is_empty());
+        let shipment = client
+            .get_shipment(&String::from_str(&env, "s_bounds"))
+            .unwrap();
+        assert_eq!(shipment.current_status, String::from_str(&env, "in_transit"));
+
+        client.confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "s_bounds"),
+            &String::from_str(&env, "recipient"),
+            &U256::from_u64(&env, 4),
+            &String::from_str(&env, "partial"),
+            &Vec::new(&env),
+        );
+        assert!(client
+            .try_confirm_delivery(
+                &recipient,
+                &String::from_str(&env, "s_bounds"),
+                &String::from_str(&env, "recipient"),
+                &U256::from_u64(&env, 7),
+                &String::from_str(&env, "over outstanding"),
+                &Vec::new(&env),
+            )
+            .is_err());
+        let shipment = client
+            .get_shipment(&String::from_str(&env, "s_bounds"))
+            .unwrap();
+        assert_eq!(
+            shipment.current_status,
+            String::from_str(&env, "partially_delivered")
+        );
+        let confirmations =
+            client.get_delivery_confirmations(&String::from_str(&env, "s_bounds"));
+        assert_eq!(confirmations.len(), 1);
+        assert_eq!(
+            confirmations.get(0).unwrap().received_quantity,
+            U256::from_u64(&env, 4)
+        );
+
+        client.confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "s_bounds"),
+            &String::from_str(&env, "recipient"),
+            &U256::from_u64(&env, 6),
+            &String::from_str(&env, "complete"),
+            &Vec::new(&env),
+        );
+        assert!(client
+            .try_confirm_delivery(
+                &recipient,
+                &String::from_str(&env, "s_bounds"),
+                &String::from_str(&env, "recipient"),
+                &U256::from_u64(&env, 1),
+                &String::from_str(&env, "repeated after completion"),
+                &Vec::new(&env),
+            )
+            .is_err());
+        let confirmations =
+            client.get_delivery_confirmations(&String::from_str(&env, "s_bounds"));
+        assert_eq!(confirmations.len(), 2);
+        let shipment = client
+            .get_shipment(&String::from_str(&env, "s_bounds"))
+            .unwrap();
         assert_eq!(shipment.current_status, String::from_str(&env, "delivered"));
     }
 }
