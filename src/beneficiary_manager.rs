@@ -4,7 +4,7 @@
 //! abuse-resistance gaps (including the current deterministic recovery-code
 //! format) are documented in `docs/offline-flows.md`.
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256, u64, BytesN, panic_with_error};
 use crate::unique_id::*;
 use crate::rbac::{self, ROLE_NGO, ROLE_ADMIN};
 
@@ -580,6 +580,12 @@ impl BeneficiaryManager {
         
         if let Some(mut profile) = beneficiaries.get(beneficiary_id.clone()) {
             profile.is_active = false;
+            
+            // Sync deactivation to identity if present
+            if let Some(id_hash) = &profile.identity_hash {
+                Self::update_identity_active_state(&env, id_hash, false);
+            }
+            
             beneficiaries.set(beneficiary_id.clone(), profile);
             env.storage().instance().set(&beneficiaries_key, &beneficiaries);
 
@@ -588,6 +594,44 @@ impl BeneficiaryManager {
                 (beneficiary_id, admin),
             );
         }
+    }
+
+    /// Reactivate a previously deactivated beneficiary.
+    /// Updates both profile and identity state atomically.
+    pub fn reactivate_beneficiary(env: Env, admin: Address, beneficiary_id: String, reason: String) {
+        admin.require_auth();
+        rbac::require_role(&env, &admin, ROLE_ADMIN);
+        
+        let beneficiaries_key = Symbol::new(&env, "beneficiaries");
+        let mut beneficiaries: Map<String, BeneficiaryProfile> = env.storage().instance()
+            .get(&beneficiaries_key)
+            .unwrap_or(Map::new(&env));
+        
+        let mut profile = match beneficiaries.get(beneficiary_id.clone()) {
+            Some(p) => p,
+            None => panic_with_error!(&env, "Beneficiary not found"),
+        };
+        
+        // Reject if already active
+        if profile.is_active {
+            panic_with_error!(&env, "Beneficiary already active");
+        }
+        
+        profile.is_active = true;
+        profile.last_verified = env.ledger().timestamp();
+        
+        // Sync reactivation to identity if present
+        if let Some(id_hash) = &profile.identity_hash {
+            Self::update_identity_active_state(&env, id_hash, true);
+        }
+        
+        beneficiaries.set(beneficiary_id.clone(), profile);
+        env.storage().instance().set(&beneficiaries_key, &beneficiaries);
+        
+        env.events().publish(
+            (Symbol::new(&env, "beneficiary"), Symbol::new(&env, "reactivated")),
+            (beneficiary_id, admin, reason),
+        );
     }
 
     /// Update trust score in canonical identity (source of truth)
@@ -618,6 +662,21 @@ impl BeneficiaryManager {
         
         if let Some(mut identity) = identities.get(id_hash.clone()) {
             identity.wallet_address = new_wallet.clone();
+            identity.last_verified = env.ledger().timestamp();
+            identities.set(id_hash.clone(), identity);
+            env.storage().persistent().set(&identities_key, &identities);
+        }
+    }
+
+    /// Update active state in canonical identity (source of truth)
+    fn update_identity_active_state(env: &Env, id_hash: &BytesN<32>, is_active: bool) {
+        let identities_key = Symbol::new(env, "identities");
+        let mut identities: Map<BytesN<32>, BeneficiaryIdentity> = env.storage().persistent()
+            .get(&identities_key)
+            .unwrap_or(Map::new(env));
+        
+        if let Some(mut identity) = identities.get(id_hash.clone()) {
+            identity.is_active = is_active;
             identity.last_verified = env.ledger().timestamp();
             identities.set(id_hash.clone(), identity);
             env.storage().persistent().set(&identities_key, &identities);

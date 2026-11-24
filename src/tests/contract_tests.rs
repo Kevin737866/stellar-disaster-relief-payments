@@ -110,6 +110,125 @@ mod beneficiary_tests {
     }
 
     #[test]
+    fn test_admin_can_reactivate_inactive_beneficiary() {
+        let (env, admin, ngo) = setup();
+        let contract_id = env.register_contract(None, BeneficiaryManager);
+        let client = crate::BeneficiaryManagerClient::new(&env, &contract_id);
+        let ben_id = String::from_str(&env, "b_reactivate");
+        
+        // Register and deactivate
+        client.register_beneficiary(
+            &ngo,
+            &ben_id,
+            &String::from_str(&env, "Emma"),
+            &String::from_str(&env, "d1"),
+            &String::from_str(&env, "camp_e"),
+            &Address::generate(&env),
+            &2,
+            &Vec::new(&env),
+            &make_factors(&env),
+        );
+        
+        client.deactivate_beneficiary(&admin, &ben_id);
+        let inactive = client.get_beneficiary(&ben_id).unwrap();
+        assert!(!inactive.is_active);
+        
+        // Reactivate
+        client.reactivate_beneficiary(&admin, &ben_id, &String::from_str(&env, "Medical clearance received"));
+        let reactivated = client.get_beneficiary(&ben_id).unwrap();
+        assert!(reactivated.is_active);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unauthorized: missing required role")]
+    fn test_ngo_cannot_reactivate_beneficiary() {
+        let (env, admin, ngo) = setup();
+        let contract_id = env.register_contract(None, BeneficiaryManager);
+        let client = crate::BeneficiaryManagerClient::new(&env, &contract_id);
+        let ben_id = String::from_str(&env, "b_reactivate_ngo");
+        
+        client.register_beneficiary(
+            &ngo,
+            &ben_id,
+            &String::from_str(&env, "Frank"),
+            &String::from_str(&env, "d1"),
+            &String::from_str(&env, "camp_f"),
+            &Address::generate(&env),
+            &1,
+            &Vec::new(&env),
+            &make_factors(&env),
+        );
+        
+        client.deactivate_beneficiary(&admin, &ben_id);
+        client.reactivate_beneficiary(&ngo, &ben_id, &String::from_str(&env, "NGO trying to reactivate"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Beneficiary already active")]
+    fn test_cannot_reactivate_already_active_beneficiary() {
+        let (env, admin, ngo) = setup();
+        let contract_id = env.register_contract(None, BeneficiaryManager);
+        let client = crate::BeneficiaryManagerClient::new(&env, &contract_id);
+        let ben_id = String::from_str(&env, "b_already_active");
+        
+        client.register_beneficiary(
+            &ngo,
+            &ben_id,
+            &String::from_str(&env, "Grace"),
+            &String::from_str(&env, "d1"),
+            &String::from_str(&env, "camp_g"),
+            &Address::generate(&env),
+            &2,
+            &Vec::new(&env),
+            &make_factors(&env),
+        );
+        
+        // Try to reactivate without deactivating first
+        client.reactivate_beneficiary(&admin, &ben_id, &String::from_str(&env, "Invalid reactivation"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Beneficiary not found")]
+    fn test_cannot_reactivate_unknown_beneficiary() {
+        let (env, admin, _) = setup();
+        let contract_id = env.register_contract(None, BeneficiaryManager);
+        let client = crate::BeneficiaryManagerClient::new(&env, &contract_id);
+        
+        client.reactivate_beneficiary(&admin, &String::from_str(&env, "unknown_ben"), &String::from_str(&env, "attempt"));
+    }
+
+    #[test]
+    fn test_identity_synced_on_reactivation() {
+        let (env, admin, ngo) = setup();
+        let contract_id = env.register_contract(None, BeneficiaryManager);
+        let client = crate::BeneficiaryManagerClient::new(&env, &contract_id);
+        let ben_id = String::from_str(&env, "b_identity_sync");
+        
+        // Register beneficiary (creates both profile and identity)
+        client.register_beneficiary(
+            &ngo,
+            &ben_id,
+            &String::from_str(&env, "Henry"),
+            &String::from_str(&env, "d1"),
+            &String::from_str(&env, "camp_h"),
+            &Address::generate(&env),
+            &2,
+            &Vec::new(&env),
+            &make_factors(&env),
+        );
+        
+        // Deactivate (should sync to identity)
+        client.deactivate_beneficiary(&admin, &ben_id);
+        let inactive = client.get_beneficiary(&ben_id).unwrap();
+        assert!(!inactive.is_active);
+        
+        // Reactivate (should sync to identity)
+        client.reactivate_beneficiary(&admin, &ben_id, &String::from_str(&env, "Re-eligible"));
+        let reactivated = client.get_beneficiary(&ben_id).unwrap();
+        assert!(reactivated.is_active);
+    }
+
+    #[test]
     fn test_owner_can_update_location() {
         let (env, _, ngo) = setup();
         let wallet = Address::generate(&env);
