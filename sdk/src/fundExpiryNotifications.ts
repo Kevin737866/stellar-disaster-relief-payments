@@ -5,6 +5,7 @@ import {
   TransactionBuilder,
   Operation,
   Keypair,
+  StrKey,
   BASE_FEE,
 } from 'stellar-sdk';
 
@@ -29,6 +30,189 @@ export interface ExpiryNotificationConfig {
   smsTemplate?: string;
 }
 
+/** Smallest accepted value for `notificationThresholdDays` (1 day before expiry). */
+export const MIN_NOTIFICATION_THRESHOLD_DAYS = 1;
+
+/** Largest accepted value for `notificationThresholdDays` (365 days before expiry). */
+export const MAX_NOTIFICATION_THRESHOLD_DAYS = 365;
+
+/** Maximum accepted length of an email or SMS template. */
+export const MAX_NOTIFICATION_TEMPLATE_LENGTH = 10000;
+
+export type NotificationConfigErrorCode =
+  | 'INVALID_ADMIN_ADDRESS'
+  | 'INVALID_CONFIG'
+  | 'UNAUTHORIZED'
+  | 'PERSISTENCE_FAILED';
+
+/**
+ * Error raised by notification-configuration operations.
+ *
+ * `code` tells callers why the update failed without parsing the message:
+ * - `INVALID_ADMIN_ADDRESS`: `adminAddress` is not a Stellar public key.
+ * - `INVALID_CONFIG`: the supplied threshold/template/channel settings are invalid.
+ * - `UNAUTHORIZED`: the persistence provider rejected the writer.
+ * - `PERSISTENCE_FAILED`: the provider failed for a non-authorization reason.
+ */
+export class NotificationConfigError extends Error {
+  readonly code: NotificationConfigErrorCode;
+
+  constructor(code: NotificationConfigErrorCode, message: string) {
+    super(message);
+    this.name = 'NotificationConfigError';
+    this.code = code;
+  }
+}
+
+/**
+ * A persisted notification configuration snapshot.
+ *
+ * `requestedBy` records which admin address requested the change. It is a
+ * caller-supplied attribution, not proof of on-chain authorization.
+ */
+export interface NotificationConfigRecord {
+  contractId: string;
+  config: ExpiryNotificationConfig;
+  updatedAt: number; // unix seconds
+  requestedBy: string;
+}
+
+/**
+ * Persistence boundary for notification configuration.
+ *
+ * A store is responsible for durability and for authorizing writes. When no
+ * store is supplied the client only keeps configuration in memory, and every
+ * update result reports `persistence: 'local'`.
+ */
+export interface NotificationConfigStore {
+  /** Persist a configuration snapshot. Throwing rejects the update. */
+  save(record: NotificationConfigRecord): Promise<void>;
+  /** Load the stored snapshot for a contract, or `null` when none exists. */
+  load(contractId: string): Promise<NotificationConfigRecord | null>;
+}
+
+export interface FundExpiryNotificationsClientOptions {
+  /**
+   * Optional durable configuration provider. Without it, configuration
+   * updates are in-memory only and are lost when the client is recreated.
+   */
+  configStore?: NotificationConfigStore;
+}
+
+export interface NotificationConfigUpdateResult {
+  success: boolean;
+  updatedAt: number;
+  /**
+   * `persistent` when the update was accepted by a configured store,
+   * `local` when it only changed this client instance's memory.
+   */
+  persistence: 'persistent' | 'local';
+  /**
+   * Always `unverified`: this method does not check on-chain admin rights.
+   * A configured store may enforce its own authorization and reject with
+   * `UNAUTHORIZED`.
+   */
+  authorization: 'unverified';
+  /** The configuration now in effect for this client. */
+  config: ExpiryNotificationConfig;
+}
+
+export interface NotificationConfigLoadResult {
+  /** `true` when a stored snapshot was applied to this client. */
+  loaded: boolean;
+  persistence: 'persistent' | 'local';
+  config: ExpiryNotificationConfig;
+  updatedAt?: number;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validates notification threshold and channel settings.
+ * Throws {@link NotificationConfigError} with code `INVALID_CONFIG`.
+ */
+export function validateExpiryNotificationConfig(
+  config: ExpiryNotificationConfig
+): void {
+  if (!isPlainObject(config)) {
+    throw new NotificationConfigError(
+      'INVALID_CONFIG',
+      'Notification configuration must be an object'
+    );
+  }
+
+  const allowedKeys = [
+    'notificationThresholdDays',
+    'enableAutoNotifications',
+    'emailTemplate',
+    'smsTemplate',
+  ];
+  const unknownKeys = Object.keys(config).filter(
+    (key) => !allowedKeys.includes(key)
+  );
+  if (unknownKeys.length > 0) {
+    throw new NotificationConfigError(
+      'INVALID_CONFIG',
+      `Unknown notification configuration field(s): ${unknownKeys.join(', ')}`
+    );
+  }
+
+  const threshold = config.notificationThresholdDays;
+  if (typeof threshold !== 'number' || !Number.isInteger(threshold)) {
+    throw new NotificationConfigError(
+      'INVALID_CONFIG',
+      'notificationThresholdDays must be an integer number of days'
+    );
+  }
+  if (
+    threshold < MIN_NOTIFICATION_THRESHOLD_DAYS ||
+    threshold > MAX_NOTIFICATION_THRESHOLD_DAYS
+  ) {
+    throw new NotificationConfigError(
+      'INVALID_CONFIG',
+      `notificationThresholdDays must be between ${MIN_NOTIFICATION_THRESHOLD_DAYS} and ${MAX_NOTIFICATION_THRESHOLD_DAYS} days (received ${threshold})`
+    );
+  }
+
+  if (typeof config.enableAutoNotifications !== 'boolean') {
+    throw new NotificationConfigError(
+      'INVALID_CONFIG',
+      'enableAutoNotifications must be a boolean'
+    );
+  }
+
+  for (const key of ['emailTemplate', 'smsTemplate'] as const) {
+    const template = config[key];
+    if (template === undefined) {
+      continue;
+    }
+    if (typeof template !== 'string' || template.trim() === '') {
+      throw new NotificationConfigError(
+        'INVALID_CONFIG',
+        `${key} must be a non-empty string when provided`
+      );
+    }
+    if (template.length > MAX_NOTIFICATION_TEMPLATE_LENGTH) {
+      throw new NotificationConfigError(
+        'INVALID_CONFIG',
+        `${key} must be at most ${MAX_NOTIFICATION_TEMPLATE_LENGTH} characters`
+      );
+    }
+  }
+}
+
+/** True when a provider error represents an authorization rejection. */
+function isProviderAuthorizationError(error: any): boolean {
+  return (
+    error?.code === 'UNAUTHORIZED' ||
+    error?.name === 'UnauthorizedError' ||
+    error?.status === 401 ||
+    error?.status === 403
+  );
+}
+
 export interface NotificationLog {
   id: string;
   fundId: string;
@@ -50,6 +234,7 @@ export class FundExpiryNotificationsClient {
   private server: any;
   private networkPassphrase: string;
   private notificationConfig: ExpiryNotificationConfig;
+  private configStore?: NotificationConfigStore;
 
   constructor(
     contractId: string,
@@ -59,13 +244,80 @@ export class FundExpiryNotificationsClient {
       notificationThresholdDays: 7, // Notify 7 days before expiry
       enableAutoNotifications: true,
     },
-    networkPassphrase: string = Networks.TESTNET
+    networkPassphrase: string = Networks.TESTNET,
+    options: FundExpiryNotificationsClientOptions = {}
   ) {
+    validateExpiryNotificationConfig(notificationConfig);
+
     this.contractId = contractId;
     this.signingKey = signingKey;
     this.server = server;
     this.networkPassphrase = networkPassphrase;
-    this.notificationConfig = notificationConfig;
+    this.notificationConfig = { ...notificationConfig };
+    this.configStore = options.configStore;
+  }
+
+  /**
+   * Returns the configuration currently in effect for this client.
+   */
+  getNotificationConfig(): ExpiryNotificationConfig {
+    return { ...this.notificationConfig };
+  }
+
+  /**
+   * Loads configuration from the configured store and applies it.
+   *
+   * Clients are constructed synchronously, so persistence is restored with
+   * this explicit async call. Use it after construction when a store was
+   * supplied:
+   *
+   * ```ts
+   * const client = new FundExpiryNotificationsClient(..., {
+   *   configStore: myStore,
+   * });
+   * await client.loadNotificationConfig();
+   * ```
+   *
+   * Without a store this is a no-op reporting `persistence: 'local'`.
+   * A stale or malformed stored snapshot is rejected with `INVALID_CONFIG`
+   * instead of silently corrupting in-memory state.
+   */
+  async loadNotificationConfig(): Promise<NotificationConfigLoadResult> {
+    if (!this.configStore) {
+      return {
+        loaded: false,
+        persistence: 'local',
+        config: this.getNotificationConfig(),
+      };
+    }
+
+    let record: NotificationConfigRecord | null;
+    try {
+      record = await this.configStore.load(this.contractId);
+    } catch (error: any) {
+      throw new NotificationConfigError(
+        'PERSISTENCE_FAILED',
+        `Failed to load notification config: ${error?.message ?? error}`
+      );
+    }
+
+    if (!record) {
+      return {
+        loaded: false,
+        persistence: 'persistent',
+        config: this.getNotificationConfig(),
+      };
+    }
+
+    validateExpiryNotificationConfig(record.config);
+    this.notificationConfig = { ...record.config };
+
+    return {
+      loaded: true,
+      persistence: 'persistent',
+      config: this.getNotificationConfig(),
+      updatedAt: record.updatedAt,
+    };
   }
 
   /**
@@ -307,21 +559,86 @@ export class FundExpiryNotificationsClient {
   }
 
   /**
-   * Updates notification configuration
+   * Updates notification configuration.
+   *
+   * Scope and authorization:
+   * - `adminAddress` is only format-validated (Stellar public key) and recorded
+   *   as `requestedBy`; this method performs **no** on-chain admin check.
+   * - With a `configStore`, the merged configuration is saved through it and
+   *   the result reports `persistence: 'persistent'`. The store owns
+   *   authorization; a rejected write leaves in-memory configuration unchanged.
+   * - Without a store, only in-memory configuration changes, the result reports
+   *   `persistence: 'local'` and the update does **not** survive client
+   *   reconstruction.
+   *
+   * @throws NotificationConfigError `INVALID_ADMIN_ADDRESS`, `INVALID_CONFIG`,
+   * `UNAUTHORIZED` or `PERSISTENCE_FAILED`.
    */
   async updateNotificationConfig(
     adminAddress: string,
-    newConfig: ExpiryNotificationConfig
-  ): Promise<{ success: boolean; updatedAt: number }> {
-    try {
-      this.notificationConfig = { ...this.notificationConfig, ...newConfig };
+    newConfig: Partial<ExpiryNotificationConfig>
+  ): Promise<NotificationConfigUpdateResult> {
+    if (typeof adminAddress !== 'string' || !StrKey.isValidEd25519PublicKey(adminAddress)) {
+      throw new NotificationConfigError(
+        'INVALID_ADMIN_ADDRESS',
+        'adminAddress must be a valid Stellar public key'
+      );
+    }
+
+    if (!isPlainObject(newConfig)) {
+      throw new NotificationConfigError(
+        'INVALID_CONFIG',
+        'Notification configuration must be an object'
+      );
+    }
+
+    const merged: ExpiryNotificationConfig = {
+      ...this.notificationConfig,
+      ...newConfig,
+    };
+    validateExpiryNotificationConfig(merged);
+
+    const updatedAt = Math.floor(Date.now() / 1000);
+
+    if (this.configStore) {
+      try {
+        await this.configStore.save({
+          contractId: this.contractId,
+          config: { ...merged },
+          updatedAt,
+          requestedBy: adminAddress,
+        });
+      } catch (error: any) {
+        if (isProviderAuthorizationError(error)) {
+          throw new NotificationConfigError(
+            'UNAUTHORIZED',
+            `Notification config store rejected ${adminAddress}: ${error?.message ?? error}`
+          );
+        }
+        throw new NotificationConfigError(
+          'PERSISTENCE_FAILED',
+          `Failed to persist notification config: ${error?.message ?? error}`
+        );
+      }
+
+      this.notificationConfig = merged;
       return {
         success: true,
-        updatedAt: Math.floor(Date.now() / 1000),
+        updatedAt,
+        persistence: 'persistent',
+        authorization: 'unverified',
+        config: this.getNotificationConfig(),
       };
-    } catch (error: any) {
-      throw new Error(`Failed to update notification config: ${error.message}`);
     }
+
+    this.notificationConfig = merged;
+    return {
+      success: true,
+      updatedAt,
+      persistence: 'local',
+      authorization: 'unverified',
+      config: this.getNotificationConfig(),
+    };
   }
 
   /**
