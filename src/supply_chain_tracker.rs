@@ -229,7 +229,11 @@ impl SupplyChainTracker {
         };
 
         shipment.checkpoints.push_back(checkpoint);
-        if shipment.checkpoints.len() > 2 {
+        if shipment.checkpoints.len() > 2
+            && shipment.current_status != String::from_str(&env, "partially_delivered")
+            && shipment.current_status != String::from_str(&env, "delivered")
+            && shipment.current_status != String::from_str(&env, "lost")
+        {
             shipment.current_status = String::from_str(&env, "at_checkpoint");
         }
 
@@ -272,9 +276,9 @@ impl SupplyChainTracker {
         }
     }
 
-    /// Confirm final delivery.
+    /// Confirm a delivery event, which may be partial or complete.
     ///
-    /// Any authenticated address may confirm delivery (the recipient signs).
+    /// The authenticated caller must hold the recipient role.
     pub fn confirm_delivery(
         env: Env,
         recipient: Address,
@@ -301,15 +305,49 @@ impl SupplyChainTracker {
             None => panic!("Shipment not found"),
         };
 
+        if shipment.current_status == String::from_str(&env, "delivered")
+            || shipment.current_status == String::from_str(&env, "lost")
+        {
+            panic!("Shipment is already complete");
+        }
+
+        let delivery_history_key = Symbol::new(&env, "delivery_events");
+        let mut delivery_history: Map<String, Vec<RecipientConfirmation>> = env
+            .storage()
+            .instance()
+            .get(&delivery_history_key)
+            .unwrap_or(Map::new(&env));
+        let mut confirmations = delivery_history
+            .get(shipment_id.clone())
+            .unwrap_or(Vec::new(&env));
+        let mut total_received = U256::from_u64(0);
+        for previous_confirmation in confirmations.iter() {
+            total_received += previous_confirmation.received_quantity;
+        }
+
+        if received_quantity == U256::from_u64(0) {
+            panic!("Received quantity must be greater than zero");
+        }
+        let outstanding_quantity = shipment.quantity - total_received;
+        if received_quantity > outstanding_quantity {
+            panic!("Received quantity exceeds outstanding shipment quantity");
+        }
+
         let confirmation = RecipientConfirmation {
             shipment_id: shipment_id.clone(),
             recipient_id,
-            received_quantity,
+            received_quantity: received_quantity.clone(),
             received_at: env.ledger().timestamp(),
             condition_report,
             confirmed_by: recipient,
             photos,
         };
+
+        confirmations.push_back(confirmation.clone());
+        delivery_history.set(shipment_id.clone(), confirmations);
+        env.storage()
+            .instance()
+            .set(&delivery_history_key, &delivery_history);
 
         let confirmations_key = Symbol::new(&env, "confirmations");
         let mut confirmations: Map<String, RecipientConfirmation> = env
@@ -320,7 +358,12 @@ impl SupplyChainTracker {
         confirmations.set(shipment_id.clone(), confirmation);
         env.storage().instance().set(&confirmations_key, &confirmations);
 
-        shipment.current_status = String::from_str(&env, "delivered");
+        total_received += received_quantity;
+        shipment.current_status = if total_received == shipment.quantity {
+            String::from_str(&env, "delivered")
+        } else {
+            String::from_str(&env, "partially_delivered")
+        };
         shipments.set(shipment_id, shipment);
         env.storage().instance().set(&shipments_key, &shipments);
     }
@@ -389,6 +432,19 @@ impl SupplyChainTracker {
             shipments.get(shipment_id.clone()),
             confirmations.get(shipment_id),
         )
+    }
+
+    /// Return all accepted delivery confirmations for a shipment, in receipt order.
+    pub fn get_delivery_confirmations(env: Env, shipment_id: String) -> Vec<RecipientConfirmation> {
+        let delivery_history_key = Symbol::new(&env, "delivery_events");
+        let delivery_history: Map<String, Vec<RecipientConfirmation>> = env
+            .storage()
+            .instance()
+            .get(&delivery_history_key)
+            .unwrap_or(Map::new(&env));
+        delivery_history
+            .get(shipment_id)
+            .unwrap_or(Vec::new(&env))
     }
 
     pub fn get_active_shipments(env: Env) -> Vec<SupplyShipment> {
