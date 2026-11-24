@@ -432,7 +432,10 @@ impl SupplyChainTracker {
         radius_km: f64,
     ) -> Vec<SupplyShipment> {
         let center = GeoPoint::new(latitude, longitude).unwrap();
-        let bounds = GeoBounds::from_radius(&center, radius_km);
+        let bounds = match GeoBounds::from_radius(&center, radius_km) {
+            Ok(bounds) => bounds,
+            Err(_) => return Vec::new(&env),
+        };
         
         let shipments_key = Symbol::new(&env, "shipments");
         let shipments: Map<String, SupplyShipment> = env

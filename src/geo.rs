@@ -23,6 +23,21 @@ pub const MIN_LONGITUDE: f64 = -180.0;
 /// Earth's radius in kilometers (WGS84 mean radius)
 pub const EARTH_RADIUS_KM: f64 = 6371.0;
 
+/// Shared radius policy for all geographic helpers.
+///
+/// A radius in kilometers must be finite and non-negative. Zero is valid and
+/// means an exact-point query: `is_within_radius` matches only points at zero
+/// distance, while `bounding_box` collapses to the center coordinate.
+fn validate_radius_km(radius_km: f64) -> Result<f64, String> {
+    if !radius_km.is_finite() || radius_km < 0.0 {
+        return Err(String::from_str(
+            &Env::default(),
+            "Radius must be finite and non-negative",
+        ));
+    }
+    Ok(radius_km)
+}
+
 /// Standardized geographic point using f64 degrees
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeoPoint {
@@ -90,24 +105,32 @@ impl GeoPoint {
         r * c
     }
 
-    /// Check if point is within radius (km) of another point
-    pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> bool {
-        self.distance_to(center) <= radius_km
+    /// Check if point is within radius (km) of another point.
+    ///
+    /// A zero radius matches only points at zero distance. Negative and
+    /// non-finite radii return a validation error.
+    pub fn is_within_radius(&self, center: &GeoPoint, radius_km: f64) -> Result<bool, String> {
+        let radius_km = validate_radius_km(radius_km)?;
+        Ok(self.distance_to(center) <= radius_km)
     }
 
-    /// Calculate bounding box for a radius (returns min_lat, max_lat, min_lng, max_lng)
-    pub fn bounding_box(&self, radius_km: f64) -> (f64, f64, f64, f64) {
+    /// Calculate bounding box for a radius (returns min_lat, max_lat, min_lng, max_lng).
+    ///
+    /// A zero radius produces a degenerate box at this point. Negative and
+    /// non-finite radii return a validation error.
+    pub fn bounding_box(&self, radius_km: f64) -> Result<(f64, f64, f64, f64), String> {
+        let radius_km = validate_radius_km(radius_km)?;
         // 1 degree latitude ~= 111 km
         let lat_delta = radius_km / 111.0;
         // 1 degree longitude ~= 111 km * cos(lat)
         let lng_delta = radius_km / (111.0 * self.latitude.to_radians().cos().max(0.1));
         
-        (
+        Ok((
             (self.latitude - lat_delta).max(MIN_LATITUDE),
             (self.latitude + lat_delta).min(MAX_LATITUDE),
             (self.longitude - lng_delta).max(MIN_LONGITUDE),
             (self.longitude + lng_delta).min(MAX_LONGITUDE),
-        )
+        ))
     }
 }
 
@@ -125,10 +148,13 @@ impl GeoBounds {
         GeoBounds { min_lat, max_lat, min_lng, max_lng }
     }
 
-    /// Create bounds from center point and radius
-    pub fn from_radius(center: &GeoPoint, radius_km: f64) -> Self {
-        let (min_lat, max_lat, min_lng, max_lng) = center.bounding_box(radius_km);
-        GeoBounds::new(min_lat, max_lat, min_lng, max_lng)
+    /// Create bounds from center point and radius.
+    ///
+    /// A zero radius produces bounds containing only the center point.
+    /// Negative and non-finite radii return a validation error.
+    pub fn from_radius(center: &GeoPoint, radius_km: f64) -> Result<Self, String> {
+        let (min_lat, max_lat, min_lng, max_lng) = center.bounding_box(radius_km)?;
+        Ok(GeoBounds::new(min_lat, max_lat, min_lng, max_lng))
     }
 
     /// Check if a point is within bounds
@@ -275,7 +301,7 @@ mod tests {
     #[test]
     fn test_bounding_box() {
         let center = GeoPoint::new(18.5944, -72.3074).unwrap();
-        let bounds = GeoBounds::from_radius(&center, 10.0); // 10km radius
+        let bounds = GeoBounds::from_radius(&center, 10.0).unwrap(); // 10km radius
         assert!(bounds.contains(&center));
         
         let nearby = GeoPoint::new(18.6, -72.3).unwrap();
@@ -283,6 +309,54 @@ mod tests {
         
         let far = GeoPoint::new(19.0, -72.0).unwrap();
         assert!(!bounds.contains(&far));
+    }
+
+    #[test]
+    fn test_is_within_radius_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let nearby = GeoPoint::new(18.6, -72.3).unwrap();
+
+        assert!(center.is_within_radius(&center, 0.0).unwrap());
+        assert!(!nearby.is_within_radius(&center, 0.0).unwrap());
+        assert!(nearby.is_within_radius(&center, 10.0).unwrap());
+        assert!(nearby.is_within_radius(&center, -1.0).is_err());
+        assert!(nearby.is_within_radius(&center, f64::NAN).is_err());
+        assert!(nearby.is_within_radius(&center, f64::INFINITY).is_err());
+        assert!(nearby.is_within_radius(&center, f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_bounding_box_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+
+        let zero = center.bounding_box(0.0).unwrap();
+        assert_eq!(
+            zero,
+            (center.latitude, center.latitude, center.longitude, center.longitude)
+        );
+        let positive = center.bounding_box(10.0).unwrap();
+        assert!(positive.0 < center.latitude && positive.1 > center.latitude);
+        assert!(positive.2 < center.longitude && positive.3 > center.longitude);
+        assert!(center.bounding_box(-1.0).is_err());
+        assert!(center.bounding_box(f64::NAN).is_err());
+        assert!(center.bounding_box(f64::INFINITY).is_err());
+        assert!(center.bounding_box(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn test_from_radius_validation() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let nearby = GeoPoint::new(18.6, -72.3).unwrap();
+
+        let zero = GeoBounds::from_radius(&center, 0.0).unwrap();
+        assert!(zero.contains(&center));
+        assert!(!zero.contains(&nearby));
+        let positive = GeoBounds::from_radius(&center, 10.0).unwrap();
+        assert!(positive.contains(&nearby));
+        assert!(GeoBounds::from_radius(&center, -1.0).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::NAN).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::INFINITY).is_err());
+        assert!(GeoBounds::from_radius(&center, f64::NEG_INFINITY).is_err());
     }
 
     #[test]
