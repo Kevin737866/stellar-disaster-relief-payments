@@ -435,7 +435,9 @@ async function trackCaribbeanImpact() {
       CARIBBEAN_FUND_ID,
       donorAddress,
       'Caribbean Development Foundation',
-      'foundation@caribbean-dev.org'
+      'foundation@caribbean-dev.org',
+      // Replace with the donor's actual jurisdiction before issuing a receipt.
+      { jurisdiction: 'US', deductiblePercentage: 100 }
     );
 
     console.log('TAX RECEIPT\n');
