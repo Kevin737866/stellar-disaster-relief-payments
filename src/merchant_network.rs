@@ -935,7 +935,10 @@ impl MerchantNetwork {
         radius_km: f64,
     ) -> Vec<Merchant> {
         let center = GeoPoint::new(latitude, longitude).unwrap();
-        let bounds = GeoBounds::from_radius(&center, radius_km);
+        let _bounds = match GeoBounds::from_radius(&center, radius_km) {
+            Ok(bounds) => bounds,
+            Err(_) => return Vec::new(&env),
+        };
         
         let merchants_key = Symbol::new(&env, "merchants");
         let merchants: Map<String, Merchant> = env.storage().instance()
