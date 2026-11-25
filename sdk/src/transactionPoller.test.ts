@@ -73,6 +73,14 @@ function makePoller(responses: Array<SorobanRpc.Api.GetTransactionResponse | Err
   return poller;
 }
 
+// Let already-resolved request promises and their await continuations settle
+// without advancing fake timers (which could skip past a polling wait).
+async function flushMicrotasks() {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
 describe('TransactionPoller', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
@@ -163,5 +171,102 @@ describe('TransactionPoller', () => {
     await jest.runAllTimersAsync();
     const result = await promise;
     expect(result.status).toBe('TIMEOUT');
+  });
+
+  it('returns CANCELLED without a request when the signal is already aborted', async () => {
+    const poller = makePoller([SUCCESS_RESPONSE]);
+    const controller = new AbortController();
+    controller.abort();
+
+    const promise = poller.pollTransaction(HASH, {
+      intervalMs: 100,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+    await jest.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result.status).toBe('CANCELLED');
+    expect((poller as any).server.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns CANCELLED promptly when aborted during a polling wait', async () => {
+    const poller = makePoller([NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
+    const controller = new AbortController();
+
+    const promise = poller.pollTransaction(HASH, {
+      intervalMs: 1000,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+
+    await flushMicrotasks();
+    // The first NOT_FOUND response has been received and the poll is now
+    // waiting for the next interval. Aborting must skip that wait entirely.
+    controller.abort();
+    const result = await promise;
+
+    expect(result.status).toBe('CANCELLED');
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns CANCELLED promptly when aborted during an in-flight request', async () => {
+    const poller = new TransactionPoller(TEST_CONFIG);
+    let resolveRequest!: (response: SorobanRpc.Api.GetTransactionResponse) => void;
+    const request = new Promise<SorobanRpc.Api.GetTransactionResponse>((resolve) => {
+      resolveRequest = resolve;
+    });
+    const getTransaction = jest.fn(() => request);
+    (poller as any).server = { getTransaction };
+
+    const controller = new AbortController();
+    const promise = poller.pollTransaction(HASH, {
+      intervalMs: 100,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+
+    await flushMicrotasks();
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    const result = await promise;
+    expect(result.status).toBe('CANCELLED');
+
+    // A late response must not revive the poll or be treated as an error.
+    resolveRequest(SUCCESS_RESPONSE);
+    await flushMicrotasks();
+    expect(result.status).toBe('CANCELLED');
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('supports cancelling an active poll by hash', async () => {
+    const poller = makePoller([NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
+    const promise = poller.pollTransaction(HASH, { intervalMs: 1000, timeoutMs: 5000 });
+
+    await flushMicrotasks();
+    expect(poller.cancelPoll(HASH)).toBe(true);
+    const result = await promise;
+
+    expect(result.status).toBe('CANCELLED');
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
+    expect(poller.cancelPoll(HASH)).toBe(false);
+  });
+
+  it('propagates cancellation through pollTransactionStatus', async () => {
+    const poller = makePoller([NOT_FOUND_RESPONSE, SUCCESS_RESPONSE]);
+    const controller = new AbortController();
+    const promise = poller.pollTransactionStatus(HASH, {
+      intervalMs: 1000,
+      timeoutMs: 5000,
+      signal: controller.signal,
+    });
+
+    await flushMicrotasks();
+    controller.abort();
+    const result = await promise;
+
+    expect(result.status).toBe('CANCELLED');
+    expect((poller as any).server.getTransaction).toHaveBeenCalledTimes(1);
   });
 });
