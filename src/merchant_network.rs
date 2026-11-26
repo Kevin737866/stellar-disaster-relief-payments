@@ -927,7 +927,10 @@ impl MerchantNetwork {
         merchants.get(merchant_id)
     }
     
-    /// Find merchants by location (geographic search) - optimized with spatial grid index
+    /// Find merchants by location (geographic search) - optimized with spatial grid index.
+    ///
+    /// Radius bounds that cross the antimeridian search grid cells on both
+    /// longitude edges, so merchants near +180 and -180 are both considered.
     pub fn find_merchants_by_location(
         env: Env,
         latitude: f64,
@@ -944,39 +947,54 @@ impl MerchantNetwork {
         
         let index = Self::get_merchant_index(&env);
         
-        // Calculate grid range to search
-        // 1 degree lat ~= 111km, 1 degree lon ~= 111km * cos(lat)
-        let lat_delta = radius_km / 111.0;
-        let lon_delta = radius_km / (111.0 * latitude.cos().max(0.1));
-        
-        let grid_lat_start = ((latitude - lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
-        let grid_lat_end = ((latitude + lat_delta) / LOCATION_GRID_SIZE).floor() as i64;
-        let grid_lon_start = ((longitude - lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
-        let grid_lon_end = ((longitude + lon_delta) / LOCATION_GRID_SIZE).floor() as i64;
+        // Search both longitude edge ranges when the bounding box wraps.
+        let grid_lat_start = (bounds.min_lat / LOCATION_GRID_SIZE).floor() as i64;
+        let grid_lat_end = (bounds.max_lat / LOCATION_GRID_SIZE).floor() as i64;
+        let first_lon_start = (bounds.min_lng / LOCATION_GRID_SIZE).floor() as i64;
+        let first_lon_end = if bounds.min_lng > bounds.max_lng {
+            (180.0 / LOCATION_GRID_SIZE).floor() as i64
+        } else {
+            (bounds.max_lng / LOCATION_GRID_SIZE).floor() as i64
+        };
+        let second_lon_range = if bounds.min_lng > bounds.max_lng {
+            Some((
+                (-180.0 / LOCATION_GRID_SIZE).floor() as i64,
+                (bounds.max_lng / LOCATION_GRID_SIZE).floor() as i64,
+            ))
+        } else {
+            None
+        };
         
         let mut nearby_merchants = Vec::new(&env);
         let mut count = 0u32;
         
         // Iterate over grid cells in range
         for grid_lat in grid_lat_start..=grid_lat_end {
-            for grid_lon in grid_lon_start..=grid_lon_end {
-                let grid_key = String::from_str(&env, &format!("grid_{}_{}", grid_lat, grid_lon));
-                
-                if let Some(grid_merchant_ids) = index.by_location_grid.get(grid_key) {
-                    for merchant_id in grid_merchant_ids.iter() {
-                        if count >= MAX_MERCHANT_RESULTS {
-                            break;
-                        }
-                        if let Some(merchant) = merchants.get(merchant_id) {
-                            if merchant.is_active {
-                                let distance = Self::calculate_distance(
-                                    latitude, longitude,
-                                    merchant.location.latitude, merchant.location.longitude
-                                );
-                                
-                                if distance <= radius_km {
-                                    nearby_merchants.push_back(merchant);
-                                    count += 1;
+            for longitude_range in [
+                Some((first_lon_start, first_lon_end)),
+                second_lon_range,
+            ].iter() {
+                if let Some((grid_lon_start, grid_lon_end)) = longitude_range {
+                    for grid_lon in *grid_lon_start..=*grid_lon_end {
+                        let grid_key = String::from_str(&env, &format!("grid_{}_{}", grid_lat, grid_lon));
+
+                        if let Some(grid_merchant_ids) = index.by_location_grid.get(grid_key) {
+                            for merchant_id in grid_merchant_ids.iter() {
+                                if count >= MAX_MERCHANT_RESULTS {
+                                    break;
+                                }
+                                if let Some(merchant) = merchants.get(merchant_id) {
+                                    if merchant.is_active && bounds.contains(&merchant.location) {
+                                        let distance = Self::calculate_distance(
+                                            latitude, longitude,
+                                            merchant.location.latitude, merchant.location.longitude
+                                        );
+
+                                        if distance <= radius_km {
+                                            nearby_merchants.push_back(merchant);
+                                            count += 1;
+                                        }
+                                    }
                                 }
                             }
                         }

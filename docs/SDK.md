@@ -783,6 +783,12 @@ async getMerchant(merchantId: string): Promise<Merchant | null>
 
 Geographic search for nearby merchants.
 
+Radius searches use WGS84 longitude bounds that wrap across the antimeridian:
+when the lower longitude bound is greater than the upper bound, the search
+includes longitudes on either side (for example, `179.9` and `-179.9`).
+Contract callers using `GeoBounds` follow the same convention; ordinary
+non-wrapping bounds retain the usual `minLng <= maxLng` ordering.
+
 ```typescript
 async findMerchantsByLocation(
   latitude: number,
@@ -1276,6 +1282,9 @@ async getShipmentHistory(shipmentId: string): Promise<{
 ### `trackByLocation()`
 
 Find shipments currently within a geographic radius.
+
+As with merchant radius searches, bounds crossing the antimeridian include
+nearby locations on both the positive and negative longitude edges.
 
 ```typescript
 async trackByLocation(

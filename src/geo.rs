@@ -5,6 +5,8 @@ use soroban_sdk::{Env, String, Vec, f64};
 /// Internal representation: f64 degrees (WGS84)
 /// - Latitude: [-90, 90]
 /// - Longitude: [-180, 180]
+/// - A wrapped longitude bound uses min_lng > max_lng and covers both sides
+///   of the antimeridian.
 /// 
 /// Storage formats:
 /// - Contract storage: GeoPoint (f64 lat, f64 lng)
@@ -95,32 +97,60 @@ impl GeoPoint {
         self.distance_to(center) <= radius_km
     }
 
-    /// Calculate bounding box for a radius (returns min_lat, max_lat, min_lng, max_lng)
+    /// Calculate bounds for a radius as (min_lat, max_lat, min_lng, max_lng).
+    ///
+    /// A wrapped longitude interval is represented by min_lng > max_lng. For
+    /// example, (170, -170) covers the 20 degrees on either side of the
+    /// antimeridian. A longitude delta of 180 degrees or more covers all
+    /// longitudes and is represented as (-180, 180).
     pub fn bounding_box(&self, radius_km: f64) -> (f64, f64, f64, f64) {
         // 1 degree latitude ~= 111 km
         let lat_delta = radius_km / 111.0;
         // 1 degree longitude ~= 111 km * cos(lat)
         let lng_delta = radius_km / (111.0 * self.latitude.to_radians().cos().max(0.1));
-        
+
+        let min_lng = self.longitude - lng_delta;
+        let max_lng = self.longitude + lng_delta;
+        let (min_lng, max_lng) = if lng_delta >= 180.0 {
+            (MIN_LONGITUDE, MAX_LONGITUDE)
+        } else if min_lng <= MIN_LONGITUDE {
+            (min_lng + 360.0, max_lng)
+        } else if max_lng >= MAX_LONGITUDE {
+            (min_lng, max_lng - 360.0)
+        } else {
+            (min_lng, max_lng)
+        };
+
         (
             (self.latitude - lat_delta).max(MIN_LATITUDE),
             (self.latitude + lat_delta).min(MAX_LATITUDE),
-            (self.longitude - lng_delta).max(MIN_LONGITUDE),
-            (self.longitude + lng_delta).min(MAX_LONGITUDE),
+            min_lng,
+            max_lng,
         )
     }
 }
 
-/// Geographic bounding box for spatial queries
+/// Geographic bounding box for spatial queries.
+///
+/// Longitude bounds are inclusive. Ordinary intervals have `min_lng <= max_lng`;
+/// wrapped intervals have `min_lng > max_lng` and include longitudes greater
+/// than or equal to `min_lng` or less than or equal to `max_lng`. This lets
+/// callers represent a search crossing the antimeridian without splitting it.
 #[derive(Clone, Copy, Debug)]
 pub struct GeoBounds {
+    /// Inclusive southern latitude bound.
     pub min_lat: f64,
+    /// Inclusive northern latitude bound.
     pub max_lat: f64,
+    /// Inclusive western longitude bound, or the positive-side edge if wrapped.
     pub min_lng: f64,
+    /// Inclusive eastern longitude bound, or the negative-side edge if wrapped.
     pub max_lng: f64,
 }
 
 impl GeoBounds {
+    /// Construct bounds. Set `min_lng > max_lng` to represent an interval that
+    /// wraps across the antimeridian.
     pub fn new(min_lat: f64, max_lat: f64, min_lng: f64, max_lng: f64) -> Self {
         GeoBounds { min_lat, max_lat, min_lng, max_lng }
     }
@@ -133,14 +163,36 @@ impl GeoBounds {
 
     /// Check if a point is within bounds
     pub fn contains(&self, point: &GeoPoint) -> bool {
+        let longitude_in_bounds = if self.min_lng <= self.max_lng {
+            point.longitude >= self.min_lng && point.longitude <= self.max_lng
+        } else {
+            point.longitude >= self.min_lng || point.longitude <= self.max_lng
+        };
+
         point.latitude >= self.min_lat && point.latitude <= self.max_lat
-            && point.longitude >= self.min_lng && point.longitude <= self.max_lng
+            && longitude_in_bounds
     }
 
     /// Check if bounds intersect with another bounds
     pub fn intersects(&self, other: &GeoBounds) -> bool {
-        self.min_lat <= other.max_lat && self.max_lat >= other.min_lat
-            && self.min_lng <= other.max_lng && self.max_lng >= other.min_lng
+        let latitude_intersects =
+            self.min_lat <= other.max_lat && self.max_lat >= other.min_lat;
+        let self_wraps = self.min_lng > self.max_lng;
+        let other_wraps = other.min_lng > other.max_lng;
+        let longitude_intersects = match (self_wraps, other_wraps) {
+            (true, true) => true,
+            (true, false) => {
+                other.max_lng >= self.min_lng || other.min_lng <= self.max_lng
+            }
+            (false, true) => {
+                self.max_lng >= other.min_lng || self.min_lng <= other.max_lng
+            }
+            (false, false) => {
+                self.min_lng <= other.max_lng && self.max_lng >= other.min_lng
+            }
+        };
+
+        latitude_intersects && longitude_intersects
     }
 }
 
@@ -283,6 +335,32 @@ mod tests {
         
         let far = GeoPoint::new(19.0, -72.0).unwrap();
         assert!(!bounds.contains(&far));
+    }
+
+    #[test]
+    fn test_wrapped_bounds_across_antimeridian() {
+        let east_center = GeoPoint::new(0.0, 179.95).unwrap();
+        let east_bounds = GeoBounds::from_radius(&east_center, 20.0);
+        let west_nearby = GeoPoint::new(0.0, -179.95).unwrap();
+        assert!(east_bounds.min_lng > east_bounds.max_lng);
+        assert!(east_bounds.contains(&west_nearby));
+
+        let west_center = GeoPoint::new(0.0, -179.95).unwrap();
+        let west_bounds = GeoBounds::from_radius(&west_center, 20.0);
+        let east_nearby = GeoPoint::new(0.0, 179.95).unwrap();
+        assert!(west_bounds.min_lng > west_bounds.max_lng);
+        assert!(west_bounds.contains(&east_nearby));
+        assert!(east_bounds.intersects(&west_bounds));
+    }
+
+    #[test]
+    fn test_bounds_away_from_antimeridian_do_not_wrap() {
+        let center = GeoPoint::new(18.5944, -72.3074).unwrap();
+        let bounds = GeoBounds::from_radius(&center, 10.0);
+
+        assert!(bounds.min_lng <= bounds.max_lng);
+        assert!(bounds.contains(&center));
+        assert!(!bounds.contains(&GeoPoint::new(18.5944, 179.0).unwrap()));
     }
 
     #[test]
