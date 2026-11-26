@@ -1,4 +1,4 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol, String, Vec, Map, U256};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, String, Vec, Map, U256};
 
 use crate::rbac::{self, ROLE_NGO, ROLE_TRANSPORTER, ROLE_RECIPIENT};
 use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
@@ -6,6 +6,7 @@ use crate::geo::{GeoPoint, GeoBounds, GeoFormatter};
 #[contract]
 pub struct SupplyChainTracker;
 
+#[contracttype]
 #[derive(Clone)]
 pub struct SupplyShipment {
     pub id: String,
@@ -24,10 +25,69 @@ pub struct SupplyShipment {
     pub special_handling: Vec<String>,
     /// The address that created this shipment (used for ownership checks).
     pub creator: Address,
+    pub recipient_policy: RecipientPolicy,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AuthorizedRecipient {
+    pub address: Address,
+    pub recipient_id: String,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum RecipientPolicy {
+    Unconfigured,
+    Individual(AuthorizedRecipient),
+    Group(Vec<AuthorizedRecipient>),
+}
+
+fn validate_recipient_policy(policy: &RecipientPolicy) {
+    match policy {
+        RecipientPolicy::Unconfigured => panic!("Recipient policy is unconfigured"),
+        RecipientPolicy::Individual(authorized) => {
+            if authorized.recipient_id.len() == 0 {
+                panic!("Recipient id must not be empty");
+            }
+        }
+        RecipientPolicy::Group(authorized) => {
+            if authorized.is_empty() {
+                panic!("Recipient group must not be empty");
+            }
+            for entry in authorized.iter() {
+                if entry.recipient_id.len() == 0 {
+                    panic!("Recipient id must not be empty");
+                }
+            }
+        }
+    }
+}
+
+fn policy_authorizes_recipient(
+    policy: &RecipientPolicy,
+    recipient: &Address,
+    recipient_id: &String,
+) -> bool {
+    match policy {
+        RecipientPolicy::Unconfigured => false,
+        RecipientPolicy::Individual(authorized) => {
+            &authorized.address == recipient && &authorized.recipient_id == recipient_id
+        }
+        RecipientPolicy::Group(authorized) => {
+            for entry in authorized.iter() {
+                if &entry.address == recipient && &entry.recipient_id == recipient_id {
+                    return true;
+                }
+            }
+            false
+        }
+    }
 }
 
 /// Location with geographic coordinates and descriptive info
 /// Uses standardized GeoPoint for coordinates
+#[contracttype]
 #[derive(Clone)]
 pub struct Location {
     pub coordinates: GeoPoint,
@@ -65,6 +125,7 @@ impl Location {
     }
 }
 
+#[contracttype]
 #[derive(Clone)]
 pub struct Checkpoint {
     pub id: String,
@@ -78,6 +139,7 @@ pub struct Checkpoint {
     pub temperature: Option<f64>,
 }
 
+#[contracttype]
 #[derive(Clone)]
 pub struct TemperatureRequirements {
     pub min_temp: f64,
@@ -85,6 +147,7 @@ pub struct TemperatureRequirements {
     pub critical: bool,
 }
 
+#[contracttype]
 #[derive(Clone)]
 pub struct RecipientConfirmation {
     pub shipment_id: String,
@@ -159,6 +222,7 @@ impl SupplyChainTracker {
             temperature_requirements,
             special_handling,
             creator: donor,
+            recipient_policy: RecipientPolicy::Unconfigured,
         };
 
         shipments.set(shipment_id, shipment);
@@ -272,9 +336,45 @@ impl SupplyChainTracker {
         }
     }
 
-    /// Confirm final delivery.
-    ///
-    /// Any authenticated address may confirm delivery (the recipient signs).
+    pub fn configure_recipient_policy(
+        env: Env,
+        donor: Address,
+        shipment_id: String,
+        policy: RecipientPolicy,
+    ) {
+        donor.require_auth();
+        rbac::require_role(&env, &donor, ROLE_NGO);
+
+        let shipments_key = Symbol::new(&env, "shipments");
+        let mut shipments: Map<String, SupplyShipment> = env
+            .storage()
+            .instance()
+            .get(&shipments_key)
+            .unwrap_or(Map::new(&env));
+
+        let mut shipment = match shipments.get(shipment_id.clone()) {
+            Some(s) => s,
+            None => panic!("Shipment not found"),
+        };
+
+        if shipment.creator != donor {
+            panic!("Unauthorized: caller is not the shipment creator");
+        }
+        if shipment.current_status == String::from_str(&env, "delivered")
+            || shipment.current_status == String::from_str(&env, "lost")
+        {
+            panic!("Cannot configure recipient policy for a completed shipment");
+        }
+        if !matches!(&shipment.recipient_policy, RecipientPolicy::Unconfigured) {
+            panic!("Recipient policy already configured");
+        }
+
+        validate_recipient_policy(&policy);
+        shipment.recipient_policy = policy;
+        shipments.set(shipment_id, shipment);
+        env.storage().instance().set(&shipments_key, &shipments);
+    }
+
     pub fn confirm_delivery(
         env: Env,
         recipient: Address,
@@ -300,6 +400,19 @@ impl SupplyChainTracker {
             Some(s) => s,
             None => panic!("Shipment not found"),
         };
+
+        if shipment.current_status == String::from_str(&env, "delivered") {
+            panic!("Shipment already delivered");
+        }
+        if shipment.current_status == String::from_str(&env, "lost") {
+            panic!("Cannot confirm delivery of a lost shipment");
+        }
+        if matches!(&shipment.recipient_policy, RecipientPolicy::Unconfigured) {
+            panic!("Recipient policy not configured");
+        }
+        if !policy_authorizes_recipient(&shipment.recipient_policy, &recipient, &recipient_id) {
+            panic!("Unauthorized: recipient is not authorized for this shipment");
+        }
 
         let confirmation = RecipientConfirmation {
             shipment_id: shipment_id.clone(),

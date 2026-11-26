@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, String, Vec, f64};
+use soroban_sdk::{contracttype, Env, String, Vec, f64};
 
 /// Standardized geographic data representation and conversion utilities.
 /// 
@@ -24,6 +24,7 @@ pub const MIN_LONGITUDE: f64 = -180.0;
 pub const EARTH_RADIUS_KM: f64 = 6371.0;
 
 /// Standardized geographic point using f64 degrees
+#[contracttype]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeoPoint {
     pub latitude: f64,

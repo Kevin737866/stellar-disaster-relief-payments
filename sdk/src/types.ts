@@ -222,6 +222,16 @@ export interface TransferTransaction {
   rejectionReason: string;
 }
 
+export interface AuthorizedRecipient {
+  address: string;
+  recipientId: string;
+}
+
+export type RecipientPolicy =
+  | { tag: 'Unconfigured' }
+  | { tag: 'Individual'; recipient: AuthorizedRecipient }
+  | { tag: 'Group'; recipients: AuthorizedRecipient[] };
+
 export interface SupplyShipment {
   id: string;
   donorId: string;
@@ -237,6 +247,7 @@ export interface SupplyShipment {
   assignedTransporter?: string;
   temperatureRequirements?: TemperatureRequirements;
   specialHandling: string[];
+  recipientPolicy?: RecipientPolicy;
 }
 
 export interface Checkpoint {
