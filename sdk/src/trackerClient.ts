@@ -6,7 +6,8 @@ import {
   Contract,
   Address,
   nativeToScVal,
-  scValToNative
+  scValToNative,
+  xdr
 } from 'stellar-sdk';
 const { Server } = SorobanRpc;
 type Server = SorobanRpc.Server;
@@ -17,6 +18,8 @@ import {
   Location,
   TemperatureRequirements,
   RecipientConfirmation,
+  RecipientPolicy,
+  AuthorizedRecipient,
   SupplyChainRequest
 } from './types';
 import {
@@ -29,6 +32,68 @@ import { MultiSigManager } from './multiSig';
 import { withRetry } from './retry';
 import { validateAddress } from './validation';
 import { NetworkConfig } from './types';
+
+function authorizedRecipientToScVal(recipient: AuthorizedRecipient): xdr.ScVal {
+  if (!recipient.address || !recipient.recipientId) {
+    throw new ValidationError('recipient', 'Recipient address and recipient id are required');
+  }
+
+  return xdr.ScVal.scvMap([
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('address'),
+      val: new Address(recipient.address).toScVal(),
+    }),
+    new xdr.ScMapEntry({
+      key: xdr.ScVal.scvSymbol('recipient_id'),
+      val: xdr.ScVal.scvString(recipient.recipientId),
+    }),
+  ]);
+}
+
+function recipientPolicyToScVal(policy: RecipientPolicy): xdr.ScVal {
+  switch (policy.tag) {
+    case 'Unconfigured':
+      return xdr.ScVal.scvVec([xdr.ScVal.scvSymbol('Unconfigured')]);
+    case 'Individual':
+      return xdr.ScVal.scvVec([
+        xdr.ScVal.scvSymbol('Individual'),
+        authorizedRecipientToScVal(policy.recipient),
+      ]);
+    case 'Group':
+      if (policy.recipients.length === 0) {
+        throw new ValidationError('recipients', 'Group recipient policy requires at least one recipient');
+      }
+      return xdr.ScVal.scvVec([
+        xdr.ScVal.scvSymbol('Group'),
+        xdr.ScVal.scvVec(policy.recipients.map(authorizedRecipientToScVal)),
+      ]);
+  }
+}
+
+function decodeAuthorizedRecipient(value: any): AuthorizedRecipient {
+  return {
+    address: String(value.address),
+    recipientId: String(value.recipient_id ?? value.recipientId ?? ''),
+  };
+}
+
+function decodeRecipientPolicy(value: any): RecipientPolicy | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+
+  switch (value[0]) {
+    case 'Unconfigured':
+      return { tag: 'Unconfigured' };
+    case 'Individual':
+      return { tag: 'Individual', recipient: decodeAuthorizedRecipient(value[1]) };
+    case 'Group':
+      return {
+        tag: 'Group',
+        recipients: Array.isArray(value[1]) ? value[1].map(decodeAuthorizedRecipient) : [],
+      };
+    default:
+      return undefined;
+  }
+}
 
 export class TrackerClient {
   private server: any;
@@ -206,6 +271,43 @@ export class TrackerClient {
     }
   }
 
+  async configureRecipientPolicy(
+    donorKey: string,
+    shipmentId: string,
+    policy: RecipientPolicy
+  ): Promise<string> {
+    const donorKeypair = Keypair.fromSecret(donorKey);
+    const donorAccount = await withRetry<any>(() => this.server.getAccount(donorKeypair.publicKey()));
+
+    const tx = new TransactionBuilder(donorAccount, {
+      fee: '100',
+      networkPassphrase: this.getNetworkPassphrase(),
+    })
+      .addOperation(
+        this.contract.call(
+          "configure_recipient_policy",
+          ...[
+            new Address(donorKeypair.publicKey()).toScVal(),
+            nativeToScVal(shipmentId),
+            recipientPolicyToScVal(policy),
+          ]
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    tx.sign(donorKeypair);
+    const result = await withRetry<any>(() => this.server.sendTransaction(tx));
+
+    if (result.status === 'SUCCESS') {
+      this.cache.invalidate(`tracker:shipment:${shipmentId}`);
+      this.cache.invalidate(`tracker:history:${shipmentId}`);
+      return `Recipient policy configured for shipment ${shipmentId}`;
+    } else {
+      throw new NetworkError('configure recipient policy', result.status, { shipmentId });
+    }
+  }
+
   /**
    * Confirm final delivery
    */
@@ -260,7 +362,11 @@ export class TrackerClient {
     return this.cache.get(`tracker:shipment:${shipmentId}`, async () => {
       try {
         const result = await this.contract.call("get_shipment", nativeToScVal(shipmentId));
-        return scValToNative(result.result.retval);
+        const shipment = scValToNative(result.result.retval) as SupplyShipment | null;
+        if (shipment) {
+          shipment.recipientPolicy = decodeRecipientPolicy((shipment as any).recipientPolicy);
+        }
+        return shipment;
       } catch (error) {
         console.error('Failed to get shipment:', error);
         return null;
@@ -279,6 +385,9 @@ export class TrackerClient {
       try {
         const result = await this.contract.call("get_shipment_history", nativeToScVal(shipmentId));
         const history = scValToNative(result.result.retval);
+        if (history[0]) {
+          history[0].recipientPolicy = decodeRecipientPolicy(history[0].recipientPolicy);
+        }
         return { shipment: history[0], confirmation: history[1] };
       } catch (error) {
         console.error('Failed to get shipment history:', error);

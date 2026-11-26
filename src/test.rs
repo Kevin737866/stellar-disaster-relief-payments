@@ -1655,8 +1655,10 @@ mod merchant_tests {
 
 mod supply_chain_tests {
     use super::*;
+    use crate::rbac::{self, ROLE_RECIPIENT};
     use crate::supply_chain_tracker::{
-        Location, SupplyChainTracker, SupplyChainTrackerClient, TemperatureRequirements,
+        AuthorizedRecipient, Location, RecipientPolicy, SupplyChainTracker,
+        SupplyChainTrackerClient, TemperatureRequirements,
     };
 
     fn deploy(env: &Env) -> SupplyChainTrackerClient {
@@ -1747,8 +1749,11 @@ mod supply_chain_tests {
     fn test_confirm_delivery_marks_delivered() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
         let donor = Address::generate(&env);
         let recipient = Address::generate(&env);
+        rbac::seed_initial_roles(&env, &admin, &donor, &admin, &admin);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
 
         client.create_shipment(
             &donor,
@@ -1762,6 +1767,15 @@ mod supply_chain_tests {
             &9_999_999_999u64,
             &None,
             &Vec::new(&env),
+        );
+
+        client.configure_recipient_policy(
+            &donor,
+            &str(&env, "ship_del"),
+            &RecipientPolicy::Individual(AuthorizedRecipient {
+                address: recipient.clone(),
+                recipient_id: str(&env, "recipient_001"),
+            }),
         );
 
         client.confirm_delivery(
@@ -1808,8 +1822,11 @@ mod supply_chain_tests {
     fn test_get_shipment_history() {
         let env = make_env();
         let client = deploy(&env);
+        let admin = Address::generate(&env);
         let donor = Address::generate(&env);
         let recipient = Address::generate(&env);
+        rbac::seed_initial_roles(&env, &admin, &donor, &admin, &admin);
+        rbac::assign_role(&env, &admin, &recipient, ROLE_RECIPIENT);
 
         client.create_shipment(
             &donor,
@@ -1823,6 +1840,15 @@ mod supply_chain_tests {
             &9_999_999_999u64,
             &None,
             &Vec::new(&env),
+        );
+
+        client.configure_recipient_policy(
+            &donor,
+            &str(&env, "ship_hist"),
+            &RecipientPolicy::Individual(AuthorizedRecipient {
+                address: recipient.clone(),
+                recipient_id: str(&env, "recipient_hist"),
+            }),
         );
 
         client.confirm_delivery(

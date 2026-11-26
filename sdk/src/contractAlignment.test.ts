@@ -11,7 +11,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Keypair, StrKey } from 'stellar-sdk';
+import { Keypair, StrKey, xdr } from 'stellar-sdk';
 import { AidClient } from './aidClient';
 import { BeneficiaryClient } from './beneficiaryClient';
 import { MerchantClient } from './merchantClient';
@@ -378,5 +378,37 @@ describe('SDK <-> contract shape alignment', () => {
       })
     );
     expectShape('createShipment', method, args.length);
+  });
+
+  test('TrackerClient.configureRecipientPolicy -> configure_recipient_policy', async () => {
+    const client = new TrackerClient(CONFIG) as any;
+    const { method, args } = await captureCall(client, () =>
+      client.configureRecipientPolicy(signer.secret(), 'ship_policy', {
+        tag: 'Individual',
+        recipient: { address: signer.publicKey(), recipientId: 'r1' },
+      })
+    );
+
+    expectShape('configureRecipientPolicy', method, args.length);
+    const policy = args[2] as xdr.ScVal;
+    expect(policy.switch().name).toBe('scvVec');
+    expect(String(policy.vec()![0].value())).toBe('Individual');
+  });
+
+  test('configureRecipientPolicy encodes group policies explicitly', async () => {
+    const client = new TrackerClient(CONFIG) as any;
+    const { args } = await captureCall(client, () =>
+      client.configureRecipientPolicy(signer.secret(), 'ship_group', {
+        tag: 'Group',
+        recipients: [
+          { address: signer.publicKey(), recipientId: 'r1' },
+          { address: approver.publicKey(), recipientId: 'r2' },
+        ],
+      })
+    );
+
+    const policy = args[2] as xdr.ScVal;
+    expect(String(policy.vec()![0].value())).toBe('Group');
+    expect(policy.vec()![1].vec()!.length).toBe(2);
   });
 });

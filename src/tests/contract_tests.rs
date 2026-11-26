@@ -2,7 +2,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
-use crate::rbac::{self, ROLE_ADMIN, ROLE_AUDITOR, ROLE_NGO, ROLE_OPERATOR};
+use crate::rbac::{self, ROLE_ADMIN, ROLE_AUDITOR, ROLE_NGO, ROLE_OPERATOR, ROLE_RECIPIENT};
 
 // ── BeneficiaryManager ───────────────────────────────────────────────────────
 
@@ -413,7 +413,10 @@ mod merchant_tests {
 
 mod supply_chain_tests {
     use super::*;
-    use crate::{SupplyChainTracker, supply_chain_tracker::Location};
+    use crate::supply_chain_tracker::{
+        AuthorizedRecipient, Location, RecipientPolicy, SupplyChainTracker,
+        SupplyChainTrackerClient,
+    };
     use soroban_sdk::U256;
 
     fn setup() -> (Env, Address, Address) {
@@ -425,34 +428,74 @@ mod supply_chain_tests {
         (env, admin, ngo)
     }
 
+    fn client(env: &Env) -> SupplyChainTrackerClient {
+        let contract_id = env.register_contract(None, SupplyChainTracker);
+        SupplyChainTrackerClient::new(env, &contract_id)
+    }
+
     fn make_location(env: &Env) -> Location {
-        Location {
-            latitude: 0.0,
-            longitude: 0.0,
-            address: String::from_str(env, "addr"),
-            facility_name: String::from_str(env, "facility"),
-            contact_person: String::from_str(env, "contact"),
+        Location::from_string(
+            String::from_str(env, "0,0"),
+            String::from_str(env, "addr"),
+            String::from_str(env, "facility"),
+            String::from_str(env, "contact"),
+            env,
+        )
+        .unwrap_or_else(|_| panic!("Invalid test location"))
+    }
+
+    fn create_shipment(client: &SupplyChainTrackerClient, env: &Env, ngo: &Address, id: &str) {
+        client.create_shipment(
+            ngo,
+            &String::from_str(env, id),
+            &String::from_str(env, "donor"),
+            &String::from_str(env, "water"),
+            &U256::from_u64(200),
+            &String::from_str(env, "liters"),
+            &make_location(env),
+            &make_location(env),
+            &(env.ledger().timestamp() + 86400),
+            &None,
+            &Vec::new(env),
+        );
+    }
+
+    fn recipient(env: &Env, admin: &Address) -> Address {
+        let address = Address::generate(env);
+        rbac::assign_role(env, admin, &address, ROLE_RECIPIENT);
+        address
+    }
+
+    fn authorized(env: &Env, address: &Address, id: &str) -> AuthorizedRecipient {
+        AuthorizedRecipient {
+            address: address.clone(),
+            recipient_id: String::from_str(env, id),
         }
+    }
+
+    fn individual_policy(env: &Env, address: &Address, id: &str) -> RecipientPolicy {
+        RecipientPolicy::Individual(authorized(env, address, id))
+    }
+
+    fn status(client: &SupplyChainTrackerClient, env: &Env, id: &str) -> String {
+        client
+            .get_shipment(&String::from_str(env, id))
+            .unwrap()
+            .current_status
+    }
+
+    fn has_confirmation(client: &SupplyChainTrackerClient, env: &Env, id: &str) -> bool {
+        client
+            .get_shipment_history(&String::from_str(env, id))
+            .1
+            .is_some()
     }
 
     #[test]
     fn test_ngo_can_create_shipment() {
         let (env, _, ngo) = setup();
-        let contract_id = env.register_contract(None, SupplyChainTracker);
-        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
-        client.create_shipment(
-            &ngo,
-            &String::from_str(&env, "s1"),
-            &String::from_str(&env, "donor1"),
-            &String::from_str(&env, "medicine"),
-            &U256::from_u64(&env, 1000),
-            &String::from_str(&env, "units"),
-            &make_location(&env),
-            &make_location(&env),
-            &(env.ledger().timestamp() + 86400),
-            &None,
-            &Vec::new(&env),
-        );
+        let client = client(&env);
+        create_shipment(&client, &env, &ngo, "s1");
         assert!(client.get_shipment(&String::from_str(&env, "s1")).is_some());
     }
 
@@ -460,14 +503,13 @@ mod supply_chain_tests {
     #[should_panic(expected = "Unauthorized: missing required role")]
     fn test_non_ngo_cannot_create_shipment() {
         let (env, admin, _) = setup();
-        let contract_id = env.register_contract(None, SupplyChainTracker);
-        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
+        let client = client(&env);
         client.create_shipment(
             &admin,
             &String::from_str(&env, "s2"),
             &String::from_str(&env, "donor2"),
             &String::from_str(&env, "food"),
-            &U256::from_u64(&env, 500),
+            &U256::from_u64(500),
             &String::from_str(&env, "kg"),
             &make_location(&env),
             &make_location(&env),
@@ -478,34 +520,248 @@ mod supply_chain_tests {
     }
 
     #[test]
-    fn test_anyone_can_confirm_delivery() {
-        let (env, _, ngo) = setup();
-        let recipient = Address::generate(&env);
-        let contract_id = env.register_contract(None, SupplyChainTracker);
-        let client = crate::SupplyChainTrackerClient::new(&env, &contract_id);
-        client.create_shipment(
+    fn test_matching_recipient_can_confirm_delivery() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let recipient = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "match");
+
+        client.configure_recipient_policy(
             &ngo,
-            &String::from_str(&env, "s3"),
-            &String::from_str(&env, "donor3"),
-            &String::from_str(&env, "water"),
-            &U256::from_u64(&env, 200),
-            &String::from_str(&env, "liters"),
-            &make_location(&env),
-            &make_location(&env),
-            &(env.ledger().timestamp() + 86400),
-            &None,
-            &Vec::new(&env),
+            &String::from_str(&env, "match"),
+            &individual_policy(&env, &recipient, "r1"),
         );
         client.confirm_delivery(
             &recipient,
-            &String::from_str(&env, "s3"),
+            &String::from_str(&env, "match"),
             &String::from_str(&env, "r1"),
-            &U256::from_u64(&env, 200),
+            &U256::from_u64(200),
             &String::from_str(&env, "good"),
             &Vec::new(&env),
         );
-        let shipment = client.get_shipment(&String::from_str(&env, "s3")).unwrap();
-        assert_eq!(shipment.current_status, String::from_str(&env, "delivered"));
+
+        assert_eq!(
+            status(&client, &env, "match"),
+            String::from_str(&env, "delivered")
+        );
+        let confirmation = client
+            .get_shipment_history(&String::from_str(&env, "match"))
+            .1
+            .unwrap();
+        assert_eq!(confirmation.recipient_id, String::from_str(&env, "r1"));
+        assert_eq!(confirmation.confirmed_by, recipient);
+    }
+
+    #[test]
+    fn test_wrong_recipient_address_cannot_confirm_delivery() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let intended = recipient(&env, &admin);
+        let unrelated = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "wrong_addr");
+
+        client.configure_recipient_policy(
+            &ngo,
+            &String::from_str(&env, "wrong_addr"),
+            &individual_policy(&env, &intended, "r1"),
+        );
+        let result = client.try_confirm_delivery(
+            &unrelated,
+            &String::from_str(&env, "wrong_addr"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "good"),
+            &Vec::new(&env),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            status(&client, &env, "wrong_addr"),
+            String::from_str(&env, "in_transit")
+        );
+        assert!(!has_confirmation(&client, &env, "wrong_addr"));
+    }
+
+    #[test]
+    fn test_mismatched_recipient_id_cannot_confirm_delivery() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let recipient = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "wrong_id");
+
+        client.configure_recipient_policy(
+            &ngo,
+            &String::from_str(&env, "wrong_id"),
+            &individual_policy(&env, &recipient, "r1"),
+        );
+        let result = client.try_confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "wrong_id"),
+            &String::from_str(&env, "r2"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "good"),
+            &Vec::new(&env),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            status(&client, &env, "wrong_id"),
+            String::from_str(&env, "in_transit")
+        );
+        assert!(!has_confirmation(&client, &env, "wrong_id"));
+    }
+
+    #[test]
+    fn test_unconfigured_recipient_policy_rejects_delivery() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let recipient = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "unconfigured");
+
+        let result = client.try_confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "unconfigured"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "good"),
+            &Vec::new(&env),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            status(&client, &env, "unconfigured"),
+            String::from_str(&env, "in_transit")
+        );
+        assert!(!has_confirmation(&client, &env, "unconfigured"));
+    }
+
+    #[test]
+    fn test_group_policy_allows_authorized_member() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let first = recipient(&env, &admin);
+        let second = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "group_ok");
+
+        let mut members = Vec::new(&env);
+        members.push_back(authorized(&env, &first, "r1"));
+        members.push_back(authorized(&env, &second, "r2"));
+        client.configure_recipient_policy(
+            &ngo,
+            &String::from_str(&env, "group_ok"),
+            &RecipientPolicy::Group(members),
+        );
+        client.confirm_delivery(
+            &second,
+            &String::from_str(&env, "group_ok"),
+            &String::from_str(&env, "r2"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "good"),
+            &Vec::new(&env),
+        );
+
+        assert_eq!(
+            status(&client, &env, "group_ok"),
+            String::from_str(&env, "delivered")
+        );
+    }
+
+    #[test]
+    fn test_group_policy_rejects_unlisted_address() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let member = recipient(&env, &admin);
+        let outsider = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "group_bad");
+
+        let mut members = Vec::new(&env);
+        members.push_back(authorized(&env, &member, "r1"));
+        client.configure_recipient_policy(
+            &ngo,
+            &String::from_str(&env, "group_bad"),
+            &RecipientPolicy::Group(members),
+        );
+        let result = client.try_confirm_delivery(
+            &outsider,
+            &String::from_str(&env, "group_bad"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "good"),
+            &Vec::new(&env),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            status(&client, &env, "group_bad"),
+            String::from_str(&env, "in_transit")
+        );
+        assert!(!has_confirmation(&client, &env, "group_bad"));
+    }
+
+    #[test]
+    fn test_repeated_confirmation_is_rejected_and_history_unchanged() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let recipient = recipient(&env, &admin);
+        create_shipment(&client, &env, &ngo, "repeat");
+
+        client.configure_recipient_policy(
+            &ngo,
+            &String::from_str(&env, "repeat"),
+            &individual_policy(&env, &recipient, "r1"),
+        );
+        client.confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "repeat"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(200),
+            &String::from_str(&env, "original"),
+            &Vec::new(&env),
+        );
+        let repeated = client.try_confirm_delivery(
+            &recipient,
+            &String::from_str(&env, "repeat"),
+            &String::from_str(&env, "r1"),
+            &U256::from_u64(150),
+            &String::from_str(&env, "replacement"),
+            &Vec::new(&env),
+        );
+
+        assert!(repeated.is_err());
+        assert_eq!(
+            status(&client, &env, "repeat"),
+            String::from_str(&env, "delivered")
+        );
+        let confirmation = client
+            .get_shipment_history(&String::from_str(&env, "repeat"))
+            .1
+            .unwrap();
+        assert_eq!(confirmation.received_quantity, U256::from_u64(200));
+        assert_eq!(confirmation.condition_report, String::from_str(&env, "original"));
+    }
+
+    #[test]
+    fn test_non_creator_cannot_configure_policy() {
+        let (env, admin, ngo) = setup();
+        let client = client(&env);
+        let other_ngo = Address::generate(&env);
+        rbac::assign_role(&env, &admin, &other_ngo, ROLE_NGO);
+        create_shipment(&client, &env, &ngo, "not_creator");
+
+        let result = client.try_configure_recipient_policy(
+            &other_ngo,
+            &String::from_str(&env, "not_creator"),
+            &RecipientPolicy::Unconfigured,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            client
+                .get_shipment(&String::from_str(&env, "not_creator"))
+                .unwrap()
+                .recipient_policy,
+            RecipientPolicy::Unconfigured
+        ));
     }
 }
 
